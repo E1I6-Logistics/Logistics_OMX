@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/huggingface/lerobot.git",
+  "commit": "89236ea0f4f81a81ca566081e20dd1ff5f823cbe",
+  "version_in_pyproject": "0.6.2",
+  "source": "PC working tree snapshot; Raspberry Pi live environment not verified",
+  "snapshot_date": "2026-10-01"
+}
