@@ -1,0 +1,11 @@
+**/.venv/
+**/__pycache__/
+**/*.pyc
+**/outputs/
+**/backups/
+**/*.safetensors
+**/*.mp4
+**/*.tar.gz
+**/*.bak*
+.env
+reports/
