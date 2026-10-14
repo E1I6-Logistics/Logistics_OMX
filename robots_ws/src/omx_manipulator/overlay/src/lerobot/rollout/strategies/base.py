@@ -23,6 +23,9 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 from lerobot.utils.cycle_timer import CycleTimer
 
 from ..context import RolloutContext
@@ -41,6 +44,47 @@ class BaseStrategy(RolloutStrategy):
 
     def setup(self, ctx: RolloutContext) -> None:
         """Initialise the inference engine."""
+        if self.config.camera_auto_reconnect:
+            if self.config.camera_reconnect_attempts < 1:
+                raise ValueError("strategy.camera_reconnect_attempts must be >= 1")
+            if self.config.camera_reconnect_interval_s <= 0:
+                raise ValueError("strategy.camera_reconnect_interval_s must be > 0")
+        self._basket_mask_polygon: np.ndarray | None = None
+        if self.config.stuck_basket_mask_enabled:
+            if self.config.stuck_basket_mask_timeout_s <= 0:
+                raise ValueError("strategy.stuck_basket_mask_timeout_s must be > 0")
+            if self.config.stuck_basket_mask_duration_s <= 0:
+                raise ValueError("strategy.stuck_basket_mask_duration_s must be > 0")
+            if self.config.stuck_basket_mask_retry_cooldown_s <= 0:
+                raise ValueError("strategy.stuck_basket_mask_retry_cooldown_s must be > 0")
+            if self.config.stuck_basket_mask_max_retries < 1:
+                raise ValueError("strategy.stuck_basket_mask_max_retries must be >= 1")
+            if not 0 <= self.config.stuck_basket_mask_value <= 255:
+                raise ValueError("strategy.stuck_basket_mask_value must be in [0, 255]")
+            try:
+                points = [
+                    tuple(int(value.strip()) for value in point.split(","))
+                    for point in self.config.stuck_basket_mask_polygon.split(";")
+                    if point.strip()
+                ]
+            except ValueError as exc:
+                raise ValueError(
+                    "strategy.stuck_basket_mask_polygon must look like 'x1,y1;x2,y2;x3,y3;x4,y4'"
+                ) from exc
+            if len(points) < 3 or any(len(point) != 2 for point in points):
+                raise ValueError("strategy.stuck_basket_mask_polygon requires at least three x,y points")
+            self._basket_mask_polygon = np.asarray(points, dtype=np.int32)
+        if self.config.basket_success_enabled:
+            if self._basket_mask_polygon is None:
+                raise ValueError("Basket success detection requires stuck_basket_mask_polygon")
+            if not 0 <= self.config.basket_success_pixel_threshold <= 255:
+                raise ValueError("strategy.basket_success_pixel_threshold must be in [0, 255]")
+            if not 0 < self.config.basket_success_changed_ratio <= 1:
+                raise ValueError("strategy.basket_success_changed_ratio must be in (0, 1]")
+            if self.config.basket_success_min_blob_area <= 0:
+                raise ValueError("strategy.basket_success_min_blob_area must be > 0")
+            if self.config.basket_success_settle_s < 0:
+                raise ValueError("strategy.basket_success_settle_s must be >= 0")
         if self.config.auto_restart_on_home:
             if self.config.home_tolerance <= 0:
                 raise ValueError("strategy.home_tolerance must be > 0")
@@ -60,6 +104,13 @@ class BaseStrategy(RolloutStrategy):
         self._init_engine(ctx)
         self._session_completed = 0
         self._inventory_path = Path(self.config.inventory_state_path).expanduser()
+        self._camera_status_path = Path(self.config.camera_status_path).expanduser()
+        if self.config.camera_auto_reconnect:
+            self._save_camera_status(
+                status="running",
+                camera="all",
+                message="카메라 정상 - ACT 추론 준비",
+            )
         self._total_completed = 0
         if self.config.auto_restart_on_home:
             self._total_completed = self._load_inventory()
@@ -71,13 +122,19 @@ class BaseStrategy(RolloutStrategy):
                 self._total_completed = 0
                 self._save_inventory()
                 logger.info("Inventory reset: %d items available", self.config.inventory_capacity)
-            logger.info(
-                "Inventory: total=%d/%d, remaining=%d, session=0 (state=%s)",
-                self._total_completed,
-                self.config.inventory_capacity,
-                self._remaining_inventory,
-                self._inventory_path,
-            )
+            if self._order_router is not None:
+                logger.info(
+                    "Order counter: completed=0, remaining=0; waiting for a C/D order (state=%s)",
+                    self._inventory_path,
+                )
+            else:
+                logger.info(
+                    "Inventory: total=%d/%d, remaining=%d, session=0 (state=%s)",
+                    self._total_completed,
+                    self.config.inventory_capacity,
+                    self._remaining_inventory,
+                    self._inventory_path,
+                )
         logger.info("Base strategy ready")
 
     @property
@@ -161,6 +218,210 @@ class BaseStrategy(RolloutStrategy):
             order_remaining,
         )
 
+    def _save_camera_status(
+        self,
+        *,
+        status: str,
+        camera: str,
+        message: str,
+        attempt: int = 0,
+    ) -> None:
+        """Atomically publish camera recovery state for the order console."""
+        self._camera_status_path.parent.mkdir(parents=True, exist_ok=True)
+        state = {
+            "camera": camera,
+            "status": status,
+            "attempt": attempt,
+            "max_attempts": self.config.camera_reconnect_attempts,
+            "message": message,
+            "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "updated_at_epoch": time.time(),
+        }
+        temporary = self._camera_status_path.with_suffix(self._camera_status_path.suffix + ".tmp")
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, self._camera_status_path)
+
+    @staticmethod
+    def _recoverable_opencv_cameras(robot: object, error: Exception) -> list[tuple[str, object]]:
+        """Return OpenCV cameras implicated in an observation failure."""
+        cameras = getattr(robot, "cameras", {})
+        opencv_cameras = [
+            (str(key), camera)
+            for key, camera in cameras.items()
+            if hasattr(camera, "thread") and hasattr(camera, "connect")
+        ]
+        unhealthy = [
+            (key, camera)
+            for key, camera in opencv_cameras
+            if getattr(camera, "thread", None) is None
+            or not getattr(camera.thread, "is_alive", lambda: False)()
+            or not bool(getattr(camera, "is_connected", False))
+        ]
+        if unhealthy:
+            return unhealthy
+        # A stale-frame timeout can occur before the reader thread exits. Only
+        # treat it as a camera failure when the exception identifies OpenCV.
+        return opencv_cameras if "OpenCVCamera" in str(error) else []
+
+    def _get_observation_with_camera_recovery(
+        self,
+        robot: object,
+        engine: object,
+    ) -> tuple[dict, bool]:
+        """Read one observation, reconnecting failed OpenCV cameras when enabled."""
+        try:
+            return robot.get_observation(), False
+        except (RuntimeError, TimeoutError) as error:
+            if not self.config.camera_auto_reconnect:
+                raise
+            cameras = self._recoverable_opencv_cameras(robot, error)
+            if not cameras:
+                raise
+
+            camera_names = ",".join(key for key, _ in cameras)
+            logger.warning(
+                "Camera read failed (%s). Pausing actions and reconnecting: %s",
+                error,
+                camera_names,
+            )
+            engine.pause()
+            last_error: Exception = error
+
+            for attempt in range(1, self.config.camera_reconnect_attempts + 1):
+                self._save_camera_status(
+                    status="reconnecting",
+                    camera=camera_names,
+                    attempt=attempt,
+                    message=(
+                        f"{camera_names} 화면 끊김 - OMX 일시정지, "
+                        f"재연결 중 ({attempt}/{self.config.camera_reconnect_attempts})"
+                    ),
+                )
+                for _, camera in cameras:
+                    try:
+                        camera.disconnect()
+                    except Exception:
+                        logger.debug("Camera cleanup before reconnect failed", exc_info=True)
+
+                time.sleep(self.config.camera_reconnect_interval_s)
+
+                try:
+                    for _, camera in cameras:
+                        camera.connect()
+                    observation = robot.get_observation()
+                except Exception as reconnect_error:
+                    last_error = reconnect_error
+                    logger.warning(
+                        "Camera reconnect attempt %d/%d failed: %s",
+                        attempt,
+                        self.config.camera_reconnect_attempts,
+                        reconnect_error,
+                    )
+                    continue
+
+                # Drop actions and processor state produced before the outage.
+                self.reset_control_state()
+                engine.resume()
+                self._save_camera_status(
+                    status="recovered",
+                    camera=camera_names,
+                    attempt=attempt,
+                    message=f"{camera_names} 재연결 완료 - 새 프레임으로 ACT 추론 재시작",
+                )
+                logger.info("Camera reconnected after %d attempt(s): %s", attempt, camera_names)
+                return observation, True
+
+            self._save_camera_status(
+                status="failed",
+                camera=camera_names,
+                attempt=self.config.camera_reconnect_attempts,
+                message=f"{camera_names} 재연결 실패 - USB 연결을 확인하세요",
+            )
+            raise RuntimeError(
+                f"Camera {camera_names} could not reconnect after "
+                f"{self.config.camera_reconnect_attempts} attempts"
+            ) from last_error
+
+    def _mask_basket_for_one_query(self, observation: dict) -> dict:
+        """Return a shallow observation copy with one camera's basket ROI filled."""
+        camera_key = self.config.stuck_basket_mask_camera
+        if camera_key not in observation:
+            raise KeyError(
+                f"Basket-mask camera '{camera_key}' is missing; available keys={sorted(observation)}"
+            )
+        image = observation[camera_key]
+        if not isinstance(image, np.ndarray) or image.ndim not in (2, 3):
+            raise TypeError(
+                f"Basket-mask camera '{camera_key}' must be a numpy image, got {type(image).__name__}"
+            )
+
+        polygon = self._basket_mask_polygon
+        if polygon is None:
+            raise RuntimeError("Basket-mask polygon was not initialised")
+        height, width = image.shape[:2]
+        if (
+            np.any(polygon[:, 0] < 0)
+            or np.any(polygon[:, 0] >= width)
+            or np.any(polygon[:, 1] < 0)
+            or np.any(polygon[:, 1] >= height)
+        ):
+            raise ValueError(f"Basket-mask polygon is outside the {width}x{height} camera frame")
+
+        # Vectorised ray casting keeps the rollout strategy independent from
+        # OpenCV and works for either clockwise or counter-clockwise points.
+        yy, xx = np.mgrid[:height, :width]
+        inside = np.zeros((height, width), dtype=bool)
+        previous = polygon[-1]
+        for current in polygon:
+            crosses_scanline = (current[1] > yy) != (previous[1] > yy)
+            edge_x = (previous[0] - current[0]) * (yy - current[1]) / (
+                previous[1] - current[1] + np.finfo(float).eps
+            ) + current[0]
+            inside ^= crosses_scanline & (xx < edge_x)
+            previous = current
+
+        masked = image.copy()
+        masked[inside] = self.config.stuck_basket_mask_value
+        result = observation.copy()
+        result[camera_key] = masked
+        return result
+
+    def _evaluate_basket_change(self, before: np.ndarray, after: np.ndarray) -> tuple[bool, float, float]:
+        """Compare only the configured basket polygon in two unmasked RGB frames."""
+        if before.shape != after.shape or before.ndim != 3:
+            raise ValueError(f"Basket frames must have matching HxWxC shapes, got {before.shape} and {after.shape}")
+        polygon = self._basket_mask_polygon
+        if polygon is None:
+            raise RuntimeError("Basket polygon is not configured")
+        height, width = before.shape[:2]
+        if np.any(polygon[:, 0] < 0) or np.any(polygon[:, 0] >= width):
+            raise ValueError(f"Basket polygon x coordinates exceed image width {width}")
+        if np.any(polygon[:, 1] < 0) or np.any(polygon[:, 1] >= height):
+            raise ValueError(f"Basket polygon y coordinates exceed image height {height}")
+
+        roi_mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(roi_mask, [polygon], 255)
+        before_blur = cv2.GaussianBlur(before, (5, 5), 0)
+        after_blur = cv2.GaussianBlur(after, (5, 5), 0)
+        before_lab = cv2.cvtColor(before_blur, cv2.COLOR_RGB2LAB)
+        after_lab = cv2.cvtColor(after_blur, cv2.COLOR_RGB2LAB)
+        delta = cv2.absdiff(before_lab, after_lab)
+        changed = (np.max(delta, axis=2) >= self.config.basket_success_pixel_threshold).astype(np.uint8) * 255
+        changed = cv2.bitwise_and(changed, roi_mask)
+        kernel = np.ones((3, 3), dtype=np.uint8)
+        changed = cv2.morphologyEx(changed, cv2.MORPH_OPEN, kernel)
+        changed = cv2.morphologyEx(changed, cv2.MORPH_CLOSE, kernel, iterations=2)
+
+        roi_pixels = int(np.count_nonzero(roi_mask))
+        changed_ratio = float(np.count_nonzero(changed)) / max(1, roi_pixels)
+        contours, _ = cv2.findContours(changed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        largest_blob = max((cv2.contourArea(contour) for contour in contours), default=0.0)
+        success = (
+            changed_ratio >= self.config.basket_success_changed_ratio
+            and largest_blob >= self.config.basket_success_min_blob_area
+        )
+        return success, changed_ratio, float(largest_blob)
+
     @staticmethod
     def _max_home_error(observation: Mapping[str, object], home: Mapping[str, object]) -> float | None:
         """Return the largest absolute joint-position error from the startup pose."""
@@ -196,6 +457,10 @@ class BaseStrategy(RolloutStrategy):
         auto_restart = self.config.auto_restart_on_home and bool(home_position)
         waiting_for_inventory = False
         next_inventory_poll = start_time
+        basket_mask_retries = 0
+        next_basket_mask_retry = start_time + self.config.stuck_basket_mask_timeout_s
+        basket_mask_active_until = 0.0
+        basket_reference: np.ndarray | None = None
         if self.config.auto_restart_on_home and not home_position:
             logger.warning("Auto restart requested, but no initial joint position was captured; disabling it")
         engine.resume()
@@ -226,7 +491,9 @@ class BaseStrategy(RolloutStrategy):
                     break
 
                 with timer.section("observe"):
-                    obs = robot.get_observation()
+                    obs, camera_recovered = self._get_observation_with_camera_recovery(robot, engine)
+                if camera_recovered:
+                    timer.restart()
 
                 if waiting_for_inventory:
                     now = time.perf_counter()
@@ -250,7 +517,9 @@ class BaseStrategy(RolloutStrategy):
                                 engine = ctx.policy.inference
                                 self._engine = engine
                                 # Loading may take seconds; do not act on pre-load camera frames.
-                                obs = robot.get_observation()
+                                obs, camera_recovered = self._get_observation_with_camera_recovery(robot, engine)
+                                if camera_recovered:
+                                    timer.restart()
                                 now = time.perf_counter()
                             self._total_completed = reloaded_total
                             self._session_completed = 0
@@ -259,6 +528,10 @@ class BaseStrategy(RolloutStrategy):
                             self._cached_obs_processed = None
                             timer.restart()
                             cycle_started_at = now
+                            basket_mask_retries = 0
+                            next_basket_mask_retry = now + self.config.stuck_basket_mask_timeout_s
+                            basket_mask_active_until = 0.0
+                            basket_reference = None
                             return_detector_armed = False
                             home_since = None
                             waiting_for_inventory = False
@@ -273,6 +546,14 @@ class BaseStrategy(RolloutStrategy):
 
                 if auto_restart:
                     now = time.perf_counter()
+                    if self.config.basket_success_enabled and basket_reference is None:
+                        basket_image = obs.get(self.config.stuck_basket_mask_camera)
+                        if not isinstance(basket_image, np.ndarray):
+                            raise RuntimeError(
+                                f"Basket camera '{self.config.stuck_basket_mask_camera}' did not provide an image"
+                            )
+                        basket_reference = basket_image.copy()
+                        logger.info("Captured basket reference frame for success detection")
                     home_error = self._max_home_error(obs, home_position)
                     if home_error is not None:
                         if not return_detector_armed:
@@ -285,7 +566,47 @@ class BaseStrategy(RolloutStrategy):
                         elif home_error <= self.config.home_tolerance:
                             if home_since is None:
                                 home_since = now
-                            elif now - home_since >= self.config.home_hold_s:
+                            elif now - home_since >= max(
+                                self.config.home_hold_s,
+                                self.config.basket_success_settle_s if self.config.basket_success_enabled else 0.0,
+                            ):
+                                if self.config.basket_success_enabled:
+                                    basket_image = obs.get(self.config.stuck_basket_mask_camera)
+                                    if not isinstance(basket_image, np.ndarray) or basket_reference is None:
+                                        raise RuntimeError("Basket success detector has no valid reference/current frame")
+                                    success, changed_ratio, largest_blob = self._evaluate_basket_change(
+                                        basket_reference, basket_image
+                                    )
+                                    verdict = "성공" if success else "실패"
+                                    logger.info(
+                                        "Basket transfer verdict=%s changed_ratio=%.4f largest_blob=%.1f",
+                                        verdict,
+                                        changed_ratio,
+                                        largest_blob,
+                                    )
+                                    self._save_camera_status(
+                                        status="basket_success" if success else "basket_failure",
+                                        camera=self.config.stuck_basket_mask_camera,
+                                        message=(
+                                            f"바구니 이동 {verdict} - 변화율 {changed_ratio * 100:.2f}%, "
+                                            f"최대 변화영역 {largest_blob:.0f}px"
+                                        ),
+                                    )
+                                    basket_reference = basket_image.copy()
+                                    if not success:
+                                        engine.reset()
+                                        interpolator.reset()
+                                        self._cached_obs_processed = None
+                                        timer.restart()
+                                        cycle_started_at = now
+                                        basket_mask_retries = 0
+                                        next_basket_mask_retry = now + self.config.stuck_basket_mask_timeout_s
+                                        basket_mask_active_until = 0.0
+                                        return_detector_armed = False
+                                        home_since = None
+                                        engine.resume()
+                                        logger.warning("Basket transfer failed; retrying the same order item")
+                                        continue
                                 self._count_completed_cycle()
                                 if self._remaining_inventory == 0:
                                     logger.warning(
@@ -313,12 +634,55 @@ class BaseStrategy(RolloutStrategy):
                                 self._cached_obs_processed = None
                                 timer.restart()
                                 cycle_started_at = now
+                                basket_mask_retries = 0
+                                next_basket_mask_retry = now + self.config.stuck_basket_mask_timeout_s
+                                basket_mask_active_until = 0.0
                                 return_detector_armed = False
                                 home_since = None
                                 engine.resume()
                                 continue
                         else:
                             home_since = None
+
+                    if (
+                        self.config.stuck_basket_mask_enabled
+                        and not return_detector_armed
+                        and now - cycle_started_at >= self.config.stuck_basket_mask_timeout_s
+                        and basket_mask_retries < self.config.stuck_basket_mask_max_retries
+                        and now >= next_basket_mask_retry
+                    ):
+                        basket_mask_retries += 1
+                        next_basket_mask_retry = now + self.config.stuck_basket_mask_retry_cooldown_s
+                        logger.warning(
+                            "Robot stayed at home for %.1fs; applying basket mask for %.1fs (%d/%d)",
+                            now - cycle_started_at,
+                            self.config.stuck_basket_mask_duration_s,
+                            basket_mask_retries,
+                            self.config.stuck_basket_mask_max_retries,
+                        )
+                        self.reset_control_state()
+                        timer.restart()
+                        engine.resume()
+                        basket_mask_active_until = now + self.config.stuck_basket_mask_duration_s
+                        self._save_camera_status(
+                            status="masking",
+                            camera=self.config.stuck_basket_mask_camera,
+                            attempt=basket_mask_retries,
+                            message=(
+                                f"바구니 영역 흰색 마스킹 시작 - "
+                                f"{self.config.stuck_basket_mask_duration_s:.1f}초 유지 "
+                                f"({basket_mask_retries}/{self.config.stuck_basket_mask_max_retries})"
+                            ),
+                        )
+                    if now < basket_mask_active_until:
+                        obs = self._mask_basket_for_one_query(obs)
+                    elif basket_mask_active_until > 0:
+                        basket_mask_active_until = 0.0
+                        self._save_camera_status(
+                            status="mask_cleared",
+                            camera=self.config.stuck_basket_mask_camera,
+                            message="바구니 영역 마스킹 해제 - 원본 카메라 영상으로 복귀",
+                        )
                 with timer.section("process_obs"):
                     obs_processed = self._process_observation_and_notify(ctx.processors, obs)
 
