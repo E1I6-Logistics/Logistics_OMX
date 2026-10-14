@@ -2,6 +2,7 @@
 import json
 import os
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -28,6 +29,26 @@ def elapsed(seconds):
     h, rem = divmod(max(0, int(seconds)), 3600)
     m, s = divmod(rem, 60)
     return f'{h:02d}:{m:02d}:{s:02d}' if h else f'{m:02d}:{s:02d}'
+
+
+def monitor_camera_status(status_path, stop_event):
+    """Print camera pause/recovery events while the console is open."""
+    last_marker = None
+    while not stop_event.wait(0.25):
+        try:
+            state = json.loads(status_path.read_text())
+            marker = state.get('updated_at_epoch')
+            status = state.get('status')
+            message = state.get('message')
+        except (OSError, ValueError, TypeError):
+            continue
+        if marker == last_marker:
+            continue
+        last_marker = marker
+        if status in ('reconnecting', 'recovered', 'failed') and isinstance(message, str):
+            print(f'\n[카메라] {message}', flush=True)
+        elif status in ('masking', 'mask_cleared') and isinstance(message, str):
+            print(f'\n[마스킹] {message}', flush=True)
 
 
 def execute_orders(orders, directory, state_path):
@@ -63,25 +84,40 @@ def execute_orders(orders, directory, state_path):
 def main():
     directory = Path(__file__).resolve().parent
     state_path = Path(os.environ.get('OMX_INVENTORY_STATE_PATH', '~/.local/state/lerobot/omx_inventory.json')).expanduser()
+    camera_status_path = Path(
+        os.environ.get('OMX_CAMERA_STATUS_PATH', '~/.local/state/lerobot/omx_camera_status.json')
+    ).expanduser()
+    monitor_stop = threading.Event()
+    monitor = threading.Thread(
+        target=monitor_camera_status,
+        args=(camera_status_path, monitor_stop),
+        name='omx-camera-status-monitor',
+        daemon=True,
+    )
+    monitor.start()
     print('주문 콘솔입니다. 예: A 2 또는 A 2 B 3 / 종료: q')
-    while True:
-        try:
-            line = input('물건과 수량 입력> ').strip()
-            if line.lower() in ('q', 'quit'):
+    try:
+        while True:
+            try:
+                line = input('물건과 수량 입력> ').strip()
+                if line.lower() in ('q', 'quit'):
+                    return
+                orders = parse_orders(line)
+            except (EOFError, KeyboardInterrupt):
+                print('\n콘솔을 종료합니다.')
                 return
-            orders = parse_orders(line)
-        except (EOFError, KeyboardInterrupt):
-            print('\n콘솔을 종료합니다.')
-            return
-        except ValueError as exc:
-            print(exc)
-            continue
-        try:
-            execute_orders(orders, directory, state_path)
-        except KeyboardInterrupt:
-            print('\n감시 및 남은 주문 전달을 중단했습니다. 이미 등록된 주문은 취소되지 않았습니다.')
-        except (OSError, ValueError, KeyError, RuntimeError) as exc:
-            print(f'주문 중단: {exc}')
+            except ValueError as exc:
+                print(exc)
+                continue
+            try:
+                execute_orders(orders, directory, state_path)
+            except KeyboardInterrupt:
+                print('\n감시 및 남은 주문 전달을 중단했습니다. 이미 등록된 주문은 취소되지 않았습니다.')
+            except (OSError, ValueError, KeyError, RuntimeError) as exc:
+                print(f'주문 중단: {exc}')
+    finally:
+        monitor_stop.set()
+        monitor.join(timeout=1.0)
 
 
 if __name__ == '__main__':
