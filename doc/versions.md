@@ -7,8 +7,8 @@
 | 원본 커밋 | `89236ea0f4f81a81ca566081e20dd1ff5f823cbe` | PC git rev-parse HEAD |
 | Python 요구사항 | >=3.12 | 해당 커밋 pyproject.toml |
 | 라즈베리 OS | Ubuntu 24.04.4 LTS / aarch64 | 2026-09-29 사용자 SSH 출력; 현재 재확인 필요 |
-| 라즈베리 venv | `/home/omx4/venv/.venv` | 사용자 실행 기록 |
-| 라즈베리 소스 | `/home/omx4/il_ws/src/lerobot` | 사용자 실행 기록 |
+| 라즈베리 venv | `/home/omx01/venv/.venv`, `/home/omx02/venv/.venv` | 실제 운영 경로 |
+| 라즈베리 소스 | `/home/omx01/il_ws/src/lerobot`, `/home/omx02/il_ws/src/lerobot` | 실제 운영 경로 |
 | 라즈베리 현재 Git 및 패키지 | 미확인 | diagnostics로 수집 필요 |
 
 과거 라즈베리에서 `30074f7f` 커밋이 보고됐지만 이후 PC 코드를 복사했으므로
@@ -27,8 +27,9 @@
 - `src/lerobot/rollout/order_models.py`
 
 OpenCV processing_fps, ACT/정규화 호환 수정, 수집 스크립트 수정,
-초기 자세 복귀 카운트, 주문별 ACT 모델 전환이 포함됩니다.
-`runtime`에는 단일/복합 주문 콘솔과 A/B 체크포인트 경로 설정이 들어 있습니다.
+초기 자세 복귀 카운트, 주문별 ACT 모델 전환, 카메라 재연결, 바구니 마스킹,
+바구니 픽셀 변화 기반 성공 판정이 포함됩니다.
+`runtime`에는 단일/복합 주문 콘솔과 A/B 및 C/D 체크포인트 경로 설정이 들어 있습니다.
 
 라즈베리의 정확한 torch, torchvision, pyrealsense2 버전은 추정해서 고정하지 않았습니다.
 PC CUDA 환경의 pip freeze를 ARM CPU 라즈베리의 설치 목록으로 사용하지 마세요.
