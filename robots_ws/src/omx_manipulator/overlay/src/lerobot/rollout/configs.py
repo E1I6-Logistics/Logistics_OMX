@@ -115,6 +115,28 @@ class BaseStrategyConfig(RolloutStrategyConfig):
     inventory_poll_interval_s: float = 1.0
     # Optional JSON mapping from order item to ACT checkpoint and task.
     order_models_file: str | None = None
+    # Keep an OMX rollout alive when an OpenCV camera briefly disappears from
+    # USB and later returns under the same stable /dev/v4l/by-id path.
+    camera_auto_reconnect: bool = False
+    camera_reconnect_attempts: int = 10
+    camera_reconnect_interval_s: float = 1.0
+    camera_status_path: str = "~/.local/state/lerobot/omx_camera_status.json"
+    # If a new order remains at the initial pose, briefly hide the basket
+    # contents for one policy query so ACT can leave the stalled state.
+    stuck_basket_mask_enabled: bool = False
+    stuck_basket_mask_timeout_s: float = 5.0
+    stuck_basket_mask_duration_s: float = 2.0
+    stuck_basket_mask_retry_cooldown_s: float = 10.0
+    stuck_basket_mask_max_retries: int = 2
+    stuck_basket_mask_camera: str = "front"
+    stuck_basket_mask_polygon: str = ""
+    stuck_basket_mask_value: int = 255
+    # Validate a completed cycle from the unmasked basket ROI before counting it.
+    basket_success_enabled: bool = False
+    basket_success_pixel_threshold: int = 25
+    basket_success_changed_ratio: float = 0.02
+    basket_success_min_blob_area: float = 120.0
+    basket_success_settle_s: float = 0.5
 
 
 @RolloutStrategyConfig.register_subclass("sentry")
