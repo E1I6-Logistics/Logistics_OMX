@@ -11,5 +11,11 @@ cp -a "$BUNDLE/robots_ws/src/omx_manipulator/overlay/." "$DEST/"
 cp -a "$BUNDLE/robots_ws/src/omx_manipulator/runtime/." "$DEST/"
 python -m pip install -e "$DEST[dynamixel,intelrealsense]"
 python -m pip check
-chmod +x "$DEST/run_ab_orders.sh" "$DEST/omx_new_order.sh" "$DEST/omx_order_console.sh"
+chmod +x \
+  "$DEST/run_ab_orders.sh" \
+  "$DEST/omx_new_order.sh" \
+  "$DEST/omx_order_console.sh" \
+  "$DEST/run_cd_orders.sh" \
+  "$DEST/omx_cd_new_order.sh" \
+  "$DEST/omx_cd_order_console.sh"
 echo "설치 완료: $DEST — 모델 폴더 및 캘리브레이션은 별도로 준비하세요."
