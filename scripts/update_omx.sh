@@ -46,7 +46,7 @@ for file in omx_mqtt_client.py run_e_rollout.sh run_omx_backend.sh omx_runtime_e
   cp -a "$SRC/runtime/$file" "$TARGET/$file"
 done
 bash -n "$TARGET/run_omx_backend.sh" "$TARGET/run_e_rollout.sh"
-"$ROOT/.venv/bin/python" -m py_compile "$TARGET/omx_mqtt_client.py" "$TARGET/src/lerobot/rollout/configs.py" "$TARGET/src/lerobot/rollout/strategies/base.py"
+"${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}/bin/python" -m py_compile "$TARGET/omx_mqtt_client.py" "$TARGET/src/lerobot/rollout/configs.py" "$TARGET/src/lerobot/rollout/strategies/base.py"
 echo "[OK] 업데이트 적용: $OMX_ROBOT_ID"
 echo "[BACKUP] 기존 코드: $BACKUP"
 echo '모델, 캘리브레이션, 로컬 장치 설정은 변경하지 않았습니다.'

@@ -20,7 +20,7 @@ if [[ "$OMX_ROBOT_ID" == omx1 || "$OMX_ROBOT_ID" == omx2 ]]; then
     read -r -p '실제 물품을 다시 채웠습니까? (yes): ' answer
     [[ "$answer" == yes ]] || return 0
     cp -a "$file" "$file.bak.$(date +%Y%m%d_%H%M%S)"
-    OMX_RESET_FILE="$file" python3 - <<'__OMX_RESET_PY__'
+    OMX_RESET_FILE="$file" "${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}/bin/python" - <<'__OMX_RESET_PY__'
 import json
 import os
 import time

@@ -70,7 +70,11 @@ esac
 # Python venv
 # =============================================================
 
-source "$HOME/Logistics_OMX/.venv/bin/activate"
+OMX_PYTHON_ENV_PATH="${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}"
+[[ -f "$OMX_PYTHON_ENV_PATH/bin/activate" ]] || { echo '[ERROR] 기존 venv 없음' >&2; exit 1; }
+source "$OMX_PYTHON_ENV_PATH/bin/activate"
+export PYTHONPATH="$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+python3 -c 'import lerobot; print("[SOURCE]", lerobot.__file__)' 
 
 
 # All four devices share CPU/runtime policy. Model, camera, control and MQTT stay device-specific.

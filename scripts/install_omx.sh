@@ -2,21 +2,46 @@
 set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ "$ROOT" == "$HOME/Logistics_OMX" ]] || { echo "[ERROR] 저장소는 ~/Logistics_OMX에 배치하세요: $ROOT" >&2; exit 2; }
-ID=""; BROKER="192.168.0.16"; SKIP_DEPS=0; SYNC_REQS=0
+ID=""; BROKER="192.168.0.16"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --robot-id) [[ $# -ge 2 ]] || exit 2; ID="$2"; shift 2 ;;
     --broker-ip) [[ $# -ge 2 ]] || exit 2; BROKER="$2"; shift 2 ;;
-    --skip-deps) SKIP_DEPS=1; shift ;;
-    --sync-requirements) SYNC_REQS=1; shift ;;
+    --skip-deps) shift ;; # Legacy alias: existing venv is always reused.
+    --sync-requirements) echo "[ERROR] Existing environments are preserved; use no --sync-requirements." >&2; exit 2 ;;
     *) echo "[ERROR] 알 수 없는 인자: $1" >&2; exit 2 ;;
   esac
 done
-if (( SKIP_DEPS && SYNC_REQS )); then
-  echo '[ERROR] --skip-deps와 --sync-requirements를 동시에 사용할 수 없습니다.' >&2
-  exit 2
-fi
 case "$ID" in omx1|omx2|omx3|omx4) ;; *) echo '[ERROR] --robot-id omx1~4 필수' >&2; exit 2;; esac
+# The existing production venv is the source of truth, never recreate or upgrade it.
+PYENV="${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}"
+if [[ ! -x "$PYENV/bin/python" || ! -f "$PYENV/bin/activate" ]]; then
+  echo "[ERROR] 기존 Python venv가 없습니다: $PYENV" >&2
+  echo '[INFO] 신규 환경을 자동 설치하지 않습니다. 기존 venv 경로를 지정하세요.' >&2
+  exit 1
+fi
+"$PYENV/bin/python" - "$ID" <<'PYENV_CHECK'
+import importlib.metadata as im
+import sys
+required = ('lerobot', 'torch', 'dynamixel-sdk', 'paho-mqtt')
+if sys.argv[1] in ('omx1','omx2','omx4'):
+    required += ('pyrealsense2',)
+missing = []
+for package in required:
+    try:
+        print(f'[VENV] {package}=={im.version(package)}')
+    except im.PackageNotFoundError:
+        missing.append(package)
+if missing:
+    raise SystemExit('[ERROR] 기존 venv에 필요한 패키지 없음: ' + ', '.join(missing))
+version = im.version('lerobot')
+if version != '0.6.2':
+    raise SystemExit('[ERROR] 기존 lerobot 버전 불일치: ' + version + ' (기준 0.6.2)')
+PYENV_CHECK
+# Snapshot installed versions before modifying any source tree. No packages are changed.
+mkdir -p "$ROOT/state"
+"$PYENV/bin/python" -m pip freeze > "$ROOT/state/pip_existing_before_setup.txt"
+echo "[VENV] 기존 Python 환경 유지: $PYENV"
 SRC="$ROOT/robots_ws/src/omx_manipulator"
 TARGET="$ROOT/lerobot"
 SETTINGS="$HOME/.config/logistics_omx/device.env"
@@ -54,33 +79,18 @@ for f in omx_order_models.json omx_cd_order_models.json omx_new_order.sh; do
 done
 chmod +x "$ROOT/run_omx_mqtt.sh" "$SRC/runtime/run_omx_pickup.sh" "$SRC/runtime/run_omx_unload.sh" \
    "$TARGET/run_omx_backend.sh" "$TARGET/run_e_rollout.sh"
-if [[ ! -f "$ROOT/.venv/bin/activate" ]]; then python3 -m venv "$ROOT/.venv"; fi
-if (( ! SKIP_DEPS )); then
-  if [[ "$ID" == omx1 || "$ID" == omx2 || "$ID" == omx4 ]]; then
-    EXTRA='[dynamixel,intelrealsense,dataset]'
-  else
-    EXTRA='[dynamixel,dataset]'
-  fi
-  "$ROOT/.venv/bin/python" -m pip install -e "$TARGET$EXTRA" paho-mqtt
-  # Opt-in: version sync may reinstall large torch/torchvision packages.
-  if (( SYNC_REQS )); then
-    if [[ "$ID" == omx1 || "$ID" == omx2 || "$ID" == omx4 ]]; then
-      REQ_FILE="$ROOT/requirements-realsense.txt"
-    else
-      REQ_FILE="$ROOT/requirements.txt"
-    fi
-    echo "[REQUIREMENTS] 명시적으로 요청한 버전 동기화: $REQ_FILE"
-    "$ROOT/.venv/bin/python" -m pip install -r "$REQ_FILE"
-  fi
-  "$ROOT/.venv/bin/python" -m pip check
-fi
+# Deliberately no pip install. Preserve torch, torchvision, pyrealsense2, etc.
+# Use this venv's executable and select the new source via PYTHONPATH at runtime.
 mkdir -p "$(dirname "$SETTINGS")" "$ROOT/state"
 if [[ ! -f "$SETTINGS" ]]; then
-  printf 'OMX_ROBOT_ID=%q\nOMX_BROKER_IP=%q\n' "$ID" "$BROKER" > "$SETTINGS"
+  printf 'OMX_ROBOT_ID=%q\nOMX_BROKER_IP=%q\nOMX_PYTHON_ENV_PATH=%q\n' "$ID" "$BROKER" "$PYENV" > "$SETTINGS"
 else
   if ! grep -Eq "^OMX_ROBOT_ID=$ID$" "$SETTINGS"; then
     echo "[WARN] 기존 장치 설정이 있습니다. $SETTINGS 내용을 직접 확인하세요." >&2
   fi
+fi
+if ! grep -q '^OMX_PYTHON_ENV_PATH=' "$SETTINGS"; then
+  printf 'OMX_PYTHON_ENV_PATH=%q\n' "$PYENV" >> "$SETTINGS"
 fi
 PROFILE="$HOME/.config/logistics_omx/profile.env"
 if [[ ! -f "$PROFILE" ]]; then
@@ -98,6 +108,6 @@ else
   echo '[SHELL] ~/.bashrc에 이미 등록됨, 중복 등록하지 않음'
 fi
 bash -n "$ROOT/run_omx_mqtt.sh" "$SRC/runtime/run_omx_pickup.sh" "$SRC/runtime/run_omx_unload.sh" "$TARGET/run_omx_backend.sh"
-"$ROOT/.venv/bin/python" -m py_compile "$TARGET/omx_mqtt_client.py" "$TARGET/src/lerobot/rollout/configs.py" "$TARGET/src/lerobot/rollout/strategies/base.py"
-echo "[OK] $ID 설치 완료. source ~/.bashrc 실행 후 omx_start"
+"$PYENV/bin/python" -m py_compile "$TARGET/omx_mqtt_client.py" "$TARGET/src/lerobot/rollout/configs.py" "$TARGET/src/lerobot/rollout/strategies/base.py"
+echo "[OK] $ID 소스 설치 완료. 기존 가상환경 버전 유지. source ~/.bashrc 후 omx_start"
 echo '[INFO] 모델 데이터와 실제 모터/카메라 경로는 별도 검증이 필요합니다.'
