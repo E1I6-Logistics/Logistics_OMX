@@ -1,0 +1,43 @@
+{
+  "origin": "2026-10-23 11:23 local unified snapshot + GitHub main inspected 2026-10-23",
+  "touched_paths": [
+    ".gitignore",
+    "README_OMX_20261023.md",
+    "lerobot_unified/src/lerobot/rollout/workstation_ipc.py",
+    "lerobot_unified/src/lerobot/rollout/configs.py",
+    "lerobot_unified/src/lerobot/rollout/strategies/base.py",
+    "lerobot_unified/omx_mqtt_client.py",
+    "lerobot_unified/run_omx_backend.sh",
+    "lerobot_unified/run_e_rollout.sh",
+    "lerobot_unified/run_f_rollout.sh",
+    "lerobot_unified/omx_runtime_env.sh",
+    "scripts/omx_monitor.sh",
+    "scripts/complete_unified_source.sh",
+    "scripts/check_omx_release.sh",
+    "robots_ws/src/omx_manipulator/runtime/profiles/omx3.env.example",
+    "robots_ws/src/omx_manipulator/runtime/profiles/omx4.env.example",
+    "tests/test_workstation_protocol.py",
+    "tests/test_unload_client_protocol.py"
+  ],
+  "sha256": {
+    ".gitignore": "85103ada276c48980d5ab3fa226a7893848b12b8feb8c984223833e7f43c93cf",
+    "README_OMX_20261023.md": "13f9c01bd6391e08012d0ed98eab0dc056a19ad3522bcbd65269cb9080a8cdbc",
+    "lerobot_unified/src/lerobot/rollout/workstation_ipc.py": "4c5c4fc0fe2b986f3f77e4718793e20aae6bacada31e873dbaa9e423281f3f8e",
+    "lerobot_unified/src/lerobot/rollout/configs.py": "22143912b04c7dbfd778c628276a0fea11e448c8ab74bae261cf9e3ac95b6297",
+    "lerobot_unified/src/lerobot/rollout/strategies/base.py": "3ddbca72687bfad35433595eb1702151ae59dae98919af4b390cdd5f06bd4d9e",
+    "lerobot_unified/omx_mqtt_client.py": "77f667e88cbc18b40907693179b807a423a79a868cc7cd94ad0239829e996783",
+    "lerobot_unified/run_omx_backend.sh": "f70ed117fcf73708160dbd0adfeeddc1313eaf2ee433bbc6e04ebbb4cc3b87a3",
+    "lerobot_unified/run_e_rollout.sh": "8566a9fbf689852b631f7a9dc67c98c4ce6ba258c9204fc24adfd162ad611c5c",
+    "lerobot_unified/run_f_rollout.sh": "3f90fdbc9d987dc71cb558f03f1bff2cba6c982c3c4c65c21a382f14798643d8",
+    "lerobot_unified/omx_runtime_env.sh": "80ae5925f4023ff1edc7ff80c22d2a39d7aa17a8f069d4b0175f2fcbc572b63b",
+    "scripts/omx_monitor.sh": "92675cbb44f958e12b09610d62dacc7fab292e7771b1866fb9a662cfc5c71098",
+    "scripts/complete_unified_source.sh": "36a5ebc99e985e84a6ad5296becc304e6416d4d7a821114a6b00eae6b35c19c8",
+    "scripts/check_omx_release.sh": "567601613893c3cc630a556209cea414be4f8f593070056e85c39033cf00a995",
+    "robots_ws/src/omx_manipulator/runtime/profiles/omx3.env.example": "952dcd8a04a3101569e5d2e2988a9cefb2e81179adc803dc32e0b13fb8394d2f",
+    "robots_ws/src/omx_manipulator/runtime/profiles/omx4.env.example": "83ca1cc38bba9a7b8663b6e3c29b14fda12886bc9f657714e739cc0376d9e67b",
+    "tests/test_workstation_protocol.py": "d3726662aa2fef8e71423f85cfc1cb7d1abcf1a42db461836dd58901bd0a37f4",
+    "tests/test_unload_client_protocol.py": "752d75f8254a254feb44d023df5fb6024930249b2b2568b68f567b9a938ba23d"
+  },
+  "hardware_tested": false,
+  "note": "overlay on current GitHub main recommended; original unified v1 source snapshot excludes LeRobot datasets"
+}

@@ -19,3 +19,5 @@ reports/
 /lerobot_unified/outputs
 /lerobot_unified/.git
 /lerobot_unified/**/*.safetensors
+/logs/
+*.pid

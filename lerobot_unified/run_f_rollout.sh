@@ -37,6 +37,9 @@ printf '[F] mode=%s policy=%s robot_id=%s\n' "$F_MODE" "$F_POLICY_PATH" "$F_ROBO
 exec lerobot-rollout \
   --strategy.type=base \
   --strategy.auto_restart_on_home=false \
+  --strategy.workstation_wait_enabled="${OMX_WORKSTATION_MODE:-false}" \
+  --strategy.workstation_control_file="${OMX_WORKSTATION_CONTROL_FILE:-}" \
+  --strategy.workstation_status_file="${OMX_WORKSTATION_STATUS_FILE:-}" \
   --strategy.idle_complete_enabled="${E_IDLE_COMPLETE_ENABLED:-false}" \
   --strategy.idle_complete_hold_s="${E_IDLE_COMPLETE_HOLD_S:-15}" \
   --strategy.home_tolerance=7 \

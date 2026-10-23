@@ -378,7 +378,70 @@ ROLLOUT_PID=$!
 echo "LeRobot PID: $ROLLOUT_PID"
 
 elif [[ "$ROBOT_ID" == "omx3" || "$ROBOT_ID" == "omx4" ]]; then
-  echo "[$ROBOT_ID] MQTT 대기. command 수신 시 고정된 작업 모델을 실행합니다."
+  ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+  mkdir -p "$ROOT_DIR/state"
+  export OMX_WORKSTATION_MODE=true
+  export OMX_WORKSTATION_SESSION="${ROBOT_ID}_$$_$(date +%s%N)"
+  export OMX_WORKSTATION_STATUS_FILE="$ROOT_DIR/state/${ROBOT_ID}_workstation_status.json"
+  export OMX_WORKSTATION_CONTROL_FILE="$ROOT_DIR/state/${ROBOT_ID}_workstation_command.json"
+  # Write a session-scoped BOOTING state: stale READY from a previous run cannot pass.
+  python3 - <<'PY_STATE'
+import os
+from lerobot.rollout.workstation_ipc import atomic_json, new_status
+atomic_json(os.environ['OMX_WORKSTATION_STATUS_FILE'],
+            new_status(os.environ['OMX_WORKSTATION_SESSION'], 'BOOTING'))
+PY_STATE
+  if [[ "$ROBOT_ID" == "omx3" ]]; then
+    POLICY="${OMX3_POLICY_PATH:-outputs/train/warehouse_item_e_132_merged_act_300k/checkpoints/250000/pretrained_model}"
+    [[ "$POLICY" == /* ]] || POLICY="$SCRIPT_DIR/$POLICY"
+    export E_POLICY_PATH="$POLICY"
+    export E_IDLE_COMPLETE_ENABLED=true
+    export E_DISPLAY_DATA=false
+    export E_ROBOT_ID="${E_ROBOT_ID:-omx_e_follower_arm}"
+    if [[ -z "${E_FOLLOWER_PORT:-${OMX3_FOLLOWER_PORT:-}}" ]]; then
+      shopt -s nullglob
+      PORTS=(/dev/serial/by-id/usb-ROBOTIS_OpenRB-150_*)
+      shopt -u nullglob
+      [[ ${#PORTS[@]} -eq 1 ]] || { echo '[ERROR] OMX3 OpenRB port ambiguous/missing' >&2; exit 1; }
+      export E_FOLLOWER_PORT="${PORTS[0]}"
+    else
+      export E_FOLLOWER_PORT="${E_FOLLOWER_PORT:-$OMX3_FOLLOWER_PORT}"
+    fi
+    ROLLOUT_SCRIPT="$SCRIPT_DIR/run_e_rollout.sh"
+  else
+    ROLLOUT_SCRIPT="$SCRIPT_DIR/run_f_rollout.sh"
+    export E_IDLE_COMPLETE_ENABLED=true
+  fi
+  echo "[$ROBOT_ID] Preloading one ACT policy (persistent mode)..."
+  "${OMX_RUN_PREFIX[@]}" bash "$ROLLOUT_SCRIPT" &
+  ROLLOUT_PID=$!
+  # Publish MQTT IDLE only after policy, cameras and robot are really READY.
+  TIMEOUT="${OMX_STARTUP_TIMEOUT_S:-120}"
+  READY=0
+  for ((N=0; N<TIMEOUT*4; N++)); do
+    if ! kill -0 "$ROLLOUT_PID" 2>/dev/null; then
+      echo "[ERROR] $ROBOT_ID policy process terminated during preload" >&2
+      exit 1
+    fi
+    if python3 - <<'PY_READY'
+import os, sys
+from lerobot.rollout.workstation_ipc import read_json, valid_ready
+state = read_json(os.environ['OMX_WORKSTATION_STATUS_FILE'])
+if state.get('session') != os.environ['OMX_WORKSTATION_SESSION']:
+    sys.exit(1)
+if state.get('phase') == 'ERROR':
+    print('[ERROR] Workstation init:', state.get('message'), file=sys.stderr)
+    sys.exit(2)
+sys.exit(0 if valid_ready(state, os.environ['OMX_WORKSTATION_SESSION']) else 1)
+PY_READY
+    then
+      READY=1
+      break
+    fi
+    sleep 0.25
+  done
+  [[ "$READY" -eq 1 ]] || { echo "[ERROR] $ROBOT_ID not READY after ${TIMEOUT}s" >&2; exit 1; }
+  echo "[$ROBOT_ID] READY: policy/cameras/robot connected; waiting for MQTT command"
 else
   echo "$ROBOT_ID 하차 동작은 아직 구현되지 않아 LeRobot을 시작하지 않습니다."
 fi

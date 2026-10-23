@@ -27,6 +27,7 @@ import cv2
 import numpy as np
 
 from lerobot.utils.cycle_timer import CycleTimer
+from lerobot.rollout.workstation_ipc import atomic_json, new_status, read_json
 
 from ..context import RolloutContext
 from ..order_models import OrderModelRouter
@@ -85,6 +86,13 @@ class BaseStrategy(RolloutStrategy):
                 raise ValueError("strategy.basket_success_min_blob_area must be > 0")
             if self.config.basket_success_settle_s < 0:
                 raise ValueError("strategy.basket_success_settle_s must be >= 0")
+        if self.config.workstation_wait_enabled:
+            if self.config.auto_restart_on_home or not self.config.idle_complete_enabled:
+                raise ValueError("Persistent workstation mode requires idle completion and disables auto restart")
+            if not self.config.workstation_control_file or not self.config.workstation_status_file:
+                raise ValueError("Persistent workstation command/status paths are mandatory")
+            if self.config.workstation_poll_s <= 0:
+                raise ValueError("workstation_poll_s must be positive")
         if self.config.idle_complete_enabled:
             if self.config.auto_restart_on_home:
                 raise ValueError("idle_complete_enabled and auto_restart_on_home cannot both be enabled")
@@ -442,8 +450,148 @@ class BaseStrategy(RolloutStrategy):
                 logger.debug("Ignoring non-scalar home-position value for %s", key)
         return max(errors) if errors else None
 
+    def _run_persistent_workstation(self, ctx: RolloutContext) -> None:
+        """One E/F model and hardware connection across multiple MQTT jobs.
+
+        The command protocol is intentionally not an arbitrary action API.  Only
+        START(job_id) while READY and CLEAR(job_id) while DONE are accepted.
+        All policy operations stay on the one control thread; idle never sends an action.
+        """
+        engine = self._engine
+        robot = ctx.hardware.robot_wrapper
+        interpolator = self._interpolator
+        cfg = ctx.runtime.cfg
+        session = os.environ.get("OMX_WORKSTATION_SESSION", "")
+        if not session:
+            raise RuntimeError("OMX_WORKSTATION_SESSION missing; refuse motion")
+        status_path = Path(self.config.workstation_status_file).expanduser()
+        command_path = Path(self.config.workstation_control_file).expanduser()
+        home_position = ctx.hardware.initial_position or {}
+        if not home_position:
+            raise RuntimeError("Workstation cannot initialize without a home joint reference")
+        timer = CycleTimer(cfg.fps, interpolator.multiplier,
+                           records_data=False, report=ctx.runtime.cadence_report)
+        active_job = None
+        phase = "STARTING"
+
+        def write_status(phase_name: str, job_id: str | None = None, **kwargs) -> None:
+            atomic_json(status_path, new_status(session, phase_name, job_id, **kwargs))
+
+        try:
+            # Verify first camera + motor observation before advertising READY.
+            self._get_observation_with_camera_recovery(robot, engine)
+            self.reset_control_state()
+            write_status("READY")
+            phase = "READY"
+            logger.info("[WORKSTATION] READY: model and cameras stay loaded; no actions sent")
+            idle_previous = None
+            idle_home_since = None
+            idle_moved_at = None
+            departed = False
+            while not ctx.runtime.shutdown_event.is_set():
+                cmd = read_json(command_path)
+                same_session = cmd.get("session") == session
+                job_id = cmd.get("job_id")
+                operation = cmd.get("command")
+                if phase == "READY":
+                    if same_session and operation == "START" and isinstance(job_id, str) and job_id:
+                        # Reset the original ACT action queue on every order.
+                        self.reset_control_state()
+                        timer.restart()
+                        engine.resume()
+                        active_job = job_id
+                        idle_previous = None
+                        idle_home_since = None
+                        idle_moved_at = None
+                        departed = False
+                        phase = "RUNNING"
+                        write_status("RUNNING", active_job)
+                        logger.info("[WORKSTATION] START job=%s", active_job)
+                    else:
+                        time.sleep(self.config.workstation_poll_s)
+                        continue
+                elif phase == "DONE":
+                    if same_session and operation == "CLEAR" and job_id == active_job:
+                        self.reset_control_state()
+                        phase = "READY"
+                        active_job = None
+                        write_status("READY")
+                        logger.info("[WORKSTATION] READY for next job")
+                    else:
+                        time.sleep(self.config.workstation_poll_s)
+                    continue
+
+                # RUNNING: no new job is accepted until DONE/CLEAR.
+                timer.tick(new_cycle=interpolator.needs_new_action())
+                with timer.section("observe"):
+                    obs, recovered = self._get_observation_with_camera_recovery(robot, engine)
+                if recovered:
+                    timer.restart()
+                    idle_previous = None
+                    idle_home_since = None
+                    idle_moved_at = None
+                    departed = False
+                now = time.perf_counter()
+                joints = {}
+                for key in home_position:
+                    try:
+                        joints[key] = float(obs[key])
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                if len(joints) == len(home_position):
+                    error = self._max_home_error(obs, home_position)
+                    if error is not None and error >= self.config.home_leave_tolerance:
+                        departed = True
+                    if idle_previous is None:
+                        idle_moved_at = now
+                    else:
+                        delta = max(abs(joints[key] - idle_previous[key]) for key in joints)
+                        if delta >= self.config.idle_complete_joint_delta:
+                            idle_moved_at = now
+                    idle_previous = joints
+                    if departed and error is not None and error <= self.config.home_tolerance:
+                        if idle_home_since is None:
+                            idle_home_since = now
+                        if (idle_moved_at is not None and
+                                now - max(idle_home_since, idle_moved_at) >= self.config.idle_complete_hold_s):
+                            # Never send a policy action after announcing completion.
+                            self.reset_control_state()
+                            timer.log_episode_summary(label=f"workstation {active_job}")
+                            timer.log_run_summary()  # Flush observe/infer/send timing at each job boundary.
+                            phase = "DONE"
+                            write_status("DONE", active_job, reason="home_stillness_after_departure",
+                                         hold_s=self.config.idle_complete_hold_s,
+                                         physical_unloading_verified=False)
+                            logger.warning("[WORKSTATION] DONE job=%s: Home stillness only; physical transfer unverified",
+                                           active_job)
+                            continue
+                    else:
+                        idle_home_since = None
+                else:
+                    idle_home_since = None
+                with timer.section("process_obs"):
+                    processed = self._process_observation_and_notify(ctx.processors, obs)
+                if self._handle_warmup(cfg.use_torch_compile, timer):
+                    continue
+                action = send_next_action(processed, obs, ctx, interpolator, timer)
+                with timer.section("telemetry"):
+                    self._log_telemetry(processed, action, ctx.runtime)
+                with timer.section("query"):
+                    engine.pump_query(processed)
+                timer.wait()
+        except Exception as exc:
+            logger.exception("[WORKSTATION] Fatal error; no further jobs accepted")
+            write_status("ERROR", active_job, message=str(exc))
+            raise
+        finally:
+            if phase != "DONE":
+                logger.info("[WORKSTATION] Rollout terminating; check robot safety")
+            timer.log_run_summary()
+
     def run(self, ctx: RolloutContext) -> None:
         """Run the autonomous control loop until shutdown or duration expires."""
+        if self.config.workstation_wait_enabled:
+            return self._run_persistent_workstation(ctx)
         engine = self._engine
         cfg = ctx.runtime.cfg
         robot = ctx.hardware.robot_wrapper

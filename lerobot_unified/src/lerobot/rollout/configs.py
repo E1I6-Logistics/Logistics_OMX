@@ -104,6 +104,11 @@ class BaseStrategyConfig(RolloutStrategyConfig):
     idle_complete_enabled: bool = False
     idle_complete_hold_s: float = 15.0
     idle_complete_joint_delta: float = 0.6
+    # OMX3/4 persistent ready/working/done control (opt-in, never for pickups).
+    workstation_wait_enabled: bool = False
+    workstation_control_file: str = ""
+    workstation_status_file: str = ""
+    workstation_poll_s: float = 0.10
     # Persistent inventory count.  The per-robot/session counter starts from
     # zero on each rollout, while total_completed survives process restarts.
     inventory_capacity: int = 8

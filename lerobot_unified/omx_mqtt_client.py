@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
+from lerobot.rollout.workstation_ipc import atomic_json, read_json, valid_ready
 
 
 # =============================================================
@@ -71,6 +72,31 @@ current_job_id = None
 current_state = "IDLE"
 current_orders = None
 omx3_process = None
+workstation_session = os.environ.get("OMX_WORKSTATION_SESSION", "")
+workstation_status = Path(os.environ.get("OMX_WORKSTATION_STATUS_FILE", "/nonexistent/workstation_status.json"))
+workstation_command = Path(os.environ.get("OMX_WORKSTATION_CONTROL_FILE", "/nonexistent/workstation_command.json"))
+
+
+def workstation_state():
+    return read_json(workstation_status)
+
+
+def _workstation_process_alive(status):
+    pid = status.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def workstation_ready():
+    if not workstation_session:
+        return False
+    status = workstation_state()
+    return valid_ready(status, workstation_session) and _workstation_process_alive(status)
 
 
 # =============================================================
@@ -259,71 +285,48 @@ def execute_orders(job_id, orders):
     print("[ORDER] 전체 주문 완료 | " f"총 소요시간: " f"{elapsed(time.monotonic() - started)}", flush=True)
 
 
-# OMX3: MQTT 작업 요청 1건당 E 모델 프로그램을 한 번 실행한다.
+# OMX3/4: policy, motors and cameras stay connected. No subprocess per command.
 def execute_unload(job_id, items):
-    if robot_id not in ("omx3", "omx4"):
-        raise RuntimeError(f"{robot_id} 하차 동작은 구현되지 않았습니다.")
-
-    policy_setting = (os.environ.get("OMX4_POLICY_PATH", "outputs/train/warehouse_item_f_129_merged_wrist_only_act_300k/checkpoints/250000/pretrained_model") if robot_id == "omx4" else omx3_policy)
-    port_setting = (os.environ.get("OMX4_FOLLOWER_PORT") if robot_id == "omx4" else omx3_port)
-    if not policy_setting:
-        raise RuntimeError(f"{robot_id} 모델 경로가 설정되지 않았습니다")
-    if not port_setting:
-        candidates = [p for p in Path("/dev/serial/by-id").glob("usb-ROBOTIS_OpenRB-150_*") if p.exists()]
-        if len(candidates) != 1:
-            raise RuntimeError(f"{robot_id} OpenRB-150 자동 검색 실패: {len(candidates)}개")
-        port_setting = str(candidates[0])
-    policy_path = Path(policy_setting).expanduser()
-    if not policy_path.is_absolute():
-        policy_path = directory / policy_path
-    if not (policy_path / "config.json").is_file():
-        raise FileNotFoundError(f"하차 정책 파일 없음: {policy_path / 'config.json'}")
-    unload_script = omx4_script if robot_id == "omx4" else omx3_script
-    if not unload_script.is_file():
-        raise FileNotFoundError(f"하차 실행 파일 없음: {unload_script}")
-    if not Path(port_setting).exists():
-        raise FileNotFoundError(f"{robot_id} 컨트롤러 연결 확인 필요: {port_setting}")
-
-    env = os.environ.copy()
-    with tempfile.TemporaryDirectory(prefix=f"{robot_id}_job_") as tmpdir:
-        marker = Path(tmpdir) / "complete.json"
-        return _run_unload_rollout(job_id, policy_path, port_setting, env, marker)
-
-
-def _run_unload_rollout(job_id, policy_path, port_setting, env, marker):
-    env.update({
-        "E_IDLE_COMPLETE_ENABLED": "true",
-        "E_IDLE_COMPLETION_FILE": str(marker),
-        "E_DISPLAY_DATA": "false",
-        "E_FOLLOWER_PORT": port_setting,
-        "E_POLICY_PATH": str(policy_path),
-    })
-    # OMX4 F uses wrist-only now; future top+wrist enabled by OMX4_CAMERA_MODE.
-    # Its calibration/robot.id must remain omx_f_test_follower_arm, not OMX MQTT id.
-    unload_script = omx4_script if robot_id == "omx4" else omx3_script
-    if robot_id == "omx4":
-        env["F_POLICY_PATH"] = str(policy_path)
-        env["F_FOLLOWER_PORT"] = port_setting
-    print(f"[{robot_id}] Job {job_id}: unloading policy {policy_path}", flush=True)
-    global omx3_process
-    proc = subprocess.Popen(
-        ["bash", str(unload_script)], cwd=directory, env=env,
-        start_new_session=True,
-    )
-    omx3_process = proc
-    try:
-        returncode = proc.wait()
-    finally:
-        omx3_process = None
-    if returncode != 0:
-        raise RuntimeError(f"하차 프로그램 비정상 종료 (exit={returncode})")
-    if not marker.is_file():
-        raise RuntimeError("추론 프로세스 종료, 그러나 Home 정지 완료 이벤트 없음")
-    completion = json.loads(marker.read_text())
-    if completion.get("reason") != "home_stillness_after_departure":
-        raise RuntimeError("완료 이벤트 형식 오류")
-    return completion
-
+    if robot_id not in WORKSTATION_IDS:
+        raise RuntimeError("Not a workstation")
+    if not workstation_ready():
+        raise RuntimeError("Workstation not READY; refusing job")
+    atomic_json(workstation_command, {"session": workstation_session,
+                                     "command": "START", "job_id": str(job_id), "requested_at": time.time()})
+    timeout = float(os.environ.get("OMX_UNLOAD_TIMEOUT_S", "900"))
+    deadline = time.monotonic() + timeout
+    saw_running = False
+    while time.monotonic() < deadline:
+        status = workstation_state()
+        if status.get("session") != workstation_session:
+            raise RuntimeError("Workstation session changed during job")
+        if not _workstation_process_alive(status):
+            raise RuntimeError("Workstation rollout process died during job")
+        phase = status.get("phase")
+        if phase == "ERROR":
+            raise RuntimeError(f"Workstation fault: {status.get('message', '')}")
+        if status.get("job_id") == job_id:
+            if phase == "RUNNING":
+                saw_running = True
+            if phase == "DONE":
+                if status.get("reason") != "home_stillness_after_departure":
+                    raise RuntimeError("Unexpected workstation completion reason")
+                # Release completion event; next order must wait until READY again.
+                atomic_json(workstation_command, {"session": workstation_session,
+                                                 "command": "CLEAR", "job_id": str(job_id),
+                                                 "requested_at": time.time()})
+                break
+        time.sleep(0.1)
+    else:
+        raise TimeoutError(f"Workstation job timeout after {timeout:.0f}s; robot may still be moving")
+    for _ in range(100):
+        if workstation_ready():
+            return status
+        s = workstation_state()
+        if s.get('phase') == 'ERROR':
+            raise RuntimeError(f"Workstation fault on reset: {s.get('message')}")
+        time.sleep(0.1)
+    raise RuntimeError("Workstation completed but did not return to READY")
 
 
 # =============================================================
@@ -364,7 +367,7 @@ def run_job(job_id, orders):
         # 작업이 끝난 뒤 상태를 먼저 정리해야 Result 직후의 다음 Command를 받을 수 있다.
         current_job_id = None
         current_orders = None
-        current_state = "IDLE"
+        current_state = ("IDLE" if robot_id not in WORKSTATION_IDS or workstation_ready() else "ERROR")
 
         try:
             send_status()
@@ -408,6 +411,11 @@ def on_command(data):
     print(f"Job   : {job_id}")
     print(f"Items : {items}")
     print("==============================")
+
+    if robot_id in WORKSTATION_IDS and current_job_id != job_id and not workstation_ready():
+        print(f"[MQTT] {robot_id} not READY; rejecting command {job_id}", flush=True)
+        send_ack(job_id, False)
+        return
 
     # =========================================================
     # 현재 실행 중인 job과 동일
@@ -489,8 +497,10 @@ def on_command(data):
 
 # 연결 이벤트를 처리한다.
 def on_connect(client, userdata, flags, rc):
-
+    global current_state
     print(f"[MQTT] Connected: {rc}", flush=True)
+    if robot_id in WORKSTATION_IDS and current_job_id is None:
+        current_state = "IDLE" if workstation_ready() else "ERROR"
 
     topic = f"{robot_id}/command"
 
@@ -555,7 +565,8 @@ def stop_omx3_process(signum, frame):
 
 # 명령행 프로그램의 실행 절차를 시작한다.
 def main():
-
+    if robot_id in WORKSTATION_IDS and not workstation_ready():
+        raise SystemExit("[ERROR] Persistent workstation not READY. Use omx_start, not direct MQTT client")
     signal.signal(signal.SIGTERM, stop_omx3_process)
     signal.signal(signal.SIGINT, stop_omx3_process)
 
