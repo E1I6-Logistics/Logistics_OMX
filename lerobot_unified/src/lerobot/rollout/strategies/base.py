@@ -777,7 +777,7 @@ class BaseStrategy(RolloutStrategy):
                     home_error = self._max_home_error(obs, home_position)
                     if now - last_home_diag_at >= 5.0:
                         last_home_diag_at = now
-                        logger.warning("[HOME] error=%s armed=%s remaining=%d elapsed=%.1fs", 
+                        logger.warning("[HOME] error=%s armed=%s remaining=%d elapsed=%.1fs",
                                        "missing" if home_error is None else f"{home_error:.2f}",
                                        return_detector_armed, self._remaining_inventory, now - cycle_started_at)
                     if home_error is not None:
