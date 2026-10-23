@@ -360,6 +360,7 @@ echo "[DEVICE] 손목 카메라: $WRIST_CAMERA_PATH"
   --strategy.home_leave_tolerance=12 \
   --strategy.home_hold_s=0.3 \
   --strategy.min_cycle_s=5 \
+  --strategy.pickup_cycle_timeout_s="${OMX_PICKUP_CYCLE_TIMEOUT_S:-180}" \
   --robot.type=omx_follower \
   --robot.port="$ROBOT_PORT" \
   --robot.id=omx_follower_arm \

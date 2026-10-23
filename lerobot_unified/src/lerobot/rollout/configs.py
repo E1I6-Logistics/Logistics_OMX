@@ -109,6 +109,8 @@ class BaseStrategyConfig(RolloutStrategyConfig):
     workstation_control_file: str = ""
     workstation_status_file: str = ""
     workstation_poll_s: float = 0.10
+    pickup_cycle_timeout_s: float = 180.0
+    workstation_job_timeout_s: float = 180.0
     # Persistent inventory count.  The per-robot/session counter starts from
     # zero on each rollout, while total_completed survives process restarts.
     inventory_capacity: int = 8

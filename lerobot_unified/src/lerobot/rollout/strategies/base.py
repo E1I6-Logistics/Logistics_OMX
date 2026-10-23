@@ -472,6 +472,7 @@ class BaseStrategy(RolloutStrategy):
         timer = CycleTimer(cfg.fps, interpolator.multiplier,
                            records_data=False, report=ctx.runtime.cadence_report)
         active_job = None
+        active_job_started_at = None
         phase = "STARTING"
 
         def write_status(phase_name: str, job_id: str | None = None, **kwargs) -> None:
@@ -500,6 +501,7 @@ class BaseStrategy(RolloutStrategy):
                         timer.restart()
                         engine.resume()
                         active_job = job_id
+                        active_job_started_at = time.perf_counter()
                         idle_previous = None
                         idle_home_since = None
                         idle_moved_at = None
@@ -520,6 +522,16 @@ class BaseStrategy(RolloutStrategy):
                     else:
                         time.sleep(self.config.workstation_poll_s)
                     continue
+
+                # RUNNING: stop generating actions if the job has no valid completion.
+                if (active_job_started_at is not None
+                        and self.config.workstation_job_timeout_s > 0
+                        and time.perf_counter() - active_job_started_at > self.config.workstation_job_timeout_s):
+                    engine.pause()
+                    phase = "ERROR"
+                    write_status("ERROR", active_job, message="Workstation job timeout: Home return not detected")
+                    logger.error("[SAFETY] Workstation timeout job=%s; manual intervention required", active_job)
+                    raise RuntimeError("OMX workstation job timeout")
 
                 # RUNNING: no new job is accepted until DONE/CLEAR.
                 timer.tick(new_cycle=interpolator.needs_new_action())
@@ -608,6 +620,7 @@ class BaseStrategy(RolloutStrategy):
         cycle_started_at = start_time
         return_detector_armed = False
         home_since: float | None = None
+        last_home_diag_at = 0.0
         home_position = ctx.hardware.initial_position or {}
         idle_enabled = self.config.idle_complete_enabled
         if idle_enabled and not home_position:
@@ -652,6 +665,14 @@ class BaseStrategy(RolloutStrategy):
                 if cfg.duration > 0 and (time.perf_counter() - start_time) >= cfg.duration:
                     logger.info("Duration limit reached (%.0fs)", cfg.duration)
                     break
+
+                if (auto_restart and not waiting_for_inventory
+                        and self._remaining_inventory > 0
+                        and self.config.pickup_cycle_timeout_s > 0
+                        and time.perf_counter() - cycle_started_at > self.config.pickup_cycle_timeout_s):
+                    logger.error("[SAFETY] Pickup timed out after %.1fs; stopping policy without counting success", self.config.pickup_cycle_timeout_s)
+                    engine.pause()
+                    raise RuntimeError("OMX pickup timeout: no valid Home return; intervention required")
 
                 with timer.section("observe"):
                     obs, camera_recovered = self._get_observation_with_camera_recovery(robot, engine)
@@ -754,6 +775,11 @@ class BaseStrategy(RolloutStrategy):
                         basket_reference = basket_image.copy()
                         logger.info("Captured basket reference frame for success detection")
                     home_error = self._max_home_error(obs, home_position)
+                    if now - last_home_diag_at >= 5.0:
+                        last_home_diag_at = now
+                        logger.warning("[HOME] error=%s armed=%s remaining=%d elapsed=%.1fs", 
+                                       "missing" if home_error is None else f"{home_error:.2f}",
+                                       return_detector_armed, self._remaining_inventory, now - cycle_started_at)
                     if home_error is not None:
                         if not return_detector_armed:
                             if (

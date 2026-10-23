@@ -44,6 +44,7 @@ exec lerobot-rollout \
   --strategy.idle_complete_hold_s="${E_IDLE_COMPLETE_HOLD_S:-15}" \
   --strategy.home_tolerance=7 \
   --strategy.home_leave_tolerance=12 \
+  --strategy.workstation_job_timeout_s="${OMX_WORKSTATION_TIMEOUT_S:-180}" \
   --robot.type=omx_follower \
   --robot.port="$F_FOLLOWER_PORT" \
   --robot.id="$F_ROBOT_ID" \
