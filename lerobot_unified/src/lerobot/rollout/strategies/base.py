@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import math
 import logging
 import os
 import time
@@ -443,11 +444,14 @@ class BaseStrategy(RolloutStrategy):
         errors: list[float] = []
         for key, target in home.items():
             if key not in observation:
-                continue
+                return None
             try:
-                errors.append(abs(float(observation[key]) - float(target)))
+                error = abs(float(observation[key]) - float(target))
+                if not math.isfinite(error):
+                    return None
+                errors.append(error)
             except (TypeError, ValueError):
-                logger.debug("Ignoring non-scalar home-position value for %s", key)
+                return None
         return max(errors) if errors else None
 
     def _run_persistent_workstation(self, ctx: RolloutContext) -> None:
@@ -620,6 +624,7 @@ class BaseStrategy(RolloutStrategy):
         cycle_started_at = start_time
         return_detector_armed = False
         home_since: float | None = None
+        home_near_since: float | None = None
         last_home_diag_at = 0.0
         home_position = ctx.hardware.initial_position or {}
         idle_enabled = self.config.idle_complete_enabled
@@ -754,6 +759,7 @@ class BaseStrategy(RolloutStrategy):
                             basket_reference = None
                             return_detector_armed = False
                             home_since = None
+                            home_near_since = None
                             waiting_for_inventory = False
                             engine.resume()
                             logger.info(
@@ -775,6 +781,21 @@ class BaseStrategy(RolloutStrategy):
                         basket_reference = basket_image.copy()
                         logger.info("Captured basket reference frame for success detection")
                     home_error = self._max_home_error(obs, home_position)
+                    if home_error is None:
+                        engine.pause()
+                        raise RuntimeError("OMX pickup: missing/nonfinite Home joint observation; refusing new action")
+                    if return_detector_armed and self.config.pickup_home_stall_s > 0:
+                        near_limit = self.config.home_tolerance * self.config.pickup_home_near_multiplier
+                        if self.config.home_tolerance < home_error <= near_limit:
+                            if home_near_since is None:
+                                home_near_since = now
+                            elif now - home_near_since >= self.config.pickup_home_stall_s:
+                                engine.pause()
+                                logger.error("[SAFETY] Near Home stalled: error=%.2f tolerance=%.2f elapsed=%.1fs",
+                                             home_error, self.config.home_tolerance, now - home_near_since)
+                                raise RuntimeError("OMX pickup: near-Home stall; manual recovery required")
+                        else:
+                            home_near_since = None
                     if now - last_home_diag_at >= 5.0:
                         last_home_diag_at = now
                         logger.warning("[HOME] error=%s armed=%s remaining=%d elapsed=%.1fs",
@@ -829,6 +850,7 @@ class BaseStrategy(RolloutStrategy):
                                         basket_mask_active_until = 0.0
                                         return_detector_armed = False
                                         home_since = None
+                                        home_near_since = None
                                         engine.resume()
                                         logger.warning("Basket transfer failed; retrying the same order item")
                                         continue
@@ -845,6 +867,7 @@ class BaseStrategy(RolloutStrategy):
                                         self._cached_obs_processed = None
                                         return_detector_armed = False
                                         home_since = None
+                                        home_near_since = None
                                         waiting_for_inventory = True
                                         next_inventory_poll = now + self.config.inventory_poll_interval_s
                                         logger.info(
@@ -864,6 +887,7 @@ class BaseStrategy(RolloutStrategy):
                                 basket_mask_active_until = 0.0
                                 return_detector_armed = False
                                 home_since = None
+                                home_near_since = None
                                 engine.resume()
                                 continue
                         else:
