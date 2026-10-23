@@ -252,6 +252,8 @@ def execute_orders(job_id, orders):
             # Launcher may stop the rollout while MQTT is still alive.  Fail closed
             # if an explicitly supplied pid is no longer running.
             rollout_pid_text = os.environ.get("OMX_ROLLOUT_PID", "")
+            if not rollout_pid_text:
+                raise RuntimeError("Pickup rollout PID missing; refusing unmonitored order")
             if rollout_pid_text:
                 try:
                     rollout_pid = int(rollout_pid_text)
@@ -384,6 +386,14 @@ def run_job(job_id, orders):
         print(f"[ORDER] 작업 실패: {exc}", flush=True)
 
         result_message = str(exc)
+        if robot_id in PICKUP_ITEMS:
+            abort_path = os.environ.get("OMX_ABORT_FILE", "")
+            if abort_path:
+                try:
+                    # Flag creation is atomic at the filesystem level; no motor commands here.
+                    Path(abort_path).touch(exist_ok=True)
+                except OSError:
+                    print("[SAFETY] Failed to signal rollout abort", flush=True)
 
     finally:
         # 작업이 끝난 뒤 상태를 먼저 정리해야 Result 직후의 다음 Command를 받을 수 있다.

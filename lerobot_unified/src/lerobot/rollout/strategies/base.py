@@ -665,6 +665,11 @@ class BaseStrategy(RolloutStrategy):
 
         try:
             while not ctx.runtime.shutdown_event.is_set():
+                abort_path = os.environ.get("OMX_ABORT_FILE", "")
+                if abort_path and Path(abort_path).exists():
+                    interpolator.reset()
+                    engine.reset()
+                    raise RuntimeError("OMX abort flag set; control loop terminated")
                 timer.tick(new_cycle=interpolator.needs_new_action())
 
                 if cfg.duration > 0 and (time.perf_counter() - start_time) >= cfg.duration:

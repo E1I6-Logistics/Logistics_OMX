@@ -182,6 +182,10 @@ fi
 
 # 픽업 OMX만 재고·주문 상태를 지우고 대기 상태에서 시작한다.
 if [[ "$ROBOT_ID" == "omx1" || "$ROBOT_ID" == "omx2" ]]; then
+  # MQTT failure flag is unique to this launcher session. Never reuse an old flag.
+  OMX_ABORT_FILE="$(mktemp "${TMPDIR:-/tmp}/${ROBOT_ID}_abort.XXXXXXXX")"
+  rm -f -- "$OMX_ABORT_FILE"
+  export OMX_ABORT_FILE
   bash "$SCRIPT_DIR/omx_new_order.sh" WAIT 0
 fi
 
@@ -458,6 +462,8 @@ echo "MQTT Client 시작"
 echo "================================"
 
 
+# Pass the rollout PID to the MQTT child. Workstation PID remains session-managed.
+export OMX_ROLLOUT_PID="$ROLLOUT_PID"
 "${OMX_RUN_PREFIX[@]}" python3 "$SCRIPT_DIR/omx_mqtt_client.py" \
   --robot-id "$ROBOT_ID" \
   --broker-ip "$BROKER_IP" &

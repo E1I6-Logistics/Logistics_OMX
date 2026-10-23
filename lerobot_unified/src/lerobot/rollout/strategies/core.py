@@ -19,6 +19,8 @@ from __future__ import annotations
 import abc
 import contextlib
 import logging
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lerobot.datasets.utils import DEFAULT_VIDEO_FILE_SIZE_IN_MB
@@ -356,6 +358,16 @@ def send_next_action(
     # ``timer.section`` verbatim when no timer was passed.
     section = timer.section if timer is not None else contextlib.nullcontext
 
+    # Abort flag is only set for launcher-managed OMX1/2 sessions.
+    # The guard is repeated immediately before send_action because inference can block.
+    abort_path = os.environ.get("OMX_ABORT_FILE", "")
+    def abort_if_requested():
+        if abort_path and Path(abort_path).exists():
+            interpolator.reset()
+            engine.reset()
+            raise RuntimeError("OMX abort signalled; no more motor actions dispatched")
+
+    abort_if_requested()
     if interpolator.needs_new_action():
         with section("infer"):
             obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
@@ -372,7 +384,9 @@ def send_next_action(
     if len(interp) != len(ordered_keys):
         raise ValueError(f"Interpolated tensor length ({len(interp)}) != action keys ({len(ordered_keys)})")
     action_dict = {k: interp[i].item() for i, k in enumerate(ordered_keys)}
+    abort_if_requested()
     with section("send"):
         processed = ctx.processors.robot_action_processor((action_dict, obs_raw))
+        abort_if_requested()
         ctx.hardware.robot_wrapper.send_action(processed)
     return action_dict
