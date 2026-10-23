@@ -18,7 +18,7 @@ case "$ROBOT_ID" in
   omx3|omx4) ROLE="unload" ;;
   *) echo '[ERROR] omx1~4 지정 필요: scripts/install_omx.sh --robot-id omxN' >&2; exit 2 ;;
 esac
-LEROBOT_HOME="$ROOT/lerobot"
+LEROBOT_HOME="$ROOT/lerobot_unified"
 [[ -d "$LEROBOT_HOME/src/lerobot" ]] || { echo "[ERROR] LeRobot 없음: $LEROBOT_HOME" >&2; exit 1; }
 export OMX_LEROBOT_HOME="$LEROBOT_HOME"
 if [[ "$ROLE" == pickup ]]; then

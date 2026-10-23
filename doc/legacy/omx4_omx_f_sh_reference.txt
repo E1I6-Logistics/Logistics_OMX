@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# F 물건 ACT 추론 실행 스크립트
+# Innomaker 손목 카메라만 사용하는 wrist-only 모델입니다.
+#
+# 사용법:
+#   ./omx_f_sh           기본 25만 체크포인트
+#   ./omx_f_sh 270000    27만 체크포인트
+#   ./omx_f_sh 290000    29만 체크포인트
+#   ./omx_f_sh 300000    30만 체크포인트
+# 종료: Ctrl+C
+
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
+
+VENV="/home/omx4/venv/.venv"
+FOLLOWER_PORT="/dev/serial/by-id/usb-ROBOTIS_OpenRB-150_7E7FE4BC503059384C2E3120FF080E2D-if00"
+WRIST_CAMERA="/dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0"
+ROBOT_ID="omx_f_test_follower_arm"
+MODEL_ROOT="outputs/train/warehouse_item_f_129_merged_wrist_only_act_300k/checkpoints"
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    sed -n '3,12p' "$0"
+    exit 0
+fi
+
+STEP="${1:-250000}"
+case "$STEP" in
+    250000|270000|290000|300000) ;;
+    *)
+        echo "오류: 250000, 270000, 290000, 300000 중 하나를 입력하세요." >&2
+        exit 1
+        ;;
+esac
+
+POLICY_PATH="$MODEL_ROOT/$STEP/pretrained_model"
+CALIBRATION="$HOME/.cache/huggingface/lerobot/calibration/robots/omx_follower/$ROBOT_ID.json"
+
+[[ -f "$VENV/bin/activate" ]] || { echo "오류: 가상환경 없음: $VENV" >&2; exit 1; }
+source "$VENV/bin/activate"
+[[ -e "$FOLLOWER_PORT" ]] || { echo "오류: Follower 암 연결 안 됨" >&2; exit 1; }
+[[ -e "$WRIST_CAMERA" ]] || { echo "오류: 손목 카메라 연결 안 됨" >&2; exit 1; }
+[[ -f "$CALIBRATION" ]] || { echo "오류: 캘리브레이션 없음: $CALIBRATION" >&2; exit 1; }
+[[ -f "$POLICY_PATH/model.safetensors" ]] || { echo "오류: 모델 없음: $POLICY_PATH" >&2; exit 1; }
+
+CAMERAS="{wrist: {type: opencv, index_or_path: '$WRIST_CAMERA', width: 640, height: 480, fps: 30, processing_fps: 30, fourcc: 'MJPG', warmup_s: 5}}"
+
+echo "F wrist-only ACT 실행: checkpoint=$STEP"
+echo "종료: Ctrl+C"
+
+exec lerobot-rollout \
+    --strategy.type=base \
+    --strategy.auto_restart_on_home=false \
+    --robot.type=omx_follower \
+    --robot.port="$FOLLOWER_PORT" \
+    --robot.id="$ROBOT_ID" \
+    --robot.cameras="$CAMERAS" \
+    --policy.path="$POLICY_PATH" \
+    --task="Pick up item F, place it on the conveyor, and return to the initial pose" \
+    --fps=30 \
+    --duration=0 \
+    --interpolation_multiplier=1 \
+    --display_data=false

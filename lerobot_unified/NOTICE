@@ -1,0 +1,9 @@
+LeRobot - Copyright (c) 2024 The Hugging Face team and contributors.
+
+Unified source derived from the existing local LeRobot 0.6.2 sources
+collected from OMX1, OMX2, OMX3 and OMX4 on 2026-10-23.
+The upstream project is https://github.com/huggingface/lerobot .
+The original LeRobot project also contains code derived from Diffusion
+Policy, FOWM, simxarm, ALOHA, DETR and other projects. Consult the
+upstream LeRobot LICENSE file for all third-party attribution terms.
+User-specific rollout strategies and robotics adaptations are retained.

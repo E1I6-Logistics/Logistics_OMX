@@ -1,3 +1,9 @@
+# Unified source v1 notice
+
+This ZIP is the new combined LeRobot source candidate. The most current instructions are in `doc/UNIFIED_SOURCE_OMX1_4_KO.md`. Existing instructions below may refer to the superseded `lerobot/` clone. **Use the new instructions and test before hardware execution.**
+
+---
+
 # Logistics_OMX 통합 실행 패치 (기존 repo에 추가)
 
 - `run_omx_mqtt.sh` 공통 실행
