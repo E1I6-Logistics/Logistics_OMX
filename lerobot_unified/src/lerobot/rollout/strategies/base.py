@@ -621,6 +621,11 @@ class BaseStrategy(RolloutStrategy):
         )
 
         start_time = time.perf_counter()
+        # Optional per-window performance profiling; no change to motion commands.
+        perf_interval_s = float(os.environ.get("OMX_PERF_REPORT_INTERVAL_S", "0"))
+        if perf_interval_s < 0:
+            raise ValueError("OMX_PERF_REPORT_INTERVAL_S must be >= 0")
+        perf_next_report = start_time + perf_interval_s if perf_interval_s else float("inf")
         cycle_started_at = start_time
         return_detector_armed = False
         home_since: float | None = None
@@ -953,6 +958,9 @@ class BaseStrategy(RolloutStrategy):
                     engine.pump_query(obs_processed)
 
                 timer.wait()
+                if time.perf_counter() >= perf_next_report:
+                    timer.log_episode_summary("OMX performance window")
+                    perf_next_report = time.perf_counter() + perf_interval_s
         finally:
             if idle_enabled and idle_completion:
                 marker = os.environ.get("E_IDLE_COMPLETION_FILE", "")
