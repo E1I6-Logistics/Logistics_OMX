@@ -213,6 +213,11 @@ def execute_orders(job_id, orders):
 
     print("[ORDER] 주문 순서: " + " -> ".join(f"{item} {qty}개" for item, qty in orders), flush=True)
 
+    # Monitoring timeout only; do not confuse this with motor stop.
+    per_item_timeout = float(os.environ.get("OMX_PICKUP_ORDER_TIMEOUT_S", "240"))
+    if not 0 < per_item_timeout <= 3600:
+        raise ValueError("OMX_PICKUP_ORDER_TIMEOUT_S must be within (0,3600]")
+
     for index, (item, qty) in enumerate(orders, 1):
 
         # omx2의 물리 모델은 로컬 A/B 명령을 각각 C/D 품목에 사용한다.
@@ -233,6 +238,7 @@ def execute_orders(job_id, orders):
 
         token = accepted["order_started_at_epoch"]
 
+        deadline = time.monotonic() + per_item_timeout
         last_progress = None
 
         # -----------------------------------------------------
@@ -240,6 +246,22 @@ def execute_orders(job_id, orders):
         # -----------------------------------------------------
 
         while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Pickup order timeout: {item} {qty}, {per_item_timeout:.0f}s; motor stop NOT guaranteed")
+
+            # Launcher may stop the rollout while MQTT is still alive.  Fail closed
+            # if an explicitly supplied pid is no longer running.
+            rollout_pid_text = os.environ.get("OMX_ROLLOUT_PID", "")
+            if rollout_pid_text:
+                try:
+                    rollout_pid = int(rollout_pid_text)
+                    if rollout_pid <= 0:
+                        raise ValueError("invalid pid")
+                    os.kill(rollout_pid, 0)
+                except ProcessLookupError as exc:
+                    raise RuntimeError("Pickup rollout process exited") from exc
+                except (ValueError, PermissionError) as exc:
+                    raise RuntimeError("Pickup rollout pid invalid/inaccessible") from exc
 
             state = json.loads(state_path.read_text())
 
@@ -367,7 +389,7 @@ def run_job(job_id, orders):
         # 작업이 끝난 뒤 상태를 먼저 정리해야 Result 직후의 다음 Command를 받을 수 있다.
         current_job_id = None
         current_orders = None
-        current_state = ("IDLE" if robot_id not in WORKSTATION_IDS or workstation_ready() else "ERROR")
+        current_state = ("IDLE" if success and (robot_id not in WORKSTATION_IDS or workstation_ready()) else "ERROR")
 
         try:
             send_status()
@@ -443,6 +465,11 @@ def on_command(data):
     # =========================================================
     # 다른 작업 진행 중
     # =========================================================
+
+    if current_state == "ERROR":
+        print(f"[SAFETY] ERROR state: reject job={job_id}", flush=True)
+        send_ack(job_id, False)
+        return
 
     if not job_lock.acquire(blocking=False):
 
