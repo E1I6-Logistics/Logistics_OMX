@@ -1,0 +1,3 @@
+# OMX1/OMX2/OMX4 RealSense support (shared with common requirements)
+-r requirements.txt
+pyrealsense2==2.57.7.10387

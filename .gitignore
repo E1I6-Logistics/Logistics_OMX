@@ -9,3 +9,9 @@
 **/*.bak*
 .env
 reports/
+
+# Runtime generated inside the new checkout
+/lerobot/
+/.venv/
+/state/
+**/profiles/*.env

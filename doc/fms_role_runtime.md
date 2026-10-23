@@ -1,0 +1,95 @@
+# Logistics_OMX 역할별 실행 / 배포
+
+새 Git 저장소 루트는 **`~/Logistics_OMX`**입니다. Linux 경로에서 대소문자 구분에 주의하세요.
+
+## 코드 구조
+
+- `run_omx_mqtt.sh`: 공통 진입점. `~/.config/logistics_omx/device.env`에서 장비 ID와 브로커 IP를 읽고, 별도 `profile.env`로 모델 및 카메라 환경을 설정합니다.
+- `robots_ws/src/omx_manipulator/runtime/run_omx_pickup.sh`: OMX1/2 전용 검증 및 실행, 기존 수량 기반 ACT 작업.
+- `robots_ws/src/omx_manipulator/runtime/run_omx_unload.sh`: OMX3/4 전용 검증 및 실행, MQTT 요청 시 추론.
+- `robots_ws/src/omx_manipulator/runtime/run_omx_backend.sh`: 기존 실행 옵션 / 카메라 / 모델 매핑 / MQTT를 유지하는 공유 실행기.
+- `robots_ws/src/omx_manipulator/runtime/omx_mqtt_client.py`: 공통 통신 규약과 주문별 실행/완료 처리.
+- `robots_ws/src/omx_manipulator/overlay_workstation`: OMX3/4에서만 적용할 정지 완료 감지 소스.
+- `scripts/install_omx.sh`: LeRobot 설치, 가상환경, `.bashrc` 자동 설정. 기존 설정이 있으면 중복 생성하지 않습니다.
+- `scripts/update_omx.sh`: 이후 Git pull 후 로봇팔이 정지된 상태에서 백업 후 Overlay 업데이트.
+- `scripts/omx_shell.sh`: `omx_start` 등록, OMX1/2에서만 `omx_reset` 제공.
+
+## PC(Windows)에서 수정하기
+
+```powershell
+git clone https://github.com/E1I6-Logistics/Logistics_OMX.git
+cd Logistics_OMX
+git switch -c feature/omx-role-runtime
+# ZIP의 내용물을 Git 저장소 루트에 압축 해제/복사
+git status
+# 검토한 후에만 추가 / 커밋 / push
+git add .gitignore run_omx_mqtt.sh scripts/install_omx.sh scripts/omx_shell.sh doc/fms_role_runtime.md robots_ws/src/omx_manipulator/runtime robots_ws/src/omx_manipulator/overlay_workstation
+git commit -m "feat: OMX role-specific runtime"
+```
+
+## Raspberry Pi에 GitHub에서 배포
+
+먼저 변경한 브랜치를 GitHub에 push하고, 현장 장비에서는 해당 브랜치를 체크아웃한 뒤 진행합니다. **기존 `~/il_ws/src/lerobot`은 건드리지 않습니다.**
+
+```bash
+git clone -b feature/omx-role-runtime https://github.com/E1I6-Logistics/Logistics_OMX.git ~/Logistics_OMX
+cd ~/Logistics_OMX
+bash scripts/install_omx.sh --robot-id omx3 --broker-ip 192.168.0.16
+source ~/.bashrc
+omx_start
+```
+
+설치 대상은 `~/Logistics_OMX/lerobot`이고 가상환경은 `~/Logistics_OMX/.venv`입니다. 별도 LeRobot 소스는 Git 관리에서 제외되며 원본 LeRobot 커밋을 고정한 후 기존 repo Overlay를 적용합니다. `--skip-deps` 옵션은 설치 의존성을 생략하므로 새 가상환경에서는 보통 사용하지 않습니다.
+
+### 물품 모델/장치
+
+모델 파일과 캘리브레이션은 GitHub에 올리지 않습니다. 기존 `~/il_ws/src/lerobot/outputs`를 삭제하거나 이동하지 않고, 검증 과정에서 새 경로에 복사하거나 심볼릭 링크로 일시적으로 참조할 수 있습니다.
+
+```bash
+# 새 폴더에 outputs가 없는 경우에만 모델 파일 위치를 임시로 연결
+cd ~/Logistics_OMX/lerobot
+if [[ ! -e outputs && -d "$HOME/il_ws/src/lerobot/outputs" ]]; then
+  ln -s "$HOME/il_ws/src/lerobot/outputs" outputs
+fi
+```
+
+OMX3 E 모델은 250000 Step 경로로 고정, OMX1/2 A/B/C/D는 현재 JSON 모델 매핑을 유지합니다. OMX4 모델은 **확인되지 않았으므로** `~/.config/logistics_omx/profile.env`에 실제 `OMX4_POLICY_PATH`, `OMX4_FOLLOWER_PORT`, `OMX4_FRONT_CAMERA_SERIAL`, `OMX4_WRIST_CAMERA`를 입력해야 합니다.
+
+## 셸 설정
+
+설치 스크립트는 `.bashrc`에 다음 한 줄을 *없을 경우에만* 추가합니다.
+
+```bash
+source "$HOME/Logistics_OMX/scripts/omx_shell.sh" # Logistics_OMX shell integration
+```
+
+기존 `alias omx_start=...`가 있으면 소스 파일에서 해당 alias를 해제하고 `omx_start` 함수를 등록합니다. 따라서 기존 사용자의 `.bashrc` 전체를 삭제하거나 덮어쓰지 않습니다. OMX1/2에서는 `omx_reset`을 사용하고 OMX3/4에서는 등록하지 않습니다. 이전에 `.bashrc`에 적어 둔 `cd ~/il_ws/src/lerobot` / 이전 venv 활성화 줄은 새 코드가 직접 제거하지 않으므로, 추후 사용자가 수동 정리할 수 있습니다.
+
+## 완료 신호의 의미
+
+OMX3/4는 수동 `p` 입력 대신 `run_e_rollout.sh`를 직접 실행합니다. 정지 판정은 **Home에서 벗어난 뒤 Home으로 돌아와 15초간 관절 변동이 허용치 이하**인 경우 완료 이벤트를 기록합니다. MQTT 성공은 그 이벤트 + Rollout 정상 종료가 필요합니다. 이는 빈 바구니를 직접 인식한 결과가 아니며, 임계값은 실험으로 검증해야 합니다. 처음부터 바구니가 비어 있으면 정지 판정이 발생하지 않을 수 있습니다.
+
+## 환경과 성능
+
+모든 OMX에서 `omx_runtime_env.sh`로 OMP, MKL, OpenBLAS, NumExpr 스레드 정책을 공유합니다(기본 2). CPU affinity, GPU 가속은 실측 전에는 강제하지 않습니다. 목표 추론 설정 30 FPS와 실제 FPS는 구분해야 합니다. 실기에서 MQTT 연결 / 중복 작업 / 카메라 / 관절 오차 / 물리적 성공을 측정해야 합니다.
+
+## 이후 코드 갱신
+
+PC에서 변경된 Git 브랜치를 push한 후, 로봇팔/MQTT를 정상 종료하고 Pi에서 다음 명령을 실행합니다. `scripts/update_omx.sh`는 기존 LeRobot 수정 파일을 `~/Logistics_OMX/state/code_backup_날짜/`에 백업한 다음 업데이트합니다. 모델 및 캘리브레이션은 교체하지 않습니다.
+
+```bash
+cd ~/Logistics_OMX
+git pull --ff-only
+bash scripts/update_omx.sh
+omx_start
+```
+
+`git pull`은 현재 브랜치의 원격 변경을 가져오므로, PC에서 변경사항을 해당 브랜치에 push했는지 먼저 확인해야 합니다. `update_omx.sh`는 명시적으로 실행했을 때만 LeRobot 내부 Overlay 파일을 교체합니다.
+
+## Python 요구사항
+
+기본 패키지는 저장소 루트 [`requirements.txt`](../requirements.txt), RealSense 기반 OMX1/2/4는 [`requirements-realsense.txt`](../requirements-realsense.txt)를 사용합니다. 상세 내용은 [`requirements 관리`](requirements.md)를 확인하세요. 설치 스크립트의 `--sync-requirements`를 사용하지 않는 이상 해당 핀을 자동 강제하지 않습니다.
+
+
+### OMX4 RealSense
+OMX4는 OpenCV C920이 아니라 Intel RealSense RGB를 사용하므로 하차 스크립트는 `E_CAMERA_TYPE=intelrealsense`로 분기합니다. `OMX4_FRONT_CAMERA_SERIAL`에 해당 장치의 serial number를 입력해야 하며, 학습된 ACT 정책의 카메라 키가 `top`인지 `front`인지 확인한 후 필요하면 `OMX4_CAMERA_KEY`를 지정합니다. 손목 카메라는 현재 OpenCV 방식으로 작성되어 있으며 장치 확인 전에는 하드웨어 호환성을 보장하지 않습니다.

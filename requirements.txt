@@ -1,0 +1,21 @@
+# OMX1~4 common direct dependencies (baseline: OMX01 pip list, 2026-10-23)
+# Python 3.12; installed LeRobot source is managed separately using pip install -e.
+# Do NOT install the full OMX01 snapshot to other devices.
+# On ARM/Raspberry Pi confirm PyTorch wheel compatibility before synchronizing.
+# WARNING: pip's torch wheel resolution may also download CUDA dependencies.
+
+av==15.1.0
+datasets==4.8.5
+draccus==0.11.6
+dynamixel-sdk==3.8.4
+einops==0.8.2
+huggingface_hub==1.33.0
+numpy==2.2.6
+opencv-python-headless==4.13.0.92
+paho-mqtt==2.1.0
+pillow==12.3.0
+pyserial==3.5
+safetensors==0.8.0
+torch==2.11.0
+torchcodec==0.11.1
+torchvision==0.26.0

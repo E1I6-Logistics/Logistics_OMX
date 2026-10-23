@@ -1,0 +1,2 @@
+# Backward-compatible name for OMX1/OMX2 (OMX4 uses the same RealSense requirements).
+-r requirements-realsense.txt
