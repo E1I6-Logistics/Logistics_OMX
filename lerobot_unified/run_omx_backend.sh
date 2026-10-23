@@ -78,6 +78,11 @@ python3 -c 'import lerobot; print("[SOURCE]", lerobot.__file__)'
 
 
 # All four devices share CPU/runtime policy. Model, camera, control and MQTT stay device-specific.
+# Optional local optimization settings (all four OMX launch through this script).
+OMX_PREFETCH_ENV_FILE="${OMX_PREFETCH_ENV_FILE:-$HOME/.config/omx/act_prefetch.env}"
+if [[ -f "$OMX_PREFETCH_ENV_FILE" ]]; then
+  source "$OMX_PREFETCH_ENV_FILE"
+fi
 source "$SCRIPT_DIR/omx_runtime_env.sh"
 
 # 같은 OMX를 두 번 실행해 동일 Command를 중복 처리하지 않는다.

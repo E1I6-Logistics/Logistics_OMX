@@ -35,7 +35,7 @@ from lerobot.processor import PolicyProcessorPipeline
 from ..robot_wrapper import ThreadSafeRobot
 from .base import InferenceEngine
 from .rtc import RTCInferenceEngine
-from .sync import SyncInferenceEngine
+from .act_prefetch import create_omx_sync_engine
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ def create_inference_engine(
     """Instantiate the appropriate inference engine from a config object."""
     logger.info("Creating inference engine: %s", config.type)
     if isinstance(config, SyncInferenceConfig):
-        return SyncInferenceEngine(
+        return create_omx_sync_engine(
             policy=policy,
             preprocessor=preprocessor,
             postprocessor=postprocessor,

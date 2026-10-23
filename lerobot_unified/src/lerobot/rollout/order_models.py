@@ -8,6 +8,7 @@ from lerobot.policies import make_pre_post_processors
 from lerobot.processor.relative_action_processor import RelativeActionsProcessorStep
 from .context import PolicyContext, _load_pretrained_policy
 from .inference.sync import SyncInferenceEngine
+from .inference.act_prefetch import create_omx_sync_engine
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ class OrderModelRouter:
         if any(isinstance(step, RelativeActionsProcessorStep) and step.enabled
                for step in pre.steps):
             raise ValueError("Relative actions are unsupported by sync routing")
-        engine = SyncInferenceEngine(
+        engine = create_omx_sync_engine(
             policy=policy, preprocessor=pre, postprocessor=post,
             dataset_features=ctx.data.dataset_features,
             ordered_action_keys=ctx.data.ordered_action_keys,
