@@ -81,8 +81,11 @@ python3 -c 'import lerobot; print("[SOURCE]", lerobot.__file__)'
 # Optional local optimization settings (all four OMX launch through this script).
 OMX_PREFETCH_ENV_FILE="${OMX_PREFETCH_ENV_FILE:-$HOME/.config/omx/act_prefetch.env}"
 if [[ -f "$OMX_PREFETCH_ENV_FILE" ]]; then
+  # Preserve existing per-device CPU thread values in the legacy OFF config.
   source "$OMX_PREFETCH_ENV_FILE"
 fi
+# Failed ACT prefetch removed; override any stale environment value.
+export OMX_ACT_PREFETCH=0
 source "$SCRIPT_DIR/omx_runtime_env.sh"
 
 # 같은 OMX를 두 번 실행해 동일 Command를 중복 처리하지 않는다.
