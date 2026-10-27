@@ -55,13 +55,13 @@ doc/                  # 설치·운영·모델·버전 설명
 | A/B 피킹 작업 | C/D 피킹 작업 |
 |---|---|
 | <img src="doc/images/ab_model.png" alt="A/B 모델 작업 환경" width="420" height="315"> | <img src="doc/images/cd_model.png" alt="C/D 모델 작업 환경" width="420" height="315"> |
-| 좌우 적재함에서 대상 물품을 집어 TurtleBot 바구니에 적재 | C/D 전용 작업대에서 대상 물품을 구분해 순차 적재 |
+| A/B 전용 작업대에서 대상 물품을 구분해 순차 적재 | C/D 전용 작업대에서 대상 물품을 구분해 순차 적재 |
 
 
 | E 하차 작업 | F 하차 작업 |
 |---|---|
 | <img src="doc/images/e_model.png" alt="E 모델 작업 환경" width="420" height="315"> | <img src="doc/images/f_model.png" alt="F 모델 작업 환경" width="420" height="315"> |
-| TurtleBot 바구니의 E 물품을 집어 컨베이어로 이동 | F 물품 위치를 카메라로 관측하고 컨베이어로 하차 |
+| TurtleBot 바구니의 물품을 집어 컨베이어로 이동 | TurtleBot 바구니의 물품을 집어 컨베이어로 이동 |
 
 
 카메라 영상과 현재 관절 상태를 ACT 정책에 입력하면 다음 관절 목표값을 출력합니다.
