@@ -1,16 +1,17 @@
-# Optional systemd USER unit. Install only on a Pi after local commissioning.
+# Generated OMX manager service; rendered by omx_control service --action install.
 [Unit]
-Description=OMX follower manager %i
+Description=OMX follower manager %i (Pi 5 4GB)
 StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-WorkingDirectory=%h/Logistics_OMX
-ExecStart=%h/Logistics_OMX/run_omx_mqtt.sh --robot-id %i --confirm-motion
+WorkingDirectory=@OMX_ROOT@
+ExecStart=@OMX_COMMAND@
 Restart=always
-RestartSec=5
+RestartSec=@RESTART_S@
 KillMode=control-group
-TimeoutStopSec=30
+OOMPolicy=stop
+TimeoutStopSec=@STOP_TIMEOUT_S@
 Environment=PYTHONUNBUFFERED=1
 
 [Install]

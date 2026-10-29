@@ -28,6 +28,9 @@ def cleanup_resources(engine=None, robot=None):
     def attempt(label, action):
         try: action()
         except Exception as exc: failures.append(f"{label}: {exc}")
+    if robot is not None:
+        close_metrics = getattr(robot, "_omx_metrics_close", None)
+        if callable(close_metrics): attempt("diagnostics", close_metrics)
     if engine is not None: attempt("inference", engine.stop)
     if robot is not None:
         for name, camera in getattr(robot, "cameras", {}).items(): attempt("camera." + name, camera.disconnect)

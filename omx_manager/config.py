@@ -9,6 +9,7 @@ from pathlib import Path
 import tempfile
 import time
 import yaml
+from .parameters import DIAGNOSTIC_DEFAULTS, SERVICE_DEFAULTS, annotated_yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll", "gripper")
@@ -70,6 +71,12 @@ def load(path):
     validate(cfg)
     return cfg
 
+def diagnostic_options(cfg):
+    return dict(DIAGNOSTIC_DEFAULTS, **cfg.get("diagnostics", {}))
+
+def service_options(cfg):
+    return dict(SERVICE_DEFAULTS, **cfg.get("service", {}))
+
 def profile(cfg):
     models = cfg["models"]
     return models["profiles"][models["active_profile"]]
@@ -81,7 +88,7 @@ def validate(cfg):
     if cfg.get("role") != expected: raise ConfigError("role does not match device_id")
     for section in ("hardware", "home", "models", "runtime", "recovery", "counting"):
         if not isinstance(cfg.get(section), dict): raise ConfigError(f"Missing section: {section}")
-    only_keys(cfg, "schema_version device_id role hardware home models runtime recovery counting", "top-level")
+    only_keys(cfg, "schema_version device_id role hardware home models runtime recovery counting diagnostics service", "top-level")
     only_keys(cfg["hardware"], "port calibration_file robot_id disable_torque_on_disconnect cameras", "hardware")
     only_keys(cfg["home"], "target binding tolerance hold_s unload_hold_s still_delta max_sample_gap_s capture_s capture_max_span arrival_tolerance move_speed move_timeout_s max_start_error max_step", "home")
     only_keys(cfg["models"], "active_profile profiles", "models")
@@ -133,6 +140,21 @@ def validate(cfg):
         number(cfg["runtime"].get(key), key, 1, 3600)
     for key in ("retry_initial_s", "retry_max_s"): number(cfg["recovery"].get(key), key, .1, 300)
     if cfg["recovery"]["retry_initial_s"] > cfg["recovery"]["retry_max_s"]: raise ConfigError("Invalid retry backoff")
+    if "diagnostics" in cfg and not isinstance(cfg["diagnostics"],dict): raise ConfigError("diagnostics must be a mapping")
+    diag=diagnostic_options(cfg)
+    only_keys(diag," ".join(DIAGNOSTIC_DEFAULTS),"diagnostics")
+    for name in ("enabled","important_only"):
+        if type(diag[name]) is not bool:raise ConfigError("diagnostics."+name+" must be true/false")
+    for name,lo,hi in (("interval_s",1,30),("stale_s",2,120),("full_log_mb",.5,20),("important_log_mb",.5,10),("slow_warning_interval_s",1,120)):
+        number(diag[name],"diagnostics."+name,lo,hi)
+    for name,lo,hi in (("backups",1,5),("queue_lines",16,2048)):
+        if type(diag[name]) is not int or not lo<=diag[name]<=hi:raise ConfigError("Invalid diagnostics."+name)
+    if diag["stale_s"]<2*diag["interval_s"]:raise ConfigError("diagnostics.stale_s must be >=2*interval_s")
+    if "service" in cfg and not isinstance(cfg["service"],dict):raise ConfigError("service must be a mapping")
+    service=service_options(cfg);only_keys(service," ".join(SERVICE_DEFAULTS),"service")
+    number(service["restart_s"],"service.restart_s",1,120)
+    number(service["stop_timeout_s"],"service.stop_timeout_s",10,7200)
+    if type(service["enable_on_boot"]) is not bool:raise ConfigError("service.enable_on_boot must be true/false")
     return cfg
 
 def binding(cfg):
@@ -159,7 +181,7 @@ def save(path, cfg):
     if path.exists():
         backup = path.parent / "backups" / (path.name + "." + str(time.time_ns()) + ".yaml")
         atomic_write(backup, path.read_text(encoding="utf-8"))
-    atomic_write(path, yaml.safe_dump(cfg, allow_unicode=True, sort_keys=False))
+    atomic_write(path, annotated_yaml(cfg))
 
 def check_files(cfg, models=True):
     hw = cfg["hardware"]

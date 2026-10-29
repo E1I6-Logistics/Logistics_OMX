@@ -1,3 +1,5 @@
+> OMX 작업 브랜치: `dev`. 전체 명령어·장비별 파라미터·홈 등록·로그·경량 성능 모니터·자동 재시작은 [OMX 통합 사용 설명서](OMX_사용설명서.md)에 정리했습니다. Raspberry Pi 5 4GB 기준의 기본 설정이며 실물 성능은 현장에서 확인해야 합니다.
+
 # 팔로워 전용 YAML 보정·복구 브랜치 안내
 
 현재 브랜치의 시작 문서는 [OMX_CALIBRATION_MANAGER_KO.md](doc/OMX_CALIBRATION_MANAGER_KO.md)입니다.

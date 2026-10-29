@@ -9,7 +9,7 @@ import sys
 import threading
 import time
 import uuid
-from .config import ROOT, JOINTS, path_value, check_files, require_home, profile, write_json, load
+from .config import ROOT, JOINTS, path_value, check_files, require_home, profile, write_json, load, diagnostic_options
 from .hardware import Lock
 
 class OperatorRecoveryRequired(RuntimeError): pass
@@ -108,7 +108,12 @@ def healthy_heartbeat(path, pid, now, timeout):
     except (OSError,ValueError,KeyError,TypeError): return False
 
 class Supervisor:
-    def __init__(self, config_path): self.path=Path(config_path); self.stopped=threading.Event()
+    def __init__(self, config_path, diagnostics=None, important_only=None):
+        self.path=Path(config_path); self.stopped=threading.Event()
+        self.diagnostics=diagnostics; self.important_only=important_only; self.capture=None
+    def message(self, line):
+        if self.capture: self.capture.emit("manager",line)
+        else: print(line,flush=True)
     def stop(self, *_): self.stopped.set()
     def run_once(self,cfg):
         check_files(cfg); require_home(cfg)
@@ -120,10 +125,17 @@ class Supervisor:
         for name in ("abort","heartbeat.json"):
             (directory/name).unlink(missing_ok=True)
         rollout,mqtt,env,generated=build(cfg,self.path)
+        env.pop("OMX_METRICS_PATH", None)
+        if self.diagnostics:
+            env["OMX_METRICS_PATH"]=str(directory/"metrics.json")
+            env["OMX_METRICS_INTERVAL_S"]=str(diagnostic_options(cfg)["interval_s"])
+        capture_options = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                               encoding="utf-8", errors="replace", bufsize=1) if self.capture else {}
         for name,data in generated.items(): write_json(directory/name,data)
         worker=client=None
         try:
-            worker=subprocess.Popen(rollout,env=env,cwd=ROOT/"lerobot_unified",start_new_session=True)
+            worker=subprocess.Popen(rollout,env=env,cwd=ROOT/"lerobot_unified",start_new_session=True,**capture_options)
+            if self.capture: self.capture.attach(worker,"rollout")
             env["OMX_ROLLOUT_PID"]=str(worker.pid)
             deadline=time.monotonic()+cfg["runtime"]["startup_timeout_s"]
             while not self.stopped.is_set():
@@ -140,19 +152,28 @@ class Supervisor:
                 if time.monotonic()>deadline: raise TimeoutError("Rollout not READY in time")
                 self.stopped.wait(.2)
             if self.stopped.is_set(): return
-            client=subprocess.Popen(mqtt,env=env,cwd=ROOT/"lerobot_unified",start_new_session=True)
+            client=subprocess.Popen(mqtt,env=env,cwd=ROOT/"lerobot_unified",start_new_session=True,**capture_options)
+            if self.capture: self.capture.attach(client,"mqtt")
             while not self.stopped.wait(.25):
                 if worker.poll() is not None: raise RuntimeError(f"Rollout exit={worker.returncode}")
                 if client.poll() is not None: raise RuntimeError(f"MQTT exit={client.returncode}")
                 if not healthy_heartbeat(directory/"heartbeat.json",worker.pid,time.monotonic(),cfg["runtime"]["heartbeat_timeout_s"]): raise TimeoutError("Rollout heartbeat stalled")
         finally:
-            write_json(directory/"last_stop.json",{"at":time.time(),"operator_stop":self.stopped.is_set()})
+            try: write_json(directory/"last_stop.json",{"at":time.time(),"operator_stop":self.stopped.is_set()})
+            except OSError as exc:self.message("[WARNING] Could not save stop record: "+str(exc))
             for proc in (client,worker):
                 try: stop_process(proc,cfg["runtime"]["shutdown_timeout_s"])
-                except Exception as exc: print("Cleanup failure:",exc,flush=True)
+                except Exception as exc: self.message("[ERROR] Cleanup failure: "+str(exc))
     def run(self):
         cfg=load(self.path)
         with device_lock(cfg):
+            options=diagnostic_options(cfg)
+            if self.diagnostics is None:self.diagnostics=options["enabled"]
+            if self.important_only is None:self.important_only=options["important_only"]
+            if self.diagnostics or self.important_only:
+                from .logs import Capture
+                self.capture=Capture(ROOT/"logs"/cfg["device_id"],self.important_only,options)
+                self.message("[DIAGNOSTICS] Logs: "+str(ROOT/"logs"/cfg["device_id"]))
             delay=cfg["recovery"]["retry_initial_s"]
             old={s:signal.signal(s,self.stop) for s in (signal.SIGINT,signal.SIGTERM)}
             try:
@@ -162,9 +183,11 @@ class Supervisor:
                         self.run_once(cfg)
                         delay=cfg["recovery"]["retry_initial_s"]
                     except Exception as exc:
-                        print(f"[RECOVERY] {type(exc).__name__}: {exc}; retry in {delay}s",flush=True)
-                        write_json(state_dir(cfg)/"recovery.json",{"at":time.time(),"error":str(exc),"retry_s":delay})
+                        self.message(f"[RECOVERY] {type(exc).__name__}: {exc}; retry in {delay}s")
+                        try: write_json(state_dir(cfg)/"recovery.json",{"at":time.time(),"error":str(exc),"retry_s":delay})
+                        except OSError as failure:self.message("[WARNING] Could not save recovery record: "+str(failure))
                     if self.stopped.wait(delay): break
                     delay=min(delay*2,cfg["recovery"]["retry_max_s"])
             finally:
                 for s,handler in old.items(): signal.signal(s,handler)
+                if self.capture: self.capture.close(); self.capture=None

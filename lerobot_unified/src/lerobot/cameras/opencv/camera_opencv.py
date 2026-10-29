@@ -17,6 +17,7 @@ Provides the OpenCVCamera class for capturing frames from cameras using OpenCV.
 """
 
 import logging
+from lerobot.utils.runtime_metrics import camera_event
 import math
 import os
 import platform
@@ -472,6 +473,7 @@ class OpenCVCamera(Camera):
                 # Always read from the hardware continuously.
                 raw_frame = self._read_from_hardware()
                 capture_time = time.perf_counter()
+                camera_event(self, "captured")
 
                 # If processing_fps is configured, skip frames until the
                 # next processing/publishing interval.
@@ -491,6 +493,7 @@ class OpenCVCamera(Camera):
                     self.latest_timestamp = capture_time
 
                 self.new_frame_event.set()
+                camera_event(self, "published")
 
                 # Schedule the next publication based on absolute time rather
                 # than sleeping, preventing drift over long recordings.

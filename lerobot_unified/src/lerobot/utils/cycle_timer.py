@@ -30,6 +30,7 @@ import time
 from collections.abc import Callable, Iterator
 
 from lerobot.utils.robot_utils import precise_sleep
+from lerobot.utils.runtime_metrics import event as metric_event
 
 logger = logging.getLogger(__name__)
 
@@ -334,6 +335,7 @@ class CycleTimer:
         Deferring to here gets both right whether the caller was mid-body or between
         ticks.
         """
+        metric_event("loop")
         self._tick_start = time.perf_counter()
         if self._pending_close is not None:
             self._close_window(self._pending_close)

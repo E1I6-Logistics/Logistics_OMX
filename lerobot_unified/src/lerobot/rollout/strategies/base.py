@@ -160,6 +160,8 @@ class BaseStrategy(RolloutStrategy):
             hold=self.config.idle_complete_hold_s if self.config.workstation_wait_enabled else None) if manager_cfg else None
         ctx.hardware.robot_wrapper.inner._omx_runtime_ready = True
         heartbeat()
+        from lerobot.utils.runtime_metrics import start_metrics
+        start_metrics(ctx.hardware.robot_wrapper.inner, ctx.runtime.shutdown_event, ctx.runtime.cfg.fps)
         logger.info("Base strategy ready")
 
     @property

@@ -17,6 +17,7 @@ Provides the RealSenseCamera class for capturing frames from Intel RealSense cam
 """
 
 import logging
+from lerobot.utils.runtime_metrics import camera_event
 import sys
 import time
 from threading import Event, Lock, Thread
@@ -683,6 +684,7 @@ class RealSenseCamera(Camera):
         while not stop_event.is_set():
             try:
                 frame = self._read_from_hardware()
+                camera_event(self, "captured")
 
                 if self.use_rgb:
                     color_frame_raw = frame.get_color_frame()
@@ -708,6 +710,7 @@ class RealSenseCamera(Camera):
                         self.latest_depth_frame = processed_depth_frame
                     self.latest_timestamp = capture_time
                 self.new_frame_event.set()
+                camera_event(self, "published")
                 failure_count = 0
 
             except DeviceNotConnectedError:

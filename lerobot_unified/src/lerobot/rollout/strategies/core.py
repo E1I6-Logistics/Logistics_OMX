@@ -378,4 +378,6 @@ def send_next_action(
         processed = ctx.processors.robot_action_processor((action_dict, obs_raw))
         abort_if_requested()
         ctx.hardware.robot_wrapper.send_action(processed)
+        from lerobot.utils.runtime_metrics import event as metric_event
+        metric_event("action_sent")
     return action_dict

@@ -93,6 +93,8 @@ def test_model_and_calibration_binding(commissioned):
     C.check_files(commissioned); C.require_home(commissioned)
     commissioned['runtime']['cpu_threads']=3
     C.require_home(commissioned)  # CPU tuning does not invalidate physical Home
+    commissioned['diagnostics']['enabled']=True
+    C.require_home(commissioned)  # logging settings are independent of the physical Home
     C.profile(commissioned)['items']['A']['task']='different task'
     with pytest.raises(C.ConfigError,match='binding'): C.require_home(commissioned)
 
@@ -262,7 +264,9 @@ def test_real_subprocess_kill_timeout():
         if proc.poll() is None: os.killpg(proc.pid,signal.SIGKILL);proc.wait()
         proc.stdout.close()
 
-def test_supervisor_starts_only_after_ready_and_cleans_both_children(commissioned,tmp_path,monkeypatch):
+@pytest.mark.parametrize("exit_mode",["exit","kill"])
+@pytest.mark.parametrize("stop_record_writable",[True,False])
+def test_supervisor_starts_only_after_ready_and_cleans_both_children(commissioned,tmp_path,monkeypatch,stop_record_writable,exit_mode):
     cfg=commissioned;cfg['runtime']['shutdown_timeout_s']=.1
     monkeypatch.setattr(R,'state_dir',lambda _:tmp_path)
     h=tmp_path/'heartbeat.json'
@@ -270,12 +274,19 @@ def test_supervisor_starts_only_after_ready_and_cleans_both_children(commissione
     real_build=R.build
     def fake_build(c,p):
         _,_,env,_=real_build(c,p)
-        return [sys.executable,'-c',worker_code],[sys.executable,'-c','raise SystemExit(7)'],env,{}
+        client_code='raise SystemExit(7)' if exit_mode=='exit' else 'import os,signal;os.kill(os.getpid(),signal.SIGKILL)'
+        return [sys.executable,'-c',worker_code],[sys.executable,'-c',client_code],env,{}
     monkeypatch.setattr(R,'build',fake_build)
     started=[];popen=R.subprocess.Popen
     def record(*a,**kw):
         p=popen(*a,**kw);started.append(p);return p
     monkeypatch.setattr(R.subprocess,'Popen',record)
+    if not stop_record_writable:
+        write=R.write_json
+        def fail_stop_record(path,*args,**kwargs):
+            if Path(path).name=='last_stop.json':raise OSError('disk full')
+            return write(path,*args,**kwargs)
+        monkeypatch.setattr(R,'write_json',fail_stop_record)
     supervisor=R.Supervisor(tmp_path/'config.yaml')
     with pytest.raises(RuntimeError,match='MQTT exit'):supervisor.run_once(cfg)
     assert len(started)==2 and all(p.poll() is not None for p in started)

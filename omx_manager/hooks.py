@@ -45,7 +45,12 @@ class RolloutHome:
         if now>=self.next_report:
             self.next_report=now+1
             rows={j:dict(row) for j,row in self.detector.rows.items()}
-            write_json(ROOT/"state"/"manager"/self.cfg["device_id"]/"joint_errors.json",{"monotonic":now,"joints":rows,"stalled":self.detector.stalled},durable=False)
+            try:
+                write_json(ROOT/"state"/"manager"/self.cfg["device_id"]/"joint_errors.json",{"monotonic":now,"joints":rows,"stalled":self.detector.stalled},durable=False)
+            except OSError as exc:
+                if now>=getattr(self,"next_io_warning",0):
+                    logger.warning("Joint diagnostics unavailable (control unchanged): %s",exc)
+                    self.next_io_warning=now+10
         return done
 
 _last_heartbeat=0.
