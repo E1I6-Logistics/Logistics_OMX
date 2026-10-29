@@ -24,8 +24,8 @@ from omx_manager.journal import JobJournal
 ROOT = Path(__file__).resolve().parents[1]
 
 @pytest.fixture
-def cfg():
-    c=C.load(ROOT/'params/omx1.yaml')
+def cfg(request):
+    c=C.load(ROOT/f'params/{getattr(request, "param", "omx1")}.yaml')
     c['home']['target']={j:0. for j in C.JOINTS}
     c['counting']['min_cycle_s']=0
     return c
@@ -33,7 +33,7 @@ def cfg():
 @pytest.fixture
 def commissioned(cfg,tmp_path):
     cfg=copy.deepcopy(cfg)
-    cal=tmp_path/'omx_follower_arm.json'
+    cal=tmp_path/(cfg['hardware']['robot_id']+'.json')
     C.write_json(cal,{j:{'id':C.IDS[j],'drive_mode':0,'range_min':0,'range_max':4095,'homing_offset':0} for j in C.JOINTS})
     cfg['hardware']['calibration_file']=str(cal)
     for item,entry in C.profile(cfg)['items'].items():
@@ -59,6 +59,21 @@ def test_all_device_templates_and_simulations(device):
     assert '--robot.id='+c['hardware']['robot_id'] in argv
     assert env['OMX_ACT_PREFETCH']=='0'
     assert '--strategy.workstation_wait_enabled=true' in argv if c['role']=='unload' else '--strategy.auto_restart_on_home=true' in argv
+
+@pytest.mark.parametrize('cfg',['omx4'],indirect=True)
+def test_omx4_v3_5_model_and_camera_contract(commissioned):
+    template=C.load(ROOT/'params/omx4.yaml')
+    assert C.profile(template)['items']['F']['path'].endswith(
+        'warehouse_item_f_v3_5_act_300k/checkpoints/230000/pretrained_model')
+    assert set(template['hardware']['cameras'])=={'top','wrist'}
+    for cam in template['hardware']['cameras'].values():
+        assert (cam['width'],cam['height'])==(640,480)
+    argv,_,_,_=R.build(template,ROOT/'params/omx4.yaml')
+    cameras=json.loads(next(arg.split('=',1)[1] for arg in argv if arg.startswith('--robot.cameras=')))
+    assert cameras==template['hardware']['cameras']
+    C.check_files(commissioned)
+    del commissioned['hardware']['cameras']['top']
+    with pytest.raises(C.ConfigError,match='camera keys'): C.check_files(commissioned)
 
 @pytest.mark.parametrize('value',[float('nan'),float('inf'),True,-1,0])
 def test_invalid_tolerance_rejected(cfg,value):

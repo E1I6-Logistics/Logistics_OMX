@@ -60,7 +60,11 @@ cd ~/Logistics_OMX
 - OMX1: 이전 실행기의 **A 주문→B 원본 모델 / B 주문→A 원본 모델** 매핑을 명시적으로 보존했습니다. 의도한 품목인지 확인하세요.
 - OMX2: 이전 C/D 실행기의 `omx_cd_follower_arm` 보정 ID를 사용합니다. Pi의 실제 보정 파일과 확인해야 합니다.
 - OMX2 RealSense, OMX3 모터/전면 카메라는 확인되지 않은 값을 `SET_...`로 남겼습니다. 자동 추정하지 않습니다.
-- OMX3 기본 모델은 E 250k, OMX4는 F wrist-only 250k의 기존 경로입니다. 공개 E/F 모델과 같은 버전이라고 가정하지 않습니다.
+- OMX3 기본 모델은 기존 E 250k 경로입니다.
+- OMX4는 담당자 표에 맞춰 `warehouse_item_f_v3_5_act_300k/checkpoints/230000/pretrained_model`을 사용합니다. 모델 가중치를 다운로드하거나 변환한 것은 아니므로 Pi에 해당 체크포인트가 있어야 합니다.
+- 공개 [F v3_5 230k 모델 설정](https://huggingface.co/Jeonminjun/warehouse_item_f_v3_5_act_230k/blob/main/config.json)은 `top`·`wrist` RGB 각 640×480, 상태/출력 각 6개입니다. [학습 설정](https://huggingface.co/Jeonminjun/warehouse_item_f_v3_5_act_230k/blob/main/train_config.json)의 출력 폴더는 `warehouse_item_f_v3_5_act_300k`입니다. 실제 Pi 체크포인트의 config/전처리 파일도 실행 전에 검사합니다.
+- OMX4 손목 카메라 경로는 유지했습니다. 상단 카메라는 확인되지 않아 `SET_OMX4_TOP_CAMERA`로 표시했습니다. 현장 USB 카메라라면 실제 경로를 지정하고, RealSense라면 `type: intelrealsense`와 해당 장치 설정으로 바꾸세요. YAML의 `top`·`wrist` 키는 유지해야 합니다.
+- OMX4 기존 모터 보정 ID는 유지했습니다. 새 모델이 학습한 초기 자세에서 홈을 등록해야 하며, 예전 모델의 홈 값을 그대로 복사하지 마세요.
 - 파일 경로는 `~`와 환경변수를 지원하며 상대 경로는 저장소 루트 기준입니다.
 - `hardware.calibration_file`의 파일명은 `hardware.robot_id`와 일치해야 합니다.
 - 카메라 키/해상도는 모델 config와 일치해야 합니다. 체크포인트의 전처리/후처리와 상태 파일도 필요합니다.

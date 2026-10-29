@@ -1,5 +1,5 @@
 # Verify all paths and register a model-compatible Home before motion.
-# OMX1 intentionally preserves the legacy A->B / B->A mapping.
+# F v3_5 checkpoint 230000 requires both top and wrist RGB inputs.
 # Position units are normalized, NOT degrees.
 schema_version: 1
 device_id: omx4
@@ -10,6 +10,16 @@ hardware:
   calibration_file: ~/.cache/huggingface/lerobot/calibration/robots/omx_follower/omx_f_test_follower_arm.json
   disable_torque_on_disconnect: false
   cameras:
+    # Set the actual top camera type/path on OMX4 before commissioning.
+    top:
+      type: opencv
+      index_or_path: /dev/v4l/by-id/SET_OMX4_TOP_CAMERA
+      width: 640
+      height: 480
+      fps: 30
+      processing_fps: 30
+      fourcc: MJPG
+      warmup_s: 5
     wrist:
       type: opencv
       index_or_path: /dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0
@@ -53,7 +63,7 @@ models:
       precision: fp32
       items:
         F:
-          path: lerobot_unified/outputs/train/warehouse_item_f_129_merged_wrist_only_act_300k/checkpoints/250000/pretrained_model
+          path: lerobot_unified/outputs/train/warehouse_item_f_v3_5_act_300k/checkpoints/230000/pretrained_model
           task: Pick up item F, place it on the conveyor, and return to the initial
             pose
     int8_candidate:
