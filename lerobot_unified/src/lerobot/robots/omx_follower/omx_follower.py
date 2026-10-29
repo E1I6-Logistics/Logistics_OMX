@@ -98,17 +98,24 @@ class OmxFollower(Robot):
         - If no calibration file exists, use factory default values (homing_offset=0, range_min=0, range_max=4095)
         """
 
-        self.bus.connect()
-        if not self.is_calibrated and calibrate:
-            logger.info(
-                "Mismatch between calibration values in the motor and the calibration file or no calibration file found"
-            )
-            self.calibrate()
-
-        for cam in self.cameras.values():
-            cam.connect()
-
-        self.configure()
+        from omx_manager.hardware import port_lock, cleanup_resources
+        self._omx_port_lease = port_lock(self.config.port)
+        self._omx_port_lease.__enter__()
+        try:
+            self.bus.connect()
+            # Calibration is a physical identity, never repair it by writing defaults.
+            if not self.calibration or not self.is_calibrated:
+                raise RuntimeError("Missing/mismatched OMX calibration; automatic calibration writes are forbidden")
+            self._check_motor_health()
+            for name in self.bus.motors:
+                expected = 5 if name == "gripper" else 4
+                if self.bus.read("Operating_Mode", name) != expected:
+                    raise RuntimeError(f"{name}: existing motor mode must be {expected}; review locally, no automatic mode rewrite")
+            for cam in self.cameras.values():
+                cam.connect()
+        except BaseException:
+            cleanup_resources(robot=self)
+            raise
         logger.info(f"{self} connected.")
 
     @property
@@ -116,28 +123,22 @@ class OmxFollower(Robot):
         return self.bus.is_calibrated
 
     def calibrate(self) -> None:
-        self.bus.disable_torque()
-        logger.info(f"\nUsing factory default calibration values for {self}")
-        logger.info(f"\nWriting default configuration of {self} to the motors")
-        for motor in self.bus.motors:
-            self.bus.write("Operating_Mode", motor, OperatingMode.EXTENDED_POSITION.value)
+        raise RuntimeError("OMX factory calibration writes disabled. Use omx_control capture/home; preserve the trained calibration")
 
-        for motor in self.bus.motors:
-            self.bus.write("Drive_Mode", motor, DriveMode.NON_INVERTED.value)
-
-        self.calibration = {}
-        for motor, m in self.bus.motors.items():
-            self.calibration[motor] = MotorCalibration(
-                id=m.id,
-                drive_mode=0,
-                homing_offset=0,
-                range_min=0,
-                range_max=4095,
-            )
-
-        self.bus.write_calibration(self.calibration)
-        self._save_calibration()
-        logger.info(f"Calibration saved to {self.calibration_fpath}")
+    def _check_motor_health(self, require_torque=False):
+        # Poll health at 2Hz; after a long inference it is checked before sending.
+        now = time.monotonic()
+        if now - getattr(self, "_omx_last_health", -1e9) >= .5:
+            torque_on = True
+            for name in self.bus.motors:
+                status = self.bus.read("Hardware_Error_Status", name)
+                if status:
+                    raise RuntimeError(f"{name}: hardware fault {status}; no automatic reboot or torque retry")
+                torque_on = torque_on and self.bus.read("Torque_Enable", name) == 1
+            self._omx_torque_on = torque_on
+            self._omx_last_health = now
+        if require_torque and not getattr(self, "_omx_torque_on", False):
+            raise RuntimeError("Torque OFF; use the explicitly confirmed follower arm operation")
 
     def configure(self) -> None:
         with self.bus.torque_disabled():
@@ -173,6 +174,12 @@ class OmxFollower(Robot):
     def get_observation(self) -> RobotObservation:
         # Read arm position
         start = time.perf_counter()
+        self._check_motor_health()
+        raw = self.bus.sync_read("Present_Position", normalize=False)
+        for name, value in raw.items():
+            cal = self.calibration[name]
+            if not cal.range_min <= value <= cal.range_max:
+                raise RuntimeError(f"{name}: raw position outside trained calibration range; refusing clamped observation")
         obs_dict = self.bus.sync_read("Present_Position")
         obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
         dt_ms = (time.perf_counter() - start) * 1e3
@@ -209,7 +216,9 @@ class OmxFollower(Robot):
             RobotAction: The action sent to the motors, potentially clipped.
         """
 
-        goal_pos = {key.removesuffix(".pos"): val for key, val in action.items() if key.endswith(".pos")}
+        from omx_manager.home import joints
+        # Reject NaN/missing/out-of-range targets before SDK normalization can clamp them.
+        goal_pos = joints(action)
 
         # Cap goal position when too far away from present position.
         # /!\ Slower fps expected due to reading from the follower.
@@ -218,14 +227,14 @@ class OmxFollower(Robot):
             goal_present_pos = {key: (g_pos, present_pos[key]) for key, g_pos in goal_pos.items()}
             goal_pos = ensure_safe_goal_position(goal_present_pos, self.config.max_relative_target)
 
-        # Send goal position to the arm
+        # A hardware fault must also block commands after long inference.
+        self._check_motor_health(require_torque=True)
         self.bus.sync_write("Goal_Position", goal_pos)
         return {f"{motor}.pos": val for motor, val in goal_pos.items()}
 
-    @check_if_not_connected
     def disconnect(self):
-        self.bus.disconnect(self.config.disable_torque_on_disconnect)
-        for cam in self.cameras.values():
-            cam.disconnect()
-
+        from omx_manager.hardware import cleanup_resources
+        failures = cleanup_resources(robot=self)
+        for failure in failures:
+            logger.warning("OMX cleanup: %s", failure)
         logger.info(f"{self} disconnected.")

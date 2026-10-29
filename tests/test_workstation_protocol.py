@@ -56,7 +56,7 @@ def build_fake_strategy():
         def __init__(self, command_path, status_path):
             self.config = SimpleNamespace(workstation_status_file=str(status_path),
                                           workstation_control_file=str(command_path),
-                                          workstation_poll_s=.01, home_tolerance=7,
+                                          workstation_poll_s=.01, workstation_job_timeout_s=180, home_tolerance=7,
                                           home_leave_tolerance=12,
                                           idle_complete_joint_delta=.6,
                                           idle_complete_hold_s=.08)

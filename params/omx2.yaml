@@ -1,0 +1,96 @@
+# Verify all paths and register a model-compatible Home before motion.
+# OMX1 intentionally preserves the legacy A->B / B->A mapping.
+# Position units are normalized, NOT degrees.
+schema_version: 1
+device_id: omx2
+role: pickup
+hardware:
+  port: /dev/serial/by-id/usb-ROBOTIS_OpenRB-150_1B38CA3B503059384C2E3120FF082F2C-if00
+  robot_id: omx_cd_follower_arm
+  calibration_file: ~/.cache/huggingface/lerobot/calibration/robots/omx_follower/omx_cd_follower_arm.json
+  disable_torque_on_disconnect: false
+  cameras:
+    wrist:
+      type: opencv
+      index_or_path: /dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0
+      width: 640
+      height: 480
+      fps: 30
+      processing_fps: 30
+      fourcc: MJPG
+      warmup_s: 5
+    front:
+      type: intelrealsense
+      serial_number_or_name: SET_OMX2_REALSENSE_SERIAL
+      width: 640
+      height: 480
+      fps: 30
+      use_rgb: true
+      use_depth: false
+      warmup_s: 5
+home:
+  target: null
+  binding: null
+  tolerance:
+    shoulder_pan: 7.0
+    shoulder_lift: 7.0
+    elbow_flex: 7.0
+    wrist_flex: 7.0
+    wrist_roll: 7.0
+    gripper: 7.0
+  hold_s: 0.5
+  unload_hold_s: 15.0
+  still_delta: 0.6
+  max_sample_gap_s: 0.2
+  capture_s: 2.0
+  capture_max_span: 0.8
+  arrival_tolerance: 0.8
+  move_speed: 3.0
+  move_timeout_s: 20.0
+  max_start_error: 15.0
+  max_step: 0.3
+counting:
+  leave_tolerance: 12.0
+  min_cycle_s: 5.0
+  stall_s: 15.0
+  progress_epsilon: 0.5
+models:
+  active_profile: original
+  profiles:
+    original:
+      runtime: lerobot_pytorch
+      precision: fp32
+      items:
+        C:
+          path: lerobot_unified/outputs/train/warehouse_item_c_160_merged_basket_fix_v1_act_200k/checkpoints/170000/pretrained_model
+          task: Pick up item C, place it in the basket, and return to the initial
+            pose
+        D:
+          path: lerobot_unified/outputs/train/warehouse_item_d_190_merged_act_200k/checkpoints/170000/pretrained_model
+          task: Pick up item D, place it in the basket, and return to the initial
+            pose
+    int8_candidate:
+      runtime: null
+      precision: int8
+      validated: false
+      items:
+        C:
+          path: null
+          task: null
+        D:
+          path: null
+          task: null
+runtime:
+  broker_host: 192.168.0.16
+  broker_port: 1883
+  cpu_threads: 2
+  fps: 30
+  cycle_timeout_s: 180
+  order_per_unit_s: 180
+  order_load_grace_s: 60
+  startup_timeout_s: 120
+  heartbeat_timeout_s: 45
+  shutdown_timeout_s: 12
+recovery:
+  retry_initial_s: 3
+  retry_max_s: 60

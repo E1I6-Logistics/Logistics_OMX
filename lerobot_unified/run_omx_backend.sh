@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+echo '[ERROR] Legacy fixed-option launcher disabled on this branch. Use omx_control --config params/omxN.yaml run --confirm-motion.' >&2
+exit 2
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -73,7 +75,7 @@ esac
 OMX_PYTHON_ENV_PATH="${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}"
 [[ -f "$OMX_PYTHON_ENV_PATH/bin/activate" ]] || { echo '[ERROR] 기존 venv 없음' >&2; exit 1; }
 source "$OMX_PYTHON_ENV_PATH/bin/activate"
-export PYTHONPATH="$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$SCRIPT_DIR/..:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 python3 -c 'import lerobot; print("[SOURCE]", lerobot.__file__)' 
 
 

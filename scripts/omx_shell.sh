@@ -44,3 +44,8 @@ else
   # OMX3/4에는 재고 초기화 기능이 없어야 한다.
   unset -f omx_reset 2>/dev/null || true
 fi
+
+# Follower-only Home registration and parameter menu (runtime must be stopped).
+omx_calibrate() {
+  "$HOME/Logistics_OMX/omx_control" --config "$HOME/Logistics_OMX/params/$OMX_ROBOT_ID.yaml" menu
+}

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+echo '[ERROR] Legacy fixed-option launcher disabled on this branch. Use omx_control --config params/omxN.yaml run --confirm-motion.' >&2
+exit 2
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 OMX_PYTHON_ENV_PATH="${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}"
 [[ -f "$OMX_PYTHON_ENV_PATH/bin/activate" ]] || { echo '[ERROR] Existing venv missing' >&2; exit 1; }
 source "$OMX_PYTHON_ENV_PATH/bin/activate"
-export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PWD/..:$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 F_POLICY_PATH="${F_POLICY_PATH:-${OMX4_POLICY_PATH:-outputs/train/warehouse_item_f_129_merged_wrist_only_act_300k/checkpoints/250000/pretrained_model}}"
 F_FOLLOWER_PORT="${F_FOLLOWER_PORT:-${OMX4_FOLLOWER_PORT:-/dev/serial/by-id/usb-ROBOTIS_OpenRB-150_7E7FE4BC503059384C2E3120FF080E2D-if00}}"
 F_ROBOT_ID="${OMX4_LEROBOT_ROBOT_ID:-omx_f_test_follower_arm}"

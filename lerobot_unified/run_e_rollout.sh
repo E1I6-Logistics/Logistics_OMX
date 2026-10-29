@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+echo '[ERROR] Legacy fixed-option launcher disabled on this branch. Use omx_control --config params/omxN.yaml run --confirm-motion.' >&2
+exit 2
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")"
 OMX_PYTHON_ENV_PATH="${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}"
 [[ -f "$OMX_PYTHON_ENV_PATH/bin/activate" ]] || { echo '[ERROR] 기존 venv 없음' >&2; exit 1; }
 source "$OMX_PYTHON_ENV_PATH/bin/activate"
-export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$PWD/..:$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
 
 : "${E_POLICY_PATH:?E_POLICY_PATH에 E ACT pretrained_model 경로를 지정하세요.}"
 : "${E_FOLLOWER_PORT:?E_FOLLOWER_PORT에 E 팔로워 OpenRB by-id 경로를 지정하세요.}"

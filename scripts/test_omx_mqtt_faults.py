@@ -12,10 +12,13 @@ import os
 from pathlib import Path
 import tempfile
 import threading
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 BASE = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(BASE))
+from omx_manager.journal import JobJournal
 TARGET = BASE / 'lerobot_unified' / 'omx_mqtt_client.py'
 NAMES = {'execute_orders', 'run_job', 'on_command'}
 
@@ -68,6 +71,8 @@ def setup(code, state=None, clock=None, pid='12345', dead=False):
     fs = FakeState(state)
     abort_tmp = tempfile.TemporaryDirectory()
     env['OMX_ABORT_FILE'] = str(Path(abort_tmp.name)/'abort.flag')
+    journal=JobJournal(Path(abort_tmp.name)/'jobs.json')
+    journal.begin('job',{'A':1})
     ns = dict(
         time=SimpleNamespace(monotonic=clock.monotonic, sleep=clock.sleep),
         os=SimpleNamespace(environ=env, kill=kill),
@@ -79,7 +84,7 @@ def setup(code, state=None, clock=None, pid='12345', dead=False):
         current_job_id=None, current_orders=None,current_state='IDLE',
         job_lock=threading.Lock(), workstation_ready=lambda:True,
         execute_unload=lambda *args:None, make_orders=lambda d:[(k,v) for k,v in d.items() if v],
-        threading=threading,
+        threading=threading, journal=journal,
     )
     exec(code, ns)
     return ns, fs, clock, publishes, abort_tmp

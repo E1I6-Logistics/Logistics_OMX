@@ -1,3 +1,12 @@
+# 팔로워 전용 YAML 보정·복구 브랜치 안내
+
+현재 브랜치의 시작 문서는 [OMX_CALIBRATION_MANAGER_KO.md](doc/OMX_CALIBRATION_MANAGER_KO.md)입니다.
+`omx_control --config params/omx1.yaml menu`로 장치별 설정·관절 진단·홈 등록을 수행합니다.
+홈 미등록 상태에서는 구동하지 않습니다. 기존 캘리브레이션을 자동으로 재작성하지 않습니다.
+현재 실행은 공통 YAML 감독기를 사용하며 아래 구형 런처 설명과 일부 차이가 있습니다.
+
+---
+
 # Logistics_OMX — OMX1~4 실운영 코드
 
 이 저장소는 4대의 Raspberry Pi 5가 각각 LeRobot ACT 정책으로 로봇팔을 제어하는 운영 코드입니다. 현재 기준 브랜치: `refactor/omx-unified-runtime` (검증 후 배포).

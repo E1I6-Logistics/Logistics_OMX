@@ -27,7 +27,7 @@ class Suite(unittest.TestCase):
   self.assertIsNone(fun({'j1':float('inf')},{'j1':0.}))
  def test_timeouts_and_stalls(self):
   t=B.read_text(encoding='utf-8')
-  for token in ['pickup_cycle_timeout_s','workstation_job_timeout_s','pickup_home_stall_s','engine.pause()','return_detector_armed']:
+  for token in ['pickup_cycle_timeout_s','workstation_job_timeout_s','engine.pause()','return_detector_armed']:
    self.assertIn(token,t)
   self.assertIn('write_status("ERROR"',t)
  def test_ipc_atomic_and_session(self):

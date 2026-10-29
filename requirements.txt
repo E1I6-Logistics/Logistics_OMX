@@ -19,3 +19,6 @@ safetensors==0.8.0
 torch==2.11.0
 torchcodec==0.11.1
 torchvision==0.26.0
+
+# YAML-only manager (no new inference runtime or model conversion)
+PyYAML>=6.0,<7

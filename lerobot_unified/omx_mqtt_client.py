@@ -29,7 +29,7 @@ args = parser.parse_args()
 
 robot_id = args.robot_id
 broker_ip = args.broker_ip
-broker_port = 1883
+broker_port = int(os.environ.get("OMX_BROKER_PORT", "1883"))
 
 PICKUP_ITEMS = {"omx1": ("A", "B"), "omx2": ("C", "D")}
 WORKSTATION_IDS = ("omx3", "omx4")
@@ -71,6 +71,8 @@ job_lock = threading.Lock()
 current_job_id = None
 current_state = "IDLE"
 current_orders = None
+from omx_manager.journal import JobJournal
+journal = JobJournal(os.environ.get("OMX_JOB_JOURNAL", str(state_path.parent / "jobs.json")))
 omx3_process = None
 workstation_session = os.environ.get("OMX_WORKSTATION_SESSION", "")
 workstation_status = Path(os.environ.get("OMX_WORKSTATION_STATUS_FILE", "/nonexistent/workstation_status.json"))
@@ -238,7 +240,9 @@ def execute_orders(job_id, orders):
 
         token = accepted["order_started_at_epoch"]
 
-        deadline = time.monotonic() + per_item_timeout
+        per_unit = float(os.environ.get("OMX_PICKUP_PER_UNIT_S", str(per_item_timeout)))
+        grace = float(os.environ.get("OMX_PICKUP_LOAD_GRACE_S", "60"))
+        deadline = time.monotonic() + per_unit * qty + grace
         last_progress = None
 
         # -----------------------------------------------------
@@ -396,6 +400,15 @@ def run_job(job_id, orders):
                     print("[SAFETY] Failed to signal rollout abort", flush=True)
 
     finally:
+        done_message = ("Home stillness detected after movement; physical unloading unverified"
+                        if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
+        try:
+            journal.finish(job_id, success, done_message if success else result_message)
+        except Exception as exc:
+            success = False
+            result_message = f"Journal commit failed: {exc}"
+            abort_path = os.environ.get("OMX_ABORT_FILE", "")
+            if abort_path: Path(abort_path).touch(exist_ok=True)
         # 작업이 끝난 뒤 상태를 먼저 정리해야 Result 직후의 다음 Command를 받을 수 있다.
         current_job_id = None
         current_orders = None
@@ -410,7 +423,7 @@ def run_job(job_id, orders):
             print(f"[ORDER] Job 완료: {job_id}", flush=True)
 
         done_message = ("Home stillness detected after movement; physical unloading unverified"
-                        if robot_id in WORKSTATION_IDS else "Order completed")
+                        if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
         send_result(job_id, success, done_message if success else result_message)
 
 
@@ -429,7 +442,7 @@ def on_command(data):
     job_id = data.get("job_id")
     items = data.get("items")
 
-    if not job_id:
+    if not isinstance(job_id, str) or not job_id or len(job_id) > 200 or not isinstance(items, dict):
 
         print("[MQTT] job_id가 없습니다.", flush=True)
 
@@ -443,6 +456,20 @@ def on_command(data):
     print(f"Job   : {job_id}")
     print(f"Items : {items}")
     print("==============================")
+
+    try:
+        prior = journal.lookup(job_id, items)
+    except (ValueError, OSError) as exc:
+        print(f"[ERROR] Job journal: {exc}", flush=True)
+        send_ack(job_id, False)
+        return
+    if prior and current_job_id != job_id:
+        if prior["state"] in ("DONE", "INTERRUPTED"):
+            send_ack(job_id, True)
+            send_result(job_id, prior.get("success", False), prior.get("message", "Interrupted physical job"))
+        else:
+            send_ack(job_id, False)
+        return
 
     if robot_id in WORKSTATION_IDS and current_job_id != job_id and not workstation_ready():
         print(f"[MQTT] {robot_id} not READY; rejecting command {job_id}", flush=True)
@@ -514,6 +541,11 @@ def on_command(data):
     # 주문 접수
     # =========================================================
 
+    try:
+        journal.begin(job_id, items)
+    except Exception:
+        job_lock.release()
+        raise
     current_job_id = job_id
     current_orders = tuple(orders)
     current_state = "WORKING"
@@ -568,7 +600,10 @@ def on_message(client, userdata, msg):
         return
 
     if msg.topic == (f"{robot_id}/command"):
-
+        if msg.retain:
+            print("[MQTT] Retained command ignored", flush=True)
+            return
+        if not isinstance(data, dict): return
         on_command(data)
 
 
