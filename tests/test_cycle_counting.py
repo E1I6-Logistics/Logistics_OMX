@@ -367,3 +367,109 @@ def test_normal_manager_never_inherits_calibration_control_flags(monkeypatch):
     monkeypatch.setenv('OMX_CYCLE_CALIBRATION','1');monkeypatch.setenv('OMX_CALIBRATION_COMMAND','stale.json')
     _,_,env,_=build(trained(),'cfg.yaml')
     assert 'OMX_CYCLE_CALIBRATION' not in env and 'OMX_CALIBRATION_COMMAND' not in env
+
+
+@pytest.mark.parametrize('device',['omx1','omx2','omx3','omx4'])
+def test_return_sampling_waits_out_initial_motion_without_relaxing_span(device,monkeypatch):
+    from omx_manager import cycle_calibration as CC
+    cfg=trained(device);clock=Clock();calls=[]
+    def observe():
+        calls.append(clock())
+        return pose(wrist=-10+max(0.,2.-clock()*4),grip=30+clock()*10)
+    monkeypatch.setattr(CC,'heartbeat',lambda:None)
+    samples=CC.collect_return(NS(get_joint_observation=observe),cfg,clock,clock.sleep,lambda:False)
+    assert clock()>.6 and clock()<CC.options(cfg)['calibration_settle_timeout_s']
+    assert len(samples)>=3 and calls[-1]-calls[-len(samples)]>=.6-1e-9
+    assert max(q['wrist_flex'] for q in samples)-min(q['wrist_flex'] for q in samples)<=cfg['home']['capture_max_span']
+
+
+def test_unstable_return_is_bounded_reports_joint_and_never_saves_or_commands(monkeypatch):
+    from omx_manager import cycle_calibration as CC
+    cfg=trained();cfg['counting']['calibration_settle_timeout_s']=1.
+    clock=Clock();device=NS(send=Mock());count=0
+    def observe():
+        nonlocal count
+        count+=1;return pose(wrist=-10 if count%2 else -8)
+    device.get_joint_observation=observe
+    monkeypatch.setattr(CC,'heartbeat',lambda:None)
+    with pytest.raises(CC.ReturnNotSettled,match=r'wrist_flex span=2.000 limit=0.800'):
+        CC.collect_return(device,cfg,clock,clock.sleep,lambda:False)
+    assert clock()<=1.06;device.send.assert_not_called()
+
+
+def test_return_feedback_gap_requires_new_full_hold(monkeypatch):
+    from omx_manager import cycle_calibration as CC
+    cfg=trained();clock=Clock();count=0
+    def observe():
+        nonlocal count
+        count+=1
+        if count==8:clock.sleep(.3)
+        return pose(wrist=-10)
+    monkeypatch.setattr(CC,'heartbeat',lambda:None)
+    samples=CC.collect_return(NS(get_joint_observation=observe),cfg,clock,clock.sleep,lambda:False)
+    assert clock()>=1.25-1e-9 and len(samples)>=3
+
+
+def test_settling_never_learns_stretched_pose_or_ignores_owner_death(monkeypatch):
+    from omx_manager import cycle_calibration as CC
+    cfg=trained();clock=Clock();device=NS(get_joint_observation=Mock(return_value=pose(40)))
+    with pytest.raises(C.ConfigError,match='stretched'):
+        CC.collect_return(device,cfg,clock,clock.sleep,lambda:False)
+    monkeypatch.setattr(CC,'parent_alive',lambda:False)
+    device.get_joint_observation.reset_mock()
+    with pytest.raises(InterruptedError):CC.collect_return(device,cfg,clock,clock.sleep,lambda:False)
+    device.get_joint_observation.assert_not_called()
+
+
+def test_calibration_rejected_window_keeps_session_paused_and_retries_observation_only(tmp_path,monkeypatch):
+    from omx_manager import cycle_calibration as CC
+    cfg=trained();clock=Clock();raw=NS(_omx_manager_snapshot=cfg,q=pose(wrist=-10))
+    command=tmp_path/'cmd.json';status=tmp_path/'status.json';output=tmp_path/'captures.json'
+    for key,value in dict(OMX_CALIBRATION_COMMAND=command,OMX_CALIBRATION_STATUS=status,OMX_CALIBRATION_OUTPUT=output,
+                          OMX_SESSION='s',OMX_CALIBRATION_ITEM='A').items():monkeypatch.setenv(key,str(value))
+    monkeypatch.setattr(CC,'time',NS(perf_counter=clock,sleep=clock.sleep,time=clock))
+    monkeypatch.setattr(CC,'heartbeat',lambda:None)
+    captures=0;seq=0;sends=0;reject_seen=False;phases=[]
+    engine=Mock()
+    def commands(_):
+        nonlocal seq,reject_seen
+        row=json.loads(status.read_text());phases.append(row['phase'])
+        if row['phase']=='READY':op='START'
+        elif row['phase']=='RUNNING':op='CONFIRM' if sends>=35 else 'WAIT'
+        elif row['phase']=='CAPTURE_RETRY':
+            reject_seen=True
+            assert not output.exists() and engine.resume.call_count==1
+            op='CONFIRM'
+        elif row['phase']=='CAPTURED':op='STOP'
+        else:op='WAIT'
+        if op!='WAIT':seq+=1
+        return dict(session='s',seq=seq,command=op)
+    def collect(*args):
+        nonlocal captures
+        captures+=1
+        if captures==1:raise CC.ReturnNotSettled('wrist_roll span=1.0 limit=0.8')
+        return [pose(wrist=-10)]*4
+    def send(*args):
+        nonlocal sends
+        sends+=1;return {'sent':True}
+    monkeypatch.setattr(CC,'read_json',commands);monkeypatch.setattr(CC,'collect_return',collect)
+    class Stop:
+        def is_set(self):return clock()>10
+        def wait(self,dt):clock.sleep(dt)
+    class Timer:
+        def __init__(self,*a,**kw):pass
+        def tick(self,**kw):pass
+        def restart(self):pass
+        def wait(self):clock.sleep(.05)
+    strategy=NS(_engine=engine,_interpolator=NS(multiplier=1,needs_new_action=lambda:True),reset_control_state=lambda:None,
+                _get_observation_with_camera_recovery=lambda *a:(raw.q.copy(),False),_process_observation_and_notify=lambda p,o:o)
+    ctx=NS(hardware=NS(robot_wrapper=NS(inner=raw)),runtime=NS(cfg=NS(fps=30),shutdown_event=Stop(),cadence_report=None),processors=None)
+    CC.run_rollout(strategy,ctx,send,Timer)
+    rows=json.loads(output.read_text())['captures']
+    assert reject_seen and captures==2 and sends==35 and engine.resume.call_count==1
+    assert len(rows)==1 and rows[0]['actions']==35 and rows[0]['duration_s']<2
+
+
+def test_settle_timeout_is_configurable_but_must_exceed_hold():
+    cfg=trained();cfg['counting']['calibration_settle_timeout_s']=.6
+    with pytest.raises(C.ConfigError):C.validate(cfg)

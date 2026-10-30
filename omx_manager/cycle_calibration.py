@@ -7,10 +7,11 @@ import subprocess
 import sys
 import time
 import uuid
+from collections import deque
 
 from .config import ConfigError,check_files,digest,load,profile,require_home,save,write_json,diagnostic_options
 from .cycles import ARM,PRIMARY,learn_profile,options
-from .home import joints,stable_pose
+from .home import joints
 from .hooks import heartbeat,initialize_home
 
 
@@ -36,26 +37,40 @@ def action_paused():
     return row.get('session')!=os.environ['OMX_SESSION'] or row.get('command')!='START'
 
 
+class ReturnNotSettled(ConfigError):
+    """A rejected observation window; no model resume or calibration save."""
+
+
 def collect_return(device,cfg,clock,sleep,stopped):
-    start=clock();last=None;samples=[]
-    while clock()-start<options(cfg)['calibration_hold_s'] or len(samples)<3:
-        if stopped():raise InterruptedError('Operator stopped calibration')
+    spec=options(cfg);start=clock();last=None;window=deque();reason='WAIT_SAMPLES'
+    limit=cfg['home']['capture_max_span']
+    while clock()-start<spec['calibration_settle_timeout_s']:
+        if stopped() or not parent_alive():raise InterruptedError('Operator stopped calibration')
         q=joints(device.get_joint_observation());now=clock()
         if last is not None and not 0<now-last<=cfg['home']['max_sample_gap_s']:
-            raise ConfigError('Return feedback gap: no calibration saved')
+            window.clear();reason='FEEDBACK_GAP: continuous stable window restarted'
         if any(abs(q[j]-cfg['home']['target'][j])>cfg['home']['max_start_error'] for j in ARM):
             raise ConfigError('Arm has not returned near Home; stretched positions cannot be learned')
         if any(abs(q[j]-cfg['home']['target'][j])>cfg['home']['tolerance'][j] for j in PRIMARY):
             raise ConfigError('Shoulder/elbow have not returned near original Home')
-        samples.append(q);last=now
+        # Keep only a continuous, stable suffix. Initial deceleration or one
+        # outlier cannot poison every later window, or contribute to hold time.
+        window.append((now,q));last=now
+        while len(window)>1 and window[1][0]<=now-spec['calibration_hold_s']:
+            window.popleft()
+        spans={j:max(row[j] for _,row in window)-min(row[j] for _,row in window) for j in ARM}
+        moving={j:span for j,span in spans.items() if span>limit}
+        if moving:
+            reason='; '.join(f'{j} span={span:.3f} limit={limit:.3f}' for j,span in sorted(moving.items(),key=lambda row:-row[1]))
+            # Discard unstable history until the remaining suffix is stable.
+            while len(window)>1 and any(max(row[j] for _,row in window)-min(row[j] for _,row in window)>limit for j in ARM):
+                window.popleft()
         heartbeat()
-        if clock()-start>5:raise TimeoutError('Return sample timeout')
+        if stopped() or not parent_alive():raise InterruptedError('Operator stopped calibration')
+        if len(window)>=3 and now-window[0][0]+1e-9>=spec['calibration_hold_s']:
+            return [row for _,row in window]
         sleep(.05)
-    # Ignore variable gripper opening for stillness, but retain it in raw records.
-    for j in ARM:
-        if max(q[j] for q in samples)-min(q[j] for q in samples)>cfg['home']['capture_max_span']:
-            raise ConfigError('Return is still moving; confirm only after a completed cycle')
-    return samples
+    raise ReturnNotSettled(f'Return did not settle in {spec["calibration_settle_timeout_s"]:g}s; {reason}. Model paused; no sample saved')
 
 
 def run_rollout(strategy,ctx,send_action,make_timer):
@@ -83,11 +98,14 @@ def run_rollout(strategy,ctx,send_action,make_timer):
                 if operation=='START' and phase=='READY':
                     strategy.reset_control_state();engine.resume();timer.restart()
                     trajectory=[];actions=0;started=time.perf_counter();publish('RUNNING')
-                elif operation=='CONFIRM' and phase=='RUNNING':
+                elif operation=='CONFIRM' and phase in ('RUNNING','CAPTURE_RETRY'):
                     engine.pause();strategy.reset_control_state()
                     if actions<options(cfg)['min_actions']:raise ConfigError('Not enough model actions to confirm a cycle')
-                    duration=time.perf_counter()-started
-                    samples=collect_return(raw,cfg,time.perf_counter,time.sleep,stop.is_set)
+                    if phase=='RUNNING':duration=time.perf_counter()-started
+                    publish('SETTLING')
+                    try:samples=collect_return(raw,cfg,time.perf_counter,time.sleep,stop.is_set)
+                    except ReturnNotSettled as exc:
+                        publish('CAPTURE_RETRY',reason=str(exc));continue
                     captures.append(dict(confirmed=True,duration_s=duration,actions=actions,trajectory=trajectory,return_samples=samples))
                     write_json(output,dict(item=item,session=session,captures=captures))
                     publish('CAPTURED')
@@ -153,7 +171,9 @@ def run(config_path,item):
         deadline=time.monotonic()+timeout
         while time.monotonic()<deadline:
             row=check_worker()
-            if row.get('session')==session and row.get('phase')==expected and row.get('seq',-1)>=sequence:return row
+            if row.get('session')==session and row.get('seq',-1)>=sequence:
+                if row.get('phase')==expected:return row
+                if expected=='CAPTURED' and row.get('phase')=='CAPTURE_RETRY':return row
             time.sleep(.1)
         raise TimeoutError('Calibration phase timeout: '+expected)
     def enter(prompt):
@@ -175,7 +195,11 @@ def run(config_path,item):
             enter(f'[보정 {item} {index+1}/{required}] 물품·작업 공간을 준비하고 손을 뗀 뒤 Enter: 모델 동작 시작 / q: 취소')
             wait_phase('RUNNING',send('START'),cfg['runtime']['startup_timeout_s'])
             enter('실제로 집기·놓기·복귀를 마쳤을 때 Enter: 정상 사이클 확인. 헛집기/미완료는 q로 취소.')
-            wait_phase('CAPTURED',send('CONFIRM'),cfg['home']['capture_s']+10)
+            while True:
+                row=wait_phase('CAPTURED',send('CONFIRM'),options(cfg)['calibration_settle_timeout_s']+10)
+                if row['phase']=='CAPTURED':break
+                print('[보정 재확인] '+row['reason'],flush=True)
+                enter('모델은 정지 상태입니다. 팔을 만지지 말고 안정된 정상 복귀 자세인지 확인 후 Enter: 관측만 재시도 / q: 취소')
             print('정상 복귀 기록 완료. 다음 시작을 위해 기존 고정 홈으로 제한 이동합니다.',flush=True)
             wait_phase('READY',send('HOME'),cfg['home']['move_timeout_s']+5)
         send('STOP')

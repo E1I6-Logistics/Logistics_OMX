@@ -20,6 +20,7 @@ COMMENTS = {
     "min_return_tolerance":"복귀 영역 관절별 최소 허용 폭(정규화 단위)",
     "max_return_tolerance":"자동 계산 가능한 복귀 허용 폭의 최대값: 초과하면 저장 거절",
     "calibration_hold_s":"정상 완료 확인 후 복귀 자세를 안정적으로 관측할 시간(초)",
+    "calibration_settle_timeout_s":"Enter 후 모델 명령을 멈추고 연속 안정 구간을 기다릴 최대 시간(초): 초과하면 정지 상태로 재확인 대기",
     "center":"모델 정상 복귀의 중앙 자세: 고정 시작 홈과 별개, 자동 계산",
     "confirmed_cycles":"사람이 실제 정상 완료를 확인한 학습 사이클 수",
     "min_excursion":"확인한 모델 사이클 중 최소 주요 관절 이동 폭(정규화 단위)",

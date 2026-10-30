@@ -10,7 +10,7 @@ ARM=JOINTS[:-1]
 PRIMARY=JOINTS[:3]
 DEFAULTS=dict(mode='cycle',profiles={},departure_hold_s=.3,min_actions=30,return_hold_s=.5,
               min_training_cycles=3,tolerance_padding=1.5,min_return_tolerance=4.,max_return_tolerance=8.,
-              calibration_hold_s=.6)
+              calibration_hold_s=.6,calibration_settle_timeout_s=8.)
 
 
 def options(cfg): return dict(DEFAULTS,**cfg['counting'])
@@ -20,8 +20,11 @@ def validate_cycles(cfg):
     spec=options(cfg)
     if spec['mode'] not in ('cycle','ordered_stages'): raise ConfigError('Unknown counting.mode')
     for key,lo,hi in (('departure_hold_s',.1,5),('return_hold_s',.2,10),('tolerance_padding',.1,5),
-                      ('min_return_tolerance',.1,5),('max_return_tolerance',1,10),('calibration_hold_s',.3,5)):
+                      ('min_return_tolerance',.1,5),('max_return_tolerance',1,10),('calibration_hold_s',.3,5),
+                      ('calibration_settle_timeout_s',1,30)):
         number(spec[key],'counting.'+key,lo,hi)
+    if spec['calibration_settle_timeout_s']<=spec['calibration_hold_s']:
+        raise ConfigError('Calibration settle timeout must exceed its stable observation window')
     if spec['min_return_tolerance']>spec['max_return_tolerance']: raise ConfigError('Invalid return tolerance range')
     for key,lo,hi in (('min_actions',10,1000),('min_training_cycles',3,10)):
         if type(spec[key]) is not int or not lo<=spec[key]<=hi: raise ConfigError('Invalid counting.'+key)
