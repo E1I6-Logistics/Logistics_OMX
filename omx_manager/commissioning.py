@@ -24,6 +24,9 @@ def tune(cfg):
     result['counting']['mode']='cycle'
     if cfg['role']=='unload':
         result['unload'].update(sample_interval_s=.1,stable_samples=3,confirmation_s=.2,max_frame_age_s=.25)
+        from .rgb_roi import DEFAULTS as RGB_DEFAULTS
+        for key,value in RGB_DEFAULTS.items():result['unload'].setdefault(key,copy.deepcopy(value))
+        result['unload']['vision_method']='rgb_roi'
     return result
 
 
@@ -38,7 +41,12 @@ def require_commissioned(cfg):
         except ConfigError as exc: missing.append(str(exc))
     if cfg['role']=='unload':
         from .basket import BasketInspector
-        try: BasketInspector(cfg)
+        try:
+            inspector=BasketInspector(cfg)
+            if inspector.comparator and not inspector.spec['full_view_confirmed']:
+                raise ConfigError('Confirm entire basket interior and parking variation coverage before automatic unloading: unload.full_view_confirmed')
+            if inspector.comparator and inspector.comparator.reference_clipped>inspector.spec['max_clipped_ratio']:
+                raise ConfigError('Empty RGB ROI reference is overexposed; automatic empty verification unavailable. Inspect using omx_basket watch')
         except (ConfigError,OSError,ValueError) as exc: missing.append(str(exc))
     if missing: raise ConfigError(' / '.join(missing))
 
@@ -100,6 +108,8 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0):
             raise ConfigError('Basket inspection/reference capture requires strict registered Home')
     check_pose()
     spec=options(cfg)
+    # Reject stale reference geometry before paying camera connection/warmup cost.
+    inspector=None if capture else BasketInspector(cfg)
     camera=camera_for(cfg)
     try:
         opened=time.perf_counter()
@@ -123,7 +133,6 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0):
             image=np.median(np.stack(samples),axis=0).astype(np.uint8)
             check_pose()
             return image
-        inspector=BasketInspector(cfg)
         deadline=time.perf_counter()+spec['inspect_timeout_s']
         iterations=0;last_print=None;next_print=0.
         while watch or time.perf_counter()<deadline:

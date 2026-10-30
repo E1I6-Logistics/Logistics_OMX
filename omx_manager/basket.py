@@ -1,12 +1,13 @@
 """Small fixed-camera ROI comparison. No neural model, no object-count claim."""
 import time
 from .config import ConfigError, number, only_keys, path_value
+from .rgb_roi import DEFAULTS as RGB_DEFAULTS
 
 DEFAULTS = dict(camera="top", roi=None, reference=None, reference_binding=None,
                 pixel_threshold=25, empty_ratio=.01, occupied_ratio=.04,
                 illumination_limit=18, stability_delta=3., sample_interval_s=.1,
                 stable_samples=3,confirmation_s=.2,max_frame_age_s=.25,inspect_timeout_s=12., max_attempts=16,
-                max_no_change=2, job_timeout_s=900., require_quantity_match=True)
+                max_no_change=2, job_timeout_s=900., require_quantity_match=True,**RGB_DEFAULTS)
 
 
 def options(cfg): return dict(DEFAULTS, **cfg.get("unload", {}))
@@ -39,6 +40,8 @@ def validate_unload(cfg):
     if spec["stable_samples"] * spec["sample_interval_s"] >= spec["inspect_timeout_s"]:
         raise ConfigError("Inspection timeout must exceed sample window")
     if spec['confirmation_s']>=spec['inspect_timeout_s']:raise ConfigError('Confirmation window exceeds inspection timeout')
+    from .rgb_roi import validate
+    validate(spec)
 
 
 def crop(image, spec):
@@ -51,7 +54,9 @@ def crop(image, spec):
     if x < 0 or y < 0 or min(w,h)<8 or y+h>image.shape[0] or x+w>image.shape[1]:
         raise ConfigError("Basket ROI does not fit current image")
     # Fixed small analysis image; policy images are never resized or masked.
-    small = cv2.resize(image[y:y+h,x:x+w], (160,120), interpolation=cv2.INTER_AREA)
+    from .rgb_roi import SIZE
+    size=SIZE if spec.get('vision_method')=='rgb_roi' else (160,120)
+    small = cv2.resize(image[y:y+h,x:x+w], size, interpolation=cv2.INTER_AREA)
     return cv2.GaussianBlur(small,(3,3),0)
 
 
@@ -71,8 +76,16 @@ class BasketInspector:
         with np.load(path_value(self.spec["reference"]), allow_pickle=False) as data:
             self.reference = data["image"].copy()
             roi = data["roi"].tolist()
-        if self.reference.shape != (120,160,3) or self.reference.dtype != np.uint8 or roi != self.spec["roi"]:
+            saved_signature=str(data['roi_signature'].item()) if 'roi_signature' in data else None
+        enhanced=self.spec['vision_method']=='rgb_roi'
+        shape=(240,320,3) if enhanced else (120,160,3)
+        if self.reference.shape != shape or self.reference.dtype != np.uint8 or roi != self.spec["roi"]:
             raise ConfigError("Empty reference image/ROI mismatch; register again")
+        self.comparator=None
+        if enhanced:
+            from .rgb_roi import Comparator,signature
+            if saved_signature!=signature(self.spec):raise ConfigError('RGB ROI/polygon reference changed; run omx_basket capture with an empty basket')
+            self.comparator=Comparator(self.reference,self.spec)
         self.reference16=self.reference.astype(np.int16)
         self.reference_mean=self.reference.mean(axis=(0,1))
         self.reset()
@@ -88,6 +101,7 @@ class BasketInspector:
         self.latest = None
         self.since=None
         self.reason='WAIT_FRAME';self.processing_ms=0.;self.frame_age_ms=None
+        self.evidence={}
 
     def update(self, image, now, frame_timestamp):
         import numpy as np
@@ -112,12 +126,15 @@ class BasketInspector:
         # Reuse immutable reference statistics and one small int16 ROI buffer.
         # Full camera frames stay in the camera's same-process latest-frame buffer.
         current16=current.astype(np.int16)
-        self.ratio=float((np.max(np.abs(current16-self.reference16),axis=2)>=self.spec['pixel_threshold']).mean())
-        illumination=float(np.abs(current.mean(axis=(0,1))-self.reference_mean).max())
-        verdict = ("EMPTY" if self.ratio <= self.spec["empty_ratio"] else
-                   "OCCUPIED" if self.ratio >= self.spec["occupied_ratio"] else "UNKNOWN")
-        if illumination > self.spec["illumination_limit"]: verdict="UNKNOWN"
-        stable = self.previous is not None and float(np.abs(current16-self.previous).mean()) <= self.spec["stability_delta"]
+        if self.comparator:
+            self.evidence=self.comparator.compare(current);verdict=self.evidence['verdict'];self.ratio=self.evidence['changed_ratio']
+        else:
+            self.ratio=float((np.max(np.abs(current16-self.reference16),axis=2)>=self.spec['pixel_threshold']).mean())
+            illumination=float(np.abs(current.mean(axis=(0,1))-self.reference_mean).max())
+            verdict = ('EMPTY' if self.ratio<=self.spec['empty_ratio'] else 'OCCUPIED' if self.ratio>=self.spec['occupied_ratio'] else 'UNKNOWN')
+            if illumination>self.spec['illumination_limit']:verdict='UNKNOWN'
+        difference=None if self.previous is None else np.abs(current16-self.previous)
+        stable = difference is not None and float(difference[self.comparator.mask].mean() if self.comparator else difference.mean()) <= self.spec["stability_delta"]
         continuing=stable and verdict==self.verdict and verdict!='UNKNOWN'
         self.samples=self.samples+1 if continuing else 1 if verdict!='UNKNOWN' else 0
         self.since=self.since if continuing and self.since is not None else now if verdict!='UNKNOWN' else None
@@ -125,13 +142,22 @@ class BasketInspector:
         held=self.since is not None and now-self.since+1e-9>=self.spec['confirmation_s']
         self.result=verdict if self.samples>=self.spec['stable_samples'] and held else 'UNKNOWN'
         self.reason='CONFIRMED' if self.result!='UNKNOWN' else 'STABILIZING' if verdict!='UNKNOWN' else 'LIGHTING_OR_UNCERTAIN'
+        if self.comparator and verdict=='UNKNOWN':self.reason=self.evidence['evidence_reason']
         self.processing_ms=(time.perf_counter()-begun)*1000
         return self.result
 
     def snapshot(self,now):
         return dict(verdict=self.result,candidate=self.verdict or 'UNKNOWN',reason=self.reason,
                     changed_ratio=self.ratio,stable_samples=self.samples,frame_age_ms=self.frame_age_ms,
-                    processing_ms=self.processing_ms,at=now,exact_item_count=None)
+                    processing_ms=self.processing_ms,at=now,exact_item_count=None,
+                    **{k:v for k,v in self.evidence.items() if k not in ('verdict','changed_ratio')})
+
+    def transfer_changed(self,before,after):
+        if not self.comparator:return changed_ratio(before,after,self.spec['pixel_threshold'])>=self.spec['occupied_ratio']
+        from .rgb_roi import Comparator
+        spec=dict(self.spec,full_view_confirmed=True)
+        evidence=Comparator(before,spec).compare(after)
+        return evidence['verdict']=='OCCUPIED'
 
 
 def read_camera(camera,max_age_s=.25):

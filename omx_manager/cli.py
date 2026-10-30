@@ -42,6 +42,8 @@ def edit_value(cfg,key,text):
     nodes=key.split("."); section=result
     for part in nodes[:-1]: section=section[part]
     section[nodes[-1]]=yaml.safe_load(text)
+    if key in ('unload.roi','unload.roi_polygon'):
+        result['unload']['full_view_confirmed']=False
     validate(result)
     return result
 
@@ -122,7 +124,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
     with device_lock(cfg):
         if command=='tune':
             from .commissioning import tune
-            save(path,tune(cfg));print('CPU threads=4; cycle counting enabled; faster basket confirmation. Existing Home/models/calibration/reference preserved.');return
+            save(path,tune(cfg));print('CPU threads=4; cycle counting enabled. OMX3/4 RGB ROI inspection enabled: verify ROI/full view and recapture empty reference. Home/models/camera settings preserved.');return
         if command=='cycle-calibrate':
             if not confirm_motion:raise ValueError('Model rollout calibration requires --confirm-motion')
             from .cycle_calibration import run
@@ -166,7 +168,9 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 if command=='basket-snapshot':
                     import cv2
                     destination=state_dir(cfg)/'basket_view.png';destination.parent.mkdir(parents=True,exist_ok=True)
-                    view=cv2.cvtColor(result,cv2.COLOR_RGB2BGR)
+                    from .rgb_roi import draw_region
+                    from .basket import options
+                    view=draw_region(result,options(cfg))
                     for x in range(0,view.shape[1],80):
                         cv2.line(view,(x,0),(x,view.shape[0]-1),(0,255,0),1);cv2.putText(view,str(x),(x+2,16),cv2.FONT_HERSHEY_SIMPLEX,.4,(0,255,0),1)
                     for y in range(0,view.shape[0],80):
@@ -179,12 +183,20 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 updated=initialize(cfg)
                 destination=state_dir(cfg)/('empty_basket_'+uuid.uuid4().hex+'.npz')
                 destination.parent.mkdir(parents=True,exist_ok=True)
-                np.savez_compressed(destination,image=result,roi=updated['unload']['roi'])
+                from .rgb_roi import signature
+                from .basket import options
+                np.savez_compressed(destination,image=result,roi=updated['unload']['roi'],roi_signature=signature(options(updated)))
                 updated['unload']['reference']=str(destination)
                 updated['unload']['reference_binding']=registration_binding(cfg)
                 if digest(path)!=original: raise RuntimeError('YAML changed while sampling; registration refused')
                 require_home(updated);save(path,updated)
-                print('Operator-confirmed empty reference registered. Test empty AND occupied baskets before production.');return
+                print('Operator-confirmed empty reference registered. Test empty AND occupied baskets before production.')
+                if options(updated)['vision_method']=='rgb_roi':
+                    from .rgb_roi import Comparator
+                    spec=options(updated);clipped=Comparator(result,spec).reference_clipped
+                    if clipped>spec['max_clipped_ratio']:
+                        print(f'[BASKET] ROI_OVEREXPOSED: clipped={clipped:.3f}; automatic EMPTY verification unavailable. Original camera/model input was not changed.')
+                return
             elif command in ('route-test','return-home'):
                 from .return_path import return_home,route_signature
                 from .hooks import home_reporter

@@ -67,7 +67,15 @@ omx_basket() {
     check) _omx_ctl basket-check;;
     watch) _omx_ctl basket-watch;;
     status) _omx_ctl basket-status;;
-    *) echo '사용법: omx_basket snapshot|capture|check|watch|status — capture는 빈 바구니 직접 확인 후 사용' >&2; return 2;;
+    roi|polygon)
+      if [[ $# -ne 2 ]]; then echo '사용법: omx_basket roi "[x,y,w,h]" / omx_basket polygon "[[x,y],...]" (해제: null)' >&2; return 2; fi
+      local key=unload.roi
+      if [[ "$1" == polygon ]]; then key=unload.roi_polygon; fi
+      _omx_ctl set --key "$key" --value "$2";;
+    confirm-view)
+      if [[ $# -ne 1 ]]; then echo '사용법: omx_basket confirm-view — 바구니 내부 전체와 정차 오차를 직접 확인한 경우에만 실행' >&2; return 2; fi
+      _omx_ctl set --key unload.full_view_confirmed --value true;;
+    *) echo '사용법: omx_basket snapshot|capture|check|watch|status|roi|polygon|confirm-view — 전체 내부 시야 확인 후 confirm-view, 빈 상태에서만 capture' >&2; return 2;;
   esac
 }
 omx_resume() { _omx_ctl resume --confirm-motion "$@"; }
@@ -125,6 +133,9 @@ omx_basket capture          빈 바구니 직접 확인 후 기준 저장
 omx_basket check            빈 바구니/물건 있음/불명확 판정 시험
 omx_basket watch            카메라 한 번 연결 후 실시간 판정 (Ctrl+C로 종료)
 omx_basket status           실행 중 컨트롤러의 최신 영상 판정 조회 (장치 연결 없음)
+omx_basket roi '[x,y,w,h]'   검사 사각형 설정 (전체 시야 확인 해제, 기준 재등록 필요)
+omx_basket polygon '[[x,y],...]' 바구니 내부 다각형 설정 (null로 해제)
+omx_basket confirm-view     내부 전체·정차 오차·모서리 검출을 직접 확인한 뒤에만 사용
 omx_resume                  물품 확인 후 실행 중인 복구 대기에 재점검 요청 (작업 재실행 안 함)
 omx_unload [수량]            OMX3/4 하차: 수량 생략 시 빈 바구니까지, 지정 시 수량도 대조
 omx_order A 1               수동 MQTT 실물 주문 (장비에 맞는 품목 사용)

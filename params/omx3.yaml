@@ -273,3 +273,21 @@ unload:
   confirmation_s: 0.2
   # 바구니 판정에 허용할 프레임 최대 나이(초): 오래된 영상은 UNKNOWN
   max_frame_age_s: 0.25
+  # 검사 방식: rgb_roi=검사용 대비·경계·국소 변화(320×240), legacy=이전 전체 변화율(160×120). 모델 입력은 원본 유지
+  vision_method: rgb_roi
+  # 바구니 내부 다각형: 원본 영상의 [[x,y],...] 절대 좌표(볼록, 3~12점). null이면 사각형 ROI 전체 사용
+  roi_polygon: null
+  # 바구니 내부 전체와 정차 오차까지 검사 영역에 들어오는지 현장 확인 여부: false이면 새 검사 방식은 EMPTY 확정/자동 하차 불가
+  full_view_confirmed: false
+  # 작은 영역의 명암 차이를 변화로 볼 최소 값(0~255): 낮을수록 민감하며 노이즈도 증가
+  local_pixel_threshold: 6.0
+  # 20×20 검사 타일 내부 변화 픽셀 비율: 연결된 변화 덩어리 조건과 함께 사용
+  local_occupied_ratio: 0.02
+  # 물건 후보로 인정할 연결된 변화의 최소 픽셀 수: 320×240 검사 영상 기준, 작은 변화도 빈 판정은 보류
+  min_component_pixels: 12
+  # 검사용 경계 검출의 낮은 임계값: 카메라/모델 영상은 바꾸지 않음
+  edge_threshold: 12.0
+  # 검사용 ROI의 국소 대비 보정 강도: 모델 원본 영상에는 적용하지 않음
+  contrast_clip_limit: 2.0
+  # 검사 영역에서 RGB 모두 250 이상인 과노출 픽셀 비율 한도: 초과 시 EMPTY 확정 금지
+  max_clipped_ratio: 0.15

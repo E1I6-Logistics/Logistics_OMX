@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 
-from .basket import BasketInspector, changed_ratio,read_camera
+from .basket import BasketInspector,read_camera
 from .config import ConfigError, write_json
 from .home import errors
 from .hooks import heartbeat, initialize_home
@@ -129,8 +129,7 @@ def run(strategy,ctx,send_action,make_timer):
                 basket_report(inspector.snapshot(time.time()))
                 if verdict=='UNKNOWN': continue
                 if after_cycle:
-                    ratio=changed_ratio(baseline,inspector.latest,options['pixel_threshold'])
-                    if ratio>=options['occupied_ratio']:
+                    if inspector.transfer_changed(baseline,inspector.latest):
                         transfers+=1;no_change=0
                     else: no_change+=1
                     after_cycle=False
