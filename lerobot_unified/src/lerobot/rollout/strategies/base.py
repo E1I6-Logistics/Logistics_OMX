@@ -157,7 +157,8 @@ class BaseStrategy(RolloutStrategy):
         from omx_manager.hooks import managed_config, RolloutHome, heartbeat
         manager_cfg = getattr(ctx.hardware.robot_wrapper.inner, "_omx_manager_snapshot", None) or managed_config()
         self._manager_home = RolloutHome(manager_cfg, time.perf_counter(),
-            hold=manager_cfg['home']['hold_s'] if self.config.workstation_wait_enabled else None) if manager_cfg else None
+            hold=manager_cfg['home']['hold_s'] if self.config.workstation_wait_enabled else None) if manager_cfg and os.environ.get('OMX_CYCLE_CALIBRATION')!='1' else None
+        ctx.hardware.robot_wrapper.inner._omx_cycle_counter=self._manager_home
         ctx.hardware.robot_wrapper.inner._omx_runtime_ready = True
         heartbeat()
         from lerobot.utils.runtime_metrics import start_metrics
@@ -623,6 +624,9 @@ class BaseStrategy(RolloutStrategy):
 
     def run(self, ctx: RolloutContext) -> None:
         """Run the autonomous control loop until shutdown or duration expires."""
+        if os.environ.get('OMX_CYCLE_CALIBRATION')=='1':
+            from omx_manager.cycle_calibration import run_rollout
+            return run_rollout(self,ctx,send_next_action,CycleTimer)
         if self.config.workstation_wait_enabled:
             if getattr(self,'_manager_home',None) and hasattr(self._manager_home,'cfg'):
                 from omx_manager.workstation import run
@@ -900,6 +904,7 @@ class BaseStrategy(RolloutStrategy):
                         if getattr(self, "_manager_home", None):
                             from omx_manager.hooks import initialize_home
                             initialize_home(getattr(robot, "inner", robot), stopped=ctx.runtime.shutdown_event.is_set)
+                            self._manager_home.reset(time.perf_counter())
                         logger.info("Resetting policy for the next item")
                         engine.reset()
                         interpolator.reset()

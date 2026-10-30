@@ -11,8 +11,19 @@ def initialize(cfg):
     from .basket import DEFAULTS
     result=copy.deepcopy(cfg)
     result.setdefault('workflow',{'items':{}})
+    from .cycles import DEFAULTS as CYCLE_DEFAULTS
+    for key,value in CYCLE_DEFAULTS.items():result['counting'].setdefault(key,copy.deepcopy(value))
     if cfg['role']=='unload': result.setdefault('unload',dict(DEFAULTS))
     for key,value in dict(auto_home=True,poll_s=5.,routes={}).items(): result['recovery'].setdefault(key,value)
+    return result
+
+
+def tune(cfg):
+    result=initialize(cfg)
+    result['runtime']['cpu_threads']=4
+    result['counting']['mode']='cycle'
+    if cfg['role']=='unload':
+        result['unload'].update(sample_interval_s=.1,stable_samples=3,confirmation_s=.2,max_frame_age_s=.25)
     return result
 
 
@@ -20,7 +31,10 @@ def require_commissioned(cfg):
     require_home(cfg)
     missing=[]
     for item in profile(cfg)['items']:
-        try: require_stages(cfg,item)
+        try:
+            from .cycles import options,require_profile
+            if options(cfg)['mode']=='cycle':require_profile(cfg,item)
+            else:require_stages(cfg,item)
         except ConfigError as exc: missing.append(str(exc))
     if cfg['role']=='unload':
         from .basket import BasketInspector
@@ -77,9 +91,9 @@ def camera_for(cfg):
     return make_cameras_from_configs({name:spec})[name]
 
 
-def basket_operation(cfg,device,*,capture=False):
+def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0):
     import numpy as np
-    from .basket import options,crop,BasketInspector
+    from .basket import options,crop,BasketInspector,read_camera
     require_home(cfg)
     def check_pose():
         if max(errors(device.read(),cfg['home']['target']).values())>cfg['home']['arrival_tolerance']:
@@ -88,15 +102,19 @@ def basket_operation(cfg,device,*,capture=False):
     spec=options(cfg)
     camera=camera_for(cfg)
     try:
+        opened=time.perf_counter()
+        print(f"[BASKET] 카메라 연결/준비 중 (설정 warmup={cfg['hardware']['cameras'][spec['camera']].get('warmup_s',0)}초). watch는 한 번 연결 후 계속 검사합니다.",flush=True)
         camera.connect()
+        connection_s=time.perf_counter()-opened
+        print(f'[BASKET] 카메라 준비 완료: {connection_s:.2f}초',flush=True)
         if capture=='snapshot':
             frame=camera.read_latest().copy();check_pose();return frame
         if capture:
             samples=[];last=None;deadline=time.perf_counter()+spec['inspect_timeout_s']
             while time.perf_counter()<deadline and len(samples)<spec['stable_samples']:
-                stamp=getattr(camera,'latest_timestamp',None)
+                frame,stamp=read_camera(camera,spec['max_frame_age_s'])
                 if stamp is not None and (last is None or stamp>last) and 0<=time.perf_counter()-stamp<=.5:
-                    image=crop(camera.read_latest(),spec)
+                    image=crop(frame,spec)
                     if samples and float(np.abs(image.astype(float)-samples[-1]).mean())>spec['stability_delta']:
                         samples=[]
                     samples.append(image);last=stamp
@@ -107,11 +125,26 @@ def basket_operation(cfg,device,*,capture=False):
             return image
         inspector=BasketInspector(cfg)
         deadline=time.perf_counter()+spec['inspect_timeout_s']
-        while time.perf_counter()<deadline:
-            result=inspector.update(camera.read_latest(),time.perf_counter(),getattr(camera,'latest_timestamp',None))
+        iterations=0;last_print=None;next_print=0.
+        while watch or time.perf_counter()<deadline:
+            check_pose()
+            try:
+                frame,stamp=read_camera(camera,spec['max_frame_age_s'])
+                result=inspector.update(frame,time.perf_counter(),stamp)
+            except TimeoutError:
+                result=inspector.update(None,time.perf_counter(),None)
+            snapshot=inspector.snapshot(time.time())
+            snapshot.update(connection_s=connection_s,elapsed_s=time.perf_counter()-opened)
+            if watch:
+                tag=(snapshot['verdict'],snapshot['candidate'],snapshot['reason'])
+                if tag!=last_print or time.perf_counter()>=next_print:
+                    print(__import__('json').dumps(snapshot,ensure_ascii=False),flush=True)
+                    last_print=tag;next_print=time.perf_counter()+1
+                iterations+=1
+                if samples_limit and iterations>=samples_limit:return snapshot
             if result!='UNKNOWN':
-                check_pose();return dict(verdict=result,changed_ratio=inspector.ratio,exact_item_count=None)
+                if not watch:return snapshot
             time.sleep(spec['sample_interval_s'])
-        return dict(verdict='UNKNOWN',changed_ratio=inspector.ratio,exact_item_count=None)
+        return inspector.snapshot(time.time())
     finally:
         if camera.is_connected: camera.disconnect()

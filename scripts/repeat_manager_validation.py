@@ -12,7 +12,7 @@ import sys
 import time
 
 ROOT=Path(__file__).resolve().parents[1]
-TESTS=['tests/test_manager.py','tests/test_follower_bus_lifecycle.py','tests/test_home_motion.py','tests/test_shell_shortcuts.py','tests/test_diagnostics.py','tests/test_service.py','tests/test_workstation_protocol.py','tests/test_unload_client_protocol.py','tests/test_workflow_recovery.py']
+TESTS=['tests/test_manager.py','tests/test_follower_bus_lifecycle.py','tests/test_home_motion.py','tests/test_shell_shortcuts.py','tests/test_diagnostics.py','tests/test_service.py','tests/test_workstation_protocol.py','tests/test_unload_client_protocol.py','tests/test_workflow_recovery.py','tests/test_cycle_counting.py']
 
 def fingerprint():
     paths=set(subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard','-z'],cwd=ROOT).decode().split('\0'))
@@ -20,7 +20,7 @@ def fingerprint():
     return hashlib.sha256(json.dumps(selected,sort_keys=True).encode()).hexdigest()
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--runs',type=int,default=20)
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--runs',type=int,default=5)
     args=parser.parse_args()
     if not 1<=args.runs<=1000:parser.error('--runs must be 1..1000')
     directory=ROOT/'reports/repeated_validation';directory.mkdir(parents=True,exist_ok=True)

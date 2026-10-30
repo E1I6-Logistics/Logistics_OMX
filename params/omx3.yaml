@@ -98,9 +98,9 @@ home:
   max_step: 0.3
   # 홈 이동 중 목표와 실측 위치의 최대 차이: 지연 시 목표 전진 대기, 초과 시 정지(정규화 단위)
   max_following_error: 3.0
-# 홈 이탈·복귀를 이용한 사이클 카운팅: 물품 성공 검출과 별개
+# 주요 관절 이동·전송 횟수·모델 복귀 영역으로 동작 사이클 카운트: 실제 물품 성공 수와 별개
 counting:
-  # 새 사이클을 인정할 홈 이탈 오차: 모든 복귀 허용 오차보다 커야 함
+  # 사이클 출발로 인정할 주요 관절 이동 폭: 손목·그리퍼만 움직이는 것은 제외
   leave_tolerance: 12.0
   # 한 사이클의 최소 경과 시간(초): 이탈 관측 자체를 늦추지는 않음
   min_cycle_s: 5.0
@@ -108,6 +108,26 @@ counting:
   stall_s: 15.0
   # 홈 접근 진행으로 인정할 오차 감소량(정규화 단위)
   progress_epsilon: 0.5
+  # 카운터 방식: cycle=모델 복귀 영역 기반(권장), ordered_stages=이전 수동 단계 방식
+  mode: cycle
+  # 품목별 모델 복귀 프로필: omx_cycle_calibrate로 자동 계산·저장
+  profiles: {}
+  # 주요 관절이 복귀 영역 밖에 연속으로 머물러야 할 시간(초): 순간 흔들림 제외
+  departure_hold_s: 0.3
+  # 한 사이클에서 필요한 최소 모델 명령 전송 횟수: 정지/홈 보정 명령은 제외
+  min_actions: 30
+  # 학습한 모델 복귀 영역에서 연속 정지를 확인할 시간(초)
+  return_hold_s: 0.5
+  # 모델 보정에서 사람이 정상 완료를 확인할 최소 사이클 수: 기본 3
+  min_training_cycles: 3
+  # 확인한 복귀 흔들림 범위에 추가할 여유(정규화 단위)
+  tolerance_padding: 1.5
+  # 복귀 영역 관절별 최소 허용 폭(정규화 단위)
+  min_return_tolerance: 4.0
+  # 자동 계산 가능한 복귀 허용 폭의 최대값: 초과하면 저장 거절
+  max_return_tolerance: 8.0
+  # 정상 완료 확인 후 복귀 자세를 안정적으로 관측할 시간(초)
+  calibration_hold_s: 0.6
 # 품목별 모델 경로와 실행 프로필 설정
 models:
   # 사용할 프로필 이름: 현재 original FP32만 구현
@@ -152,7 +172,7 @@ runtime:
   # MQTT 브로커 포트 번호
   broker_port: 1883
   # PyTorch·수치 연산 CPU 스레드 수: Pi에서는 1~4 범위
-  cpu_threads: 2
+  cpu_threads: 4
   # 정책 제어 루프의 목표 Hz: 실제 달성 주기는 monitor에서 확인
   fps: 30
   # 피킹 또는 하차 한 동작 사이클 제한 시간(초): 여러 번 하차 전체는 unload.job_timeout_s
@@ -234,9 +254,9 @@ unload:
   # 연속 검사 영상의 평균 픽셀 변화 허용값: 움직임·흔들림 중 판정 보류
   stability_delta: 3.0
   # 홈에서 바구니를 검사할 간격(초): 모델 동작 중 영상 추가 처리 없음
-  sample_interval_s: 0.2
+  sample_interval_s: 0.1
   # 빈 상태 또는 물건 있음을 연속으로 확인할 프레임 수
-  stable_samples: 5
+  stable_samples: 3
   # 홈에서 영상 판정을 기다리는 최대 시간(초): 불명확하면 성공 처리 안 함
   inspect_timeout_s: 12.0
   # 하차 주문 한 건에서 집기를 시도할 최대 횟수
@@ -247,3 +267,7 @@ unload:
   job_timeout_s: 900.0
   # 빈 바구니라도 추정 이동 횟수가 주문 수량과 다르면 불일치로 중단
   require_quantity_match: true
+  # 빈 상태/물건 있음을 확정하기 위한 최소 실제 관측 시간(초)
+  confirmation_s: 0.2
+  # 바구니 판정에 허용할 프레임 최대 나이(초): 오래된 영상은 UNKNOWN
+  max_frame_age_s: 0.25

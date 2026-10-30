@@ -27,8 +27,13 @@ def edit_value(cfg,key,text):
     from .basket import DEFAULTS
     allowed.update('unload.'+name for name in DEFAULTS if name not in ('reference','reference_binding'))
     allowed.update(('recovery.auto_home','recovery.poll_s'))
+    from .cycles import DEFAULTS as CYCLE_DEFAULTS
+    allowed.update('counting.'+name for name in CYCLE_DEFAULTS if name not in ('profiles','mode'))
     if key not in allowed: raise ValueError("This field requires editing the YAML with hardware/model review")
     result=copy.deepcopy(cfg)
+    if key.startswith('counting.'):
+        from .commissioning import initialize
+        result=initialize(result)
     if key.startswith('unload.'):
         from .commissioning import initialize
         result=initialize(result)
@@ -48,12 +53,16 @@ def simulate(cfg):
 
 def menu(path):
     while True:
-        print("\nOMX follower-only 설정 도구\n1 상태/경로 검사 (장치 미접속)\n2 관절 관측 (모터 쓰기 없음)\n3 현재 자세를 홈으로 등록 (모터 쓰기 없음)\n4 등록 홈으로 제한 이동\n5 설정 조정\n6 가상 시험\n7 실행 계획 보기\n8 구동 준비 (현재 위치 목표 설정 후 토크 켜기)\n9 작업 단계·반복 하차·복귀 경로 등록\n0 종료")
+        print("\nOMX follower-only 설정 도구\n1 상태/경로 검사 (장치 미접속)\n2 관절 관측 (모터 쓰기 없음)\n3 현재 자세를 홈으로 등록 (모터 쓰기 없음)\n4 등록 홈으로 제한 이동\n5 설정 조정\n6 가상 시험\n7 실행 계획 보기\n8 구동 준비 (현재 위치 목표 설정 후 토크 켜기)\n9 하차 영상·복귀 경로 등록\n10 모델을 돌리며 사이클 복귀 영역 보정 (pick/place 수동 등록 불필요)\n0 종료")
         choice=input("> ").strip()
         if choice=="0": return
         mapping={"1":"check","2":"observe","3":"capture","4":"home","6":"simulate","7":"plan","8":"arm"}
         try:
-            if choice=='9':
+            if choice=='10':
+                item=input('보정할 모델 품목 A~F: ').strip().upper()
+                if input('모델이 실제로 움직입니다. 작업 공간 비운 뒤 MOVE 입력: ').strip()=='MOVE':
+                    invoke(path,'cycle-calibrate',item=item,confirm_motion=True)
+            elif choice=='9':
                 from .workflow_menu import run
                 run(path)
             elif choice=="5":
@@ -85,6 +94,12 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
     if command=="monitor":
         from .diagnostics import monitor
         return monitor(cfg,interval,samples,json_output)
+    if command=='basket-status':
+        from .diagnostics import read_json
+        data=read_json(state_dir(cfg)/'basket_status.json')
+        if not data or not isinstance(data.get('at'),(int,float)) or not 0<=time.time()-data['at']<=.5:
+            data=dict(verdict='UNKNOWN',reason='NO_FRESH_BASKET_SNAPSHOT')
+        print(json.dumps(data,ensure_ascii=False));return data
     if command=="validate":
         print(f"YAML valid: {cfg['device_id']}; home_registered={cfg['home']['target'] is not None}"); return
     if command=="simulate": return simulate(cfg)
@@ -105,9 +120,16 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
         write_json(state_dir(cfg)/'resume_request.json',dict(at=time.time(),token=uuid.uuid4().hex,config=str(Path(path).resolve())))
         print('Recovery recheck requested. Failed/interrupted jobs remain failed; inspect recovery_wait.json for the result.');return
     with device_lock(cfg):
+        if command=='tune':
+            from .commissioning import tune
+            save(path,tune(cfg));print('CPU threads=4; cycle counting enabled; faster basket confirmation. Existing Home/models/calibration/reference preserved.');return
+        if command=='cycle-calibrate':
+            if not confirm_motion:raise ValueError('Model rollout calibration requires --confirm-motion')
+            from .cycle_calibration import run
+            return run(path,item)
         if command=='setup-workflow':
             from .commissioning import initialize
-            save(path,initialize(cfg));print('New sections added; original Home/model/camera/calibration preserved. Work stages, empty reference and return paths still require local registration.');return
+            save(path,initialize(cfg));print('Sections added; original Home/model/camera/calibration preserved. Learn cycle return regions with omx_cycle_calibrate; pick/place registration is no longer required.');return
         if command=='stage-clear':
             if item not in cfg.get('workflow',{}).get('items',{}): raise ValueError('Specify a registered --item')
             del cfg['workflow']['items'][item]
@@ -115,7 +137,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
         if command=='workflow-check':
             from .commissioning import require_commissioned
             check_files(cfg);require_commissioned(cfg)
-            print('Workflow stages and basket reference registered. Physical reliability/return route still require local tests.');return
+            print('Cycle return regions and basket reference registered. Physical reliability/return route still require local tests.');return
         if command=="set":
             updated=edit_value(cfg,key,value); save(path,updated); print("Saved; takes effect on NEXT start");return
         if command=="acknowledge-recovery":
@@ -135,10 +157,11 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 if digest(path)!=original: raise RuntimeError('YAML changed while sampling; registration refused')
                 require_home(updated)
                 save(path,updated);print('Observed pose registered. No motor writes; return routes remain unapproved until route-test.');return
-            elif command in ('basket-capture','basket-check','basket-snapshot'):
+            elif command in ('basket-capture','basket-check','basket-snapshot','basket-watch'):
                 from .commissioning import basket_operation,initialize
                 if cfg['role']!='unload': raise ValueError('Basket inspection is for OMX3/4')
-                result=basket_operation(cfg,device,capture='snapshot' if command=='basket-snapshot' else command=='basket-capture')
+                result=basket_operation(cfg,device,capture='snapshot' if command=='basket-snapshot' else command=='basket-capture',watch=command=='basket-watch',samples_limit=samples)
+                if command=='basket-watch':return result
                 if command=='basket-check': print(json.dumps(result));return result
                 if command=='basket-snapshot':
                     import cv2
@@ -216,7 +239,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True,help="params/omx1.yaml etc.")
-    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-snapshot","resume"))
+    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate"))
     parser.add_argument("--confirm-motion",action="store_true")
     parser.add_argument("--expected-device",choices=("omx1","omx2","omx3","omx4"),help="Launcher device/YAML consistency check")
     parser.add_argument("--key");parser.add_argument("--value")

@@ -58,6 +58,8 @@ def start_metrics(robot, shutdown_event, target_hz, interval=None):
     path = Path(os.environ["OMX_METRICS_PATH"])
     cameras = getattr(robot, "cameras", {})
     camera_config = {}
+    from omx_manager.cpu import current_threads
+    cpu_threads=current_threads()
     for name, camera in cameras.items():
         camera._omx_metric_name = name
         camera_config[name] = {"configured_fps": getattr(camera, "fps", None),
@@ -75,7 +77,7 @@ def start_metrics(robot, shutdown_event, target_hz, interval=None):
             while not stop.is_set() and not shutdown_event.is_set():
                 try:
                     data = dict(COUNTERS.snapshot(), pid=os.getpid(), process_start_ticks=start_ticks, monotonic=time.monotonic(),
-                                target_hz=target_hz, cameras=camera_config)
+                                target_hz=target_hz, cameras=camera_config,cpu_threads=cpu_threads)
                     path.parent.mkdir(parents=True, exist_ok=True)
                     temporary.write_text(json.dumps(data, allow_nan=False))
                     os.replace(temporary, path)  # diagnostics: intentionally no fsync

@@ -94,7 +94,8 @@ def validate(cfg):
     only_keys(cfg["models"], "active_profile profiles", "models")
     only_keys(cfg["runtime"], "broker_host broker_port cpu_threads fps cycle_timeout_s order_per_unit_s order_load_grace_s startup_timeout_s heartbeat_timeout_s shutdown_timeout_s", "runtime")
     only_keys(cfg["recovery"], "retry_initial_s retry_max_s release_delay_s auto_home poll_s routes", "recovery")
-    only_keys(cfg["counting"], "leave_tolerance min_cycle_s stall_s progress_epsilon", "counting")
+    from .cycles import DEFAULTS as CYCLE_DEFAULTS
+    only_keys(cfg["counting"], "leave_tolerance min_cycle_s stall_s progress_epsilon "+' '.join(CYCLE_DEFAULTS), "counting")
     hw = cfg["hardware"]
     for key in ("port", "calibration_file", "robot_id"): path_value(hw.get(key))
     if not isinstance(hw.get("disable_torque_on_disconnect"), bool): raise ConfigError("Explicit torque shutdown policy required")
@@ -163,6 +164,8 @@ def validate(cfg):
     validate_workflow(cfg)
     validate_unload(cfg)
     validate_routes(cfg)
+    from .cycles import validate_cycles
+    validate_cycles(cfg)
     return cfg
 
 

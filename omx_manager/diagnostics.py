@@ -97,7 +97,7 @@ class Sampler:
             n,total,worst=metrics.get('timings',{}).get('act_chunk',[0,0,0]);mean=None
             old=previous.get('timings',{}).get('act_chunk',[0,0,0]) if previous else [0,0,0]
             if dt>0 and n>old[0]:mean=(total-old[1])/(n-old[0])*1000
-            result['metrics']={'target_hz':metrics.get('target_hz'),'loop_hz':rate('loop'),'action_send_hz':rate('action_sent'),
+            result['metrics']={'target_hz':metrics.get('target_hz'),'cpu_threads':metrics.get('cpu_threads'),'loop_hz':rate('loop'),'action_send_hz':rate('action_sent'),
                 'act_chunk_ms':mean,'act_chunk_worst_ms':worst*1000 if n else None,'act_chunk_samples':n,'cameras':cameras}
             if dt>0 or not previous:self.last_metrics=metrics
         else:
@@ -137,6 +137,7 @@ def render(data):
     p=data['process'] or {};s=data['system'];m=data['metrics']
     lines=[f"{data['device']} {data['phase']} PID={p.get('pid','--')} CPU={number(data['control_cpu_pct'],'%')} (100%=1 core) totalCPU={number(data['system_cpu_pct'],'%')} RSS={number(p.get('rss_mb'),'MB')} RAM_available={number(s.get('memory_available_mb'),'MB')} temp={number(s.get('temperature_c'),'C')} clock={number(s.get('cpu_mhz'),'MHz')}"]
     if m:
+        if m.get('cpu_threads'):lines.append('  PyTorch threads: '+str(m['cpu_threads']))
         lines.append(f"  loop={number(m['loop_hz'],'Hz')} target={number(m['target_hz'],'Hz')} model_send={number(m['action_send_hz'],'Hz')} ACT_chunk={number(m['act_chunk_ms'],'ms')} worst={number(m['act_chunk_worst_ms'],'ms')} samples={m['act_chunk_samples']}")
         for name,c in m['cameras'].items():lines.append(f"  camera {name}: capture={number(c['capture_fps'],'fps')} published={number(c['published_fps'],'fps')} configured={number(c.get('configured_fps'),'fps')} age={number(c['frame_age_ms'],'ms')}")
     else:lines.append('  Detailed metrics unavailable: '+data.get('metrics_status','UNAVAILABLE')+'. Start run with --diagnostics; allow two snapshots.')

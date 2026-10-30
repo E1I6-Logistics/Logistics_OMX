@@ -11,6 +11,21 @@ DIAGNOSTIC_DEFAULTS = {
 SERVICE_DEFAULTS = {"restart_s":5.,"stop_timeout_s":45.,"enable_on_boot":False}
 
 COMMENTS = {
+    "mode":"카운터 방식: cycle=모델 복귀 영역 기반(권장), ordered_stages=이전 수동 단계 방식",
+    "departure_hold_s":"주요 관절이 복귀 영역 밖에 연속으로 머물러야 할 시간(초): 순간 흔들림 제외",
+    "min_actions":"한 사이클에서 필요한 최소 모델 명령 전송 횟수: 정지/홈 보정 명령은 제외",
+    "return_hold_s":"학습한 모델 복귀 영역에서 연속 정지를 확인할 시간(초)",
+    "min_training_cycles":"모델 보정에서 사람이 정상 완료를 확인할 최소 사이클 수: 기본 3",
+    "tolerance_padding":"확인한 복귀 흔들림 범위에 추가할 여유(정규화 단위)",
+    "min_return_tolerance":"복귀 영역 관절별 최소 허용 폭(정규화 단위)",
+    "max_return_tolerance":"자동 계산 가능한 복귀 허용 폭의 최대값: 초과하면 저장 거절",
+    "calibration_hold_s":"정상 완료 확인 후 복귀 자세를 안정적으로 관측할 시간(초)",
+    "center":"모델 정상 복귀의 중앙 자세: 고정 시작 홈과 별개, 자동 계산",
+    "confirmed_cycles":"사람이 실제 정상 완료를 확인한 학습 사이클 수",
+    "min_excursion":"확인한 모델 사이클 중 최소 주요 관절 이동 폭(정규화 단위)",
+    "source":"이 복귀 프로필을 만든 자료의 종류: 정상 확인 모델 실행",
+    "confirmation_s":"빈 상태/물건 있음을 확정하기 위한 최소 실제 관측 시간(초)",
+    "max_frame_age_s":"바구니 판정에 허용할 프레임 최대 나이(초): 오래된 영상은 UNKNOWN",
     "workflow":"품목별 실제 작업 단계: 홈 이탈만으로 카운트하지 않고 등록 자세를 순서대로 관측",
     "stages":"실제 집기·놓기 등 작업 순서의 관절 자세 목록: 최소 두 개, 직접 관측하여 등록",
     "name":"작업 단계 또는 복귀 경로 이름",
@@ -73,8 +88,8 @@ COMMENTS = {
     "max_start_error":"홈 접근을 허용할 최대 시작 오차(정규화 단위): 너무 멀면 이동 거절",
     "max_step":"홈 이동 한 번의 최대 목표 변화(정규화 단위)",
     "max_following_error":"홈 이동 중 목표와 실측 위치의 최대 차이: 지연 시 목표 전진 대기, 초과 시 정지(정규화 단위)",
-    "counting":"홈 이탈·복귀를 이용한 사이클 카운팅: 물품 성공 검출과 별개",
-    "leave_tolerance":"새 사이클을 인정할 홈 이탈 오차: 모든 복귀 허용 오차보다 커야 함",
+    "counting":"주요 관절 이동·전송 횟수·모델 복귀 영역으로 동작 사이클 카운트: 실제 물품 성공 수와 별개",
+    "leave_tolerance":"사이클 출발로 인정할 주요 관절 이동 폭: 손목·그리퍼만 움직이는 것은 제외",
     "min_cycle_s":"한 사이클의 최소 경과 시간(초): 이탈 관측 자체를 늦추지는 않음",
     "stall_s":"홈 근처에서 진행이 없음을 진단하는 시간(초)",
     "progress_epsilon":"홈 접근 진행으로 인정할 오차 감소량(정규화 단위)",
@@ -118,6 +133,11 @@ JOINT_NAMES={"shoulder_pan":"어깨 좌우", "shoulder_lift":"어깨 상하", "e
 
 def comment(path):
     key=path[-1]
+    if key=='profiles' and 'counting' in path:return '품목별 모델 복귀 프로필: omx_cycle_calibrate로 자동 계산·저장'
+    if len(path)>=3 and path[-2]=='profiles' and 'counting' in path:return '품목 '+key+'의 모델 복귀 영역: 자동 저장, 고정 초기 자세와 별개'
+    if key=='binding' and 'counting' in path:return '모델 복귀 프로필의 홈·모델·보정 연결 해시: 자동 생성'
+    if key in JOINT_NAMES and 'center' in path:return JOINT_NAMES[key]+' 모델 복귀 중앙값: 그리퍼는 카운트에서 제외'
+    if key in JOINT_NAMES and 'counting' in path:return JOINT_NAMES[key]+' 모델 복귀 허용 폭(정규화 단위)'
     if key=='items' and 'workflow' in path:return '외부 품목 이름별 작업 단계: OMX1 A/B 반대 모델 매핑은 그대로 유지'
     if key=='binding' and 'workflow' in path:return '작업 단계 등록의 홈·모델·보정 연결 해시: 자동 생성'
     if key=='target' and 'workflow' in path:return '이 작업 단계에서 관측해야 할 여섯 관절 자세: 모델 재학습과 별개'

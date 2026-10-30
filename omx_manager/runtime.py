@@ -45,15 +45,18 @@ def acknowledge_recovery(cfg):
                 write_json(path, data)
             else: path.replace(destination)
 
-def build(cfg, config_path, python=sys.executable, session=None):
+def build(cfg, config_path, python=sys.executable, session=None, calibration_item=None):
     directory = state_dir(cfg); session = session or uuid.uuid4().hex
     env = os.environ.copy()
+    for key in ('OMX_CYCLE_CALIBRATION','OMX_CALIBRATION_ITEM','OMX_CALIBRATION_COMMAND','OMX_CALIBRATION_STATUS',
+                'OMX_CALIBRATION_OUTPUT','OMX_CALIBRATION_PARENT_PID','OMX_CALIBRATION_PARENT_START'):
+        env.pop(key,None)
     env.update(PYTHONPATH=str(ROOT) + os.pathsep + str(ROOT / "lerobot_unified/src") + os.pathsep + env.get("PYTHONPATH", ""),
         OMX_MANAGER_CONFIG=str(Path(config_path).resolve()), OMX_MANAGER_HEARTBEAT=str(directory / "heartbeat.json"),
         OMX_INVENTORY_STATE_PATH=str(directory / "inventory.json"), OMX_ABORT_FILE=str(directory / "abort"),
         OMX_JOB_JOURNAL=str(directory / "jobs.json"), OMX_BROKER_PORT=str(cfg["runtime"]["broker_port"]),
         OMX_PICKUP_PER_UNIT_S=str(cfg["runtime"]["order_per_unit_s"]), OMX_PICKUP_LOAD_GRACE_S=str(cfg["runtime"]["order_load_grace_s"]),
-        OMX_ACT_PREFETCH="0",OMX_SESSION=session)
+        OMX_ACT_PREFETCH="0",OMX_ACT_FAST_QUEUE='1',OMX_SESSION=session)
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         env[name] = str(cfg["runtime"]["cpu_threads"])
     hw=cfg["hardware"]; home=cfg["home"]; timing=cfg["runtime"]
@@ -66,10 +69,13 @@ def build(cfg, config_path, python=sys.executable, session=None):
         "--strategy.home_tolerance="+str(max(home["tolerance"].values())), "--strategy.home_leave_tolerance="+str(cfg["counting"]["leave_tolerance"]),
         "--strategy.home_hold_s="+str(home["hold_s"]), "--strategy.min_cycle_s="+str(cfg["counting"]["min_cycle_s"])]
     external_order = {"omx1": ("A", "B"), "omx2": ("C", "D"), "omx3": ("E",), "omx4": ("F",)}[cfg["device_id"]]
-    first=items[external_order[0]]
+    first=items[calibration_item or external_order[0]]
     commands.extend(["--policy.path="+str(path_value(first["path"])), "--task="+first["task"]])
     generated={}
-    if cfg["role"]=="pickup":
+    if calibration_item:
+        env.update(OMX_CYCLE_CALIBRATION='1',OMX_CALIBRATION_ITEM=calibration_item)
+        commands.extend(['--strategy.auto_restart_on_home=false','--strategy.idle_complete_enabled=false','--strategy.workstation_wait_enabled=false'])
+    elif cfg["role"]=="pickup":
         mapping={local:dict(items[external],path=str(path_value(items[external]["path"]))) for local,external in zip(("A","B"),external_order)}
         generated["order_models.json"]=mapping
         commands.extend(["--strategy.auto_restart_on_home=true", "--strategy.keep_alive_when_inventory_empty=true",

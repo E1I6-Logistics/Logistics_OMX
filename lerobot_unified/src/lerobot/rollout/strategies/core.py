@@ -361,6 +361,11 @@ def send_next_action(
             raise RuntimeError("OMX abort signalled; no more motor actions dispatched")
 
     abort_if_requested()
+    def calibration_paused():
+        if os.environ.get('OMX_CYCLE_CALIBRATION')!='1':return False
+        from omx_manager.cycle_calibration import action_paused
+        return action_paused()
+    if calibration_paused():return None
     if interpolator.needs_new_action():
         with section("infer"):
             obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
@@ -368,6 +373,7 @@ def send_next_action(
         if action_tensor is not None:
             interpolator.add(action_tensor.cpu())
 
+    if calibration_paused():return None
     interp = interpolator.get()
     if interp is None:
         if timer is not None:
@@ -381,7 +387,10 @@ def send_next_action(
     with section("send"):
         processed = ctx.processors.robot_action_processor((action_dict, obs_raw))
         abort_if_requested()
+        if calibration_paused():return None
         ctx.hardware.robot_wrapper.send_action(processed)
+        from omx_manager.hooks import note_action
+        note_action(getattr(ctx.hardware.robot_wrapper,'inner',ctx.hardware.robot_wrapper))
         from lerobot.utils.runtime_metrics import event as metric_event
         metric_event("action_sent")
     return action_dict

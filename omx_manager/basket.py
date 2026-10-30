@@ -1,10 +1,11 @@
 """Small fixed-camera ROI comparison. No neural model, no object-count claim."""
+import time
 from .config import ConfigError, number, only_keys, path_value
 
 DEFAULTS = dict(camera="top", roi=None, reference=None, reference_binding=None,
                 pixel_threshold=25, empty_ratio=.01, occupied_ratio=.04,
-                illumination_limit=18, stability_delta=3., sample_interval_s=.2,
-                stable_samples=5, inspect_timeout_s=12., max_attempts=16,
+                illumination_limit=18, stability_delta=3., sample_interval_s=.1,
+                stable_samples=3,confirmation_s=.2,max_frame_age_s=.25,inspect_timeout_s=12., max_attempts=16,
                 max_no_change=2, job_timeout_s=900., require_quantity_match=True)
 
 
@@ -28,6 +29,7 @@ def validate_unload(cfg):
             raise ConfigError("Basket ROI outside camera image")
     for key, lo, hi in (("pixel_threshold",1,254),("empty_ratio",0,.5),("occupied_ratio",.001,1),
                         ("illumination_limit",1,100),("stability_delta",.1,30),("sample_interval_s",.05,2),
+                        ("confirmation_s",.1,3),("max_frame_age_s",.05,.5),
                         ("inspect_timeout_s",2,120),("job_timeout_s",10,3600)):
         number(spec[key],"unload."+key,lo,hi)
     if spec["empty_ratio"] >= spec["occupied_ratio"]: raise ConfigError("Empty/occupied thresholds must have an uncertainty gap")
@@ -36,6 +38,7 @@ def validate_unload(cfg):
     if type(spec["require_quantity_match"]) is not bool: raise ConfigError("require_quantity_match must be boolean")
     if spec["stable_samples"] * spec["sample_interval_s"] >= spec["inspect_timeout_s"]:
         raise ConfigError("Inspection timeout must exceed sample window")
+    if spec['confirmation_s']>=spec['inspect_timeout_s']:raise ConfigError('Confirmation window exceeds inspection timeout')
 
 
 def crop(image, spec):
@@ -70,6 +73,8 @@ class BasketInspector:
             roi = data["roi"].tolist()
         if self.reference.shape != (120,160,3) or self.reference.dtype != np.uint8 or roi != self.spec["roi"]:
             raise ConfigError("Empty reference image/ROI mismatch; register again")
+        self.reference16=self.reference.astype(np.int16)
+        self.reference_mean=self.reference.mean(axis=(0,1))
         self.reset()
 
     def reset(self):
@@ -81,28 +86,63 @@ class BasketInspector:
         self.result = "UNKNOWN"
         self.ratio = None
         self.latest = None
+        self.since=None
+        self.reason='WAIT_FRAME';self.processing_ms=0.;self.frame_age_ms=None
 
     def update(self, image, now, frame_timestamp):
         import numpy as np
         number(now,"inspection timestamp",0)
-        if (frame_timestamp is None or not 0 <= now-frame_timestamp <= .5
-                or (self.last_frame is not None and frame_timestamp <= self.last_frame)):
-            self.samples=0; self.result="UNKNOWN"
+        self.result='UNKNOWN'
+        self.frame_age_ms=None if frame_timestamp is None else (now-frame_timestamp)*1000
+        if frame_timestamp is None or not 0<=now-frame_timestamp<=self.spec['max_frame_age_s']:
+            self.samples=0;self.since=None;self.verdict=None;self.reason='STALE_FRAME'
             return self.result
-        if self.last_sample is not None and now-self.last_sample < self.spec["sample_interval_s"]:
+        if self.last_frame is not None and frame_timestamp<=self.last_frame:
+            self.reason='WAIT_NEW_FRAME'
+            return self.result
+        if self.last_sample is not None and now-self.last_sample+1e-9 < self.spec["sample_interval_s"]:
+            self.reason='WAIT_INTERVAL'
             return "UNKNOWN"
         if self.last_sample is not None and not 0 < now-self.last_sample <= 2*self.spec["sample_interval_s"]+.1:
-            self.samples=0
+            self.samples=0;self.since=None
+        begun=time.perf_counter()
         current = crop(image,self.spec)
         self.latest=current
         self.last_sample=now; self.last_frame=frame_timestamp
-        self.ratio=changed_ratio(self.reference,current,self.spec["pixel_threshold"])
-        illumination=float(np.abs(current.astype(float).mean(axis=(0,1))-self.reference.mean(axis=(0,1))).max())
+        # Reuse immutable reference statistics and one small int16 ROI buffer.
+        # Full camera frames stay in the camera's same-process latest-frame buffer.
+        current16=current.astype(np.int16)
+        self.ratio=float((np.max(np.abs(current16-self.reference16),axis=2)>=self.spec['pixel_threshold']).mean())
+        illumination=float(np.abs(current.mean(axis=(0,1))-self.reference_mean).max())
         verdict = ("EMPTY" if self.ratio <= self.spec["empty_ratio"] else
                    "OCCUPIED" if self.ratio >= self.spec["occupied_ratio"] else "UNKNOWN")
         if illumination > self.spec["illumination_limit"]: verdict="UNKNOWN"
-        stable = self.previous is not None and float(np.abs(current.astype(float)-self.previous).mean()) <= self.spec["stability_delta"]
-        self.samples = self.samples+1 if stable and verdict == self.verdict and verdict != "UNKNOWN" else 1 if verdict != "UNKNOWN" else 0
-        self.previous=current; self.verdict=verdict
-        self.result=verdict if self.samples >= self.spec["stable_samples"] else "UNKNOWN"
+        stable = self.previous is not None and float(np.abs(current16-self.previous).mean()) <= self.spec["stability_delta"]
+        continuing=stable and verdict==self.verdict and verdict!='UNKNOWN'
+        self.samples=self.samples+1 if continuing else 1 if verdict!='UNKNOWN' else 0
+        self.since=self.since if continuing and self.since is not None else now if verdict!='UNKNOWN' else None
+        self.previous=current16; self.verdict=verdict
+        held=self.since is not None and now-self.since+1e-9>=self.spec['confirmation_s']
+        self.result=verdict if self.samples>=self.spec['stable_samples'] and held else 'UNKNOWN'
+        self.reason='CONFIRMED' if self.result!='UNKNOWN' else 'STABILIZING' if verdict!='UNKNOWN' else 'LIGHTING_OR_UNCERTAIN'
+        self.processing_ms=(time.perf_counter()-begun)*1000
         return self.result
+
+    def snapshot(self,now):
+        return dict(verdict=self.result,candidate=self.verdict or 'UNKNOWN',reason=self.reason,
+                    changed_ratio=self.ratio,stable_samples=self.samples,frame_age_ms=self.frame_age_ms,
+                    processing_ms=self.processing_ms,at=now,exact_item_count=None)
+
+
+def read_camera(camera,max_age_s=.25):
+    """Pair the actual sampled image with its timestamp, not a newer frame's stamp."""
+    paired=getattr(camera,'read_latest_with_timestamp',None)
+    if callable(paired):image,stamp=paired(max_age_ms=max_age_s*1000)
+    else:
+        before=getattr(camera,'latest_timestamp',None)
+        image=camera.read_latest(max_age_ms=max_age_s*1000)
+        stamp=getattr(camera,'latest_timestamp',None)
+        if before!=stamp:raise TimeoutError('Camera snapshot changed without atomic timestamp support')
+    now=time.perf_counter()
+    if stamp is None or not 0<=now-stamp<=max_age_s:raise TimeoutError('Basket camera frame is stale')
+    return image,stamp

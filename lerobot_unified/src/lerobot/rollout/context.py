@@ -310,6 +310,8 @@ def build_rollout_context(
     fails fast without touching the robot. A missing policy configuration raises
     ``ValueError`` before any policy access.
     """
+    from omx_manager.cpu import configure_cpu
+    configure_cpu()
     is_rtc = isinstance(cfg.inference, RTCInferenceConfig)
 
     # --- 1. Policy (heavy I/O, but no hardware yet) -------------------

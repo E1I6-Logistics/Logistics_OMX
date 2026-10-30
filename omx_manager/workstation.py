@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 
-from .basket import BasketInspector, changed_ratio
+from .basket import BasketInspector, changed_ratio,read_camera
 from .config import ConfigError, write_json
 from .home import errors
 from .hooks import heartbeat, initialize_home
@@ -38,6 +38,16 @@ def run(strategy,ctx,send_action,make_timer):
     phase='READY';job=None;expected=None;attempts=cycles=transfers=no_change=0
     job_started=cycle_started=inspect_started=0.
     baseline=None;after_cycle=False;next_inspect=0.
+    basket_path=status_path.with_name('basket_status.json')
+    basket_tag=None;next_basket_report=0.
+
+    def basket_report(snapshot):
+        nonlocal basket_tag,next_basket_report
+        tag=(snapshot['verdict'],snapshot.get('candidate'),snapshot.get('reason'))
+        now=time.perf_counter()
+        if tag!=basket_tag or now>=next_basket_report:
+            write_json(basket_path,snapshot,durable=False)
+            basket_tag=tag;next_basket_report=now+.2
 
     def status(new_phase,**extra):
         nonlocal phase
@@ -48,6 +58,7 @@ def run(strategy,ctx,send_action,make_timer):
         atomic_json(status_path,row)
         # Durable progress survives a killed model process; it never authorizes replay.
         write_json(status_path.with_name('unload_progress.json'),row)
+        write_json(basket_path,dict(verdict='UNKNOWN',candidate='UNKNOWN',reason='INSPECTING' if phase=='INSPECTING' else 'POLICY_'+phase,at=time.time()),durable=False)
 
     def inspect():
         nonlocal inspect_started,next_inspect,baseline
@@ -56,7 +67,7 @@ def run(strategy,ctx,send_action,make_timer):
 
     strategy.reset_control_state()
     status('READY')
-    logger.info('[WORKSTATION] READY: multi-cycle unload; registered stages and basket check enabled')
+    logger.info('[WORKSTATION] READY: multi-cycle unload; learned return region and basket check enabled')
     try:
         while not stop.is_set():
             heartbeat()
@@ -89,15 +100,33 @@ def run(strategy,ctx,send_action,make_timer):
                 if now<next_inspect:
                     stop.wait(min(.05,next_inspect-now));continue
                 next_inspect=now+options['sample_interval_s']
-                obs,reconnected=strategy._get_observation_with_camera_recovery(robot,engine)
+                camera=inner.cameras[options['camera']]
+                if hasattr(inner,'get_joint_observation') and hasattr(camera,'read_latest_with_timestamp'):
+                    obs=inner.get_joint_observation()
+                    try:frame,stamp=read_camera(camera,options['max_frame_age_s'])
+                    except TimeoutError:
+                        inspector.update(None,time.perf_counter(),None)
+                        basket_report(inspector.snapshot(time.time()))
+                        continue
+                    except RuntimeError:
+                        inspector.reset()
+                        inspector.reason='CAMERA_RECONNECTING'
+                        basket_report(inspector.snapshot(time.time()))
+                        strategy._get_observation_with_camera_recovery(robot,engine)
+                        frame,stamp=read_camera(camera,options['max_frame_age_s'])
+                        obs=inner.get_joint_observation()
+                    reconnected=False
+                else:
+                    obs,reconnected=strategy._get_observation_with_camera_recovery(robot,engine)
+                    frame=obs.get(options['camera']);stamp=getattr(camera,'latest_timestamp',None)
                 engine.pause()
                 now=time.perf_counter()
                 if reconnected: inspector.reset()
                 # Inspection only at the strict registered Home; no policy actions here.
                 if max(errors(obs,cfg['home']['target']).values())>cfg['home']['arrival_tolerance']:
                     raise RuntimeError('Arm moved away from basket inspection Home')
-                camera=inner.cameras[options['camera']]
-                verdict=inspector.update(obs.get(options['camera']),now,getattr(camera,'latest_timestamp',None))
+                verdict=inspector.update(frame,now,stamp)
+                basket_report(inspector.snapshot(time.time()))
                 if verdict=='UNKNOWN': continue
                 if after_cycle:
                     ratio=changed_ratio(baseline,inspector.latest,options['pixel_threshold'])
@@ -125,7 +154,7 @@ def run(strategy,ctx,send_action,make_timer):
                 engine.resume();continue
             if phase!='RUNNING': raise RuntimeError('Unknown unload state: '+phase)
             if now-cycle_started>cfg['runtime']['cycle_timeout_s']:
-                raise TimeoutError('Unload single-cycle timeout: registered work stages/Home incomplete')
+                raise TimeoutError('Unload single-cycle timeout: meaningful excursion/learned return incomplete')
             timer.tick(new_cycle=strategy._interpolator.needs_new_action())
             obs,reconnected=strategy._get_observation_with_camera_recovery(robot,engine)
             if reconnected:

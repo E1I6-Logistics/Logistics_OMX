@@ -30,6 +30,7 @@ def pose(pan=0.,lift=0.,grip=50.):
 
 
 def enroll(cfg):
+    cfg['counting']['mode']='ordered_stages' # exercise the explicit legacy compatibility path
     cfg['home']['target']=pose();cfg['counting']['min_cycle_s']=0
     cfg['workflow']={'items':{item:dict(binding=registration_binding(cfg),stages=[
         dict(name='pick',target=pose(30),tolerance=3.,samples=2),
@@ -40,7 +41,7 @@ def enroll(cfg):
 @pytest.fixture
 def cfg(tmp_path):
     cfg=enroll(C.load(ROOT/'params/omx4.yaml'))
-    cfg['unload']=dict(DEFAULTS,roi=[0,0,640,480],illumination_limit=40.)
+    cfg['unload']=dict(DEFAULTS,roi=[0,0,640,480],illumination_limit=40.,stable_samples=5,sample_interval_s=.2)
     reference=tmp_path/'empty.npz'
     np.savez_compressed(reference,image=np.full((120,160,3),100,np.uint8),roi=cfg['unload']['roi'])
     cfg['unload'].update(reference=str(reference),reference_binding=registration_binding(cfg))
@@ -207,7 +208,7 @@ class Stop:
     def wait(self,dt):self.clock.sleep(dt);return self.is_set()
 
 
-def controller(cfg,tmp_path,monkeypatch,*,count=2,expected=2,no_change=False,wrong_session=False,stage_failure=False,stale=False,jobs=1):
+def controller(cfg,tmp_path,monkeypatch,*,count=2,expected=2,no_change=False,wrong_session=False,stage_failure=False,stale=False,jobs=1,paired=False):
     # Load only the real IPC file, never the LeRobot torch/model package.
     ipc_path=ROOT/'lerobot_unified/src/lerobot/rollout/workstation_ipc.py'
     spec=importlib.util.spec_from_file_location('lerobot.rollout.workstation_ipc',ipc_path)
@@ -216,7 +217,7 @@ def controller(cfg,tmp_path,monkeypatch,*,count=2,expected=2,no_change=False,wro
     clock=Clock();stop=Stop(clock,60);status_path=tmp_path/'status.json';command_path=tmp_path/'command.json'
     C.write_json(command_path,dict(session='wrong' if wrong_session else 'test',command='START',job_id='job',expected_count=expected))
     monkeypatch.setenv('OMX_WORKSTATION_SESSION','test')
-    monkeypatch.setattr(W,'time',NS(perf_counter=clock))
+    monkeypatch.setattr(W,'time',NS(perf_counter=clock,time=lambda:1000+clock()))
     monkeypatch.setattr(W,'heartbeat',lambda:None)
     monkeypatch.setattr(hooks,'ROOT',tmp_path)
     phases=[];run_samples={};sent=[];done_rows=[]
@@ -240,7 +241,8 @@ def controller(cfg,tmp_path,monkeypatch,*,count=2,expected=2,no_change=False,wro
         completed=row.get('completed_cycles',0)
         if row.get('phase')=='RUNNING':
             attempt=(row['job_id'],row['attempts']);n=run_samples.get(attempt,0);run_samples[attempt]=n+1
-            inner.q=pose(20) if stage_failure else pose(30) if n<3 else pose(-30) if n<6 else pose()
+            if cfg['counting'].get('mode')=='cycle':inner.q=pose(30) if n<20 else pose()
+            else:inner.q=pose(20) if stage_failure else pose(30) if n<3 else pose(-30) if n<6 else pose()
         frame=image(count if no_change else max(0,count-completed))
         inner.cameras['top'].latest_timestamp=clock()-1 if stale else clock()
         return dict(inner.q,top=frame),False
@@ -254,11 +256,21 @@ def controller(cfg,tmp_path,monkeypatch,*,count=2,expected=2,no_change=False,wro
         config=NS(workstation_control_file=str(command_path),workstation_status_file=str(status_path),workstation_poll_s=.1),
         reset_control_state=Mock(),_get_observation_with_camera_recovery=observe,
         _process_observation_and_notify=lambda p,o:o,_handle_warmup=lambda *_:False,_log_telemetry=Mock())
+    if paired:
+        from omx_manager import basket
+        monkeypatch.setattr(basket,'time',NS(perf_counter=clock))
+        inner.get_joint_observation=lambda:inner.q.copy()
+        def camera_read(**kwargs):
+            row=ipc.read_json(status_path)
+            inner.cameras['top'].latest_timestamp=clock()
+            return image(max(0,count-row.get('completed_cycles',0))),clock()
+        inner.cameras['top'].read_latest_with_timestamp=camera_read
     ctx=NS(runtime=NS(cfg=NS(fps=30,use_torch_compile=False),shutdown_event=stop,cadence_report=None),
            hardware=NS(robot_wrapper=NS(inner=inner)),processors=None)
     def send(*args):
         assert ipc.read_json(status_path)['phase']=='RUNNING'
         sent.append(inner.q.copy())
+        strategy._manager_home.note_action()
     return lambda:W.run(strategy,ctx,send,Timer),phases,sent,done_rows,status_path
 
 

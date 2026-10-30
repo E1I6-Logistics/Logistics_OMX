@@ -291,6 +291,7 @@ def test_diagnostic_write_failure_does_not_break_counting(monkeypatch):
     from omx_manager import hooks
     cfg=C.load(ROOT/'params/omx1.yaml');cfg['home']['target']={j:0. for j in C.JOINTS};cfg['counting']['min_cycle_s']=0
     from omx_manager.workflow import registration_binding
+    cfg['counting']['mode']='ordered_stages'
     cfg['workflow']={'items':{'A':dict(binding=registration_binding(cfg),stages=[
         dict(name='pick',target={j:20. for j in C.JOINTS},tolerance=3.,samples=2),
         dict(name='place',target={j:40. for j in C.JOINTS},tolerance=3.,samples=2)])}}

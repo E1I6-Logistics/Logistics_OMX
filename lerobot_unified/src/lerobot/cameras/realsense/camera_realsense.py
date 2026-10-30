@@ -821,6 +821,9 @@ class RealSenseCamera(Camera):
         return self._async_read(timeout_ms=timeout_ms)
 
     def _read_latest(self, max_age_ms: int, read_depth: bool = False) -> NDArray[Any]:
+        return self._latest_snapshot(max_age_ms,read_depth)[0]
+
+    def _latest_snapshot(self, max_age_ms: int, read_depth: bool = False):
         """Shared helper for :meth:`read_latest`/:meth:`read_latest_depth`: peek the latest buffered frame."""
         if self.thread is None or not self.thread.is_alive():
             raise RuntimeError(f"{self} read thread is not running.")
@@ -838,7 +841,12 @@ class RealSenseCamera(Camera):
                 f"{self} latest frame is too old: {age_ms:.1f} ms (max allowed: {max_age_ms} ms)."
             )
 
-        return frame
+        return frame,timestamp
+
+    @check_if_not_connected
+    def read_latest_with_timestamp(self,max_age_ms: int = 500):
+        if not self.use_rgb:raise RuntimeError('Color camera disabled')
+        return self._latest_snapshot(max_age_ms)
 
     @check_if_not_connected
     def read_latest(self, max_age_ms: int = 500) -> NDArray[Any]:

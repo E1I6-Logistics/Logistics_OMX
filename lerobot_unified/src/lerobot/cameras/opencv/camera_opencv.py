@@ -172,6 +172,9 @@ class OpenCVCamera(Camera):
 
         try:
             self._configure_capture_settings()
+            # Best effort: supported V4L2 devices should not accumulate old frames.
+            try:self.videocapture.set(cv2.CAP_PROP_BUFFERSIZE,1)
+            except cv2.error:logger.debug('Capture backend does not support buffer-size tuning')
             self._start_read_thread()
 
             if warmup and self.warmup_s > 0:
@@ -623,6 +626,9 @@ class OpenCVCamera(Camera):
 
     @check_if_not_connected
     def read_latest(self, max_age_ms: int = 500) -> NDArray[Any]:
+        return self.read_latest_with_timestamp(max_age_ms)[0]
+
+    def read_latest_with_timestamp(self, max_age_ms: int = 500):
         """
         Return the most recent processed frame immediately.
 
@@ -650,7 +656,7 @@ class OpenCVCamera(Camera):
                 f"(max allowed: {max_age_ms} ms)."
             )
 
-        return frame
+        return frame,timestamp
 
     def disconnect(self) -> None:
         """

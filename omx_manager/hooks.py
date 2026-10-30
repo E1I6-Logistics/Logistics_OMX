@@ -51,12 +51,15 @@ def initialize_home(robot, stopped=lambda: False):
 
 class RolloutHome:
     def __init__(self,cfg,now,hold=None):
-        self.cfg=cfg; self.detector=HomeDetector(cfg,now,hold=hold); self.next_report=0
+        self.cfg=cfg; self.hold=hold; self.next_report=0
         self.item=next(iter(cfg['models']['profiles'][cfg['models']['active_profile']]['items']))
         self.reset(now)
     def reset(self,now):
+        from .cycles import options,CycleDetector
+        if options(self.cfg)['mode']=='cycle':
+            self.detector=CycleDetector(self.cfg,self.item,now);self.tracker=None;return
         from .workflow import StageTracker, require_stages
-        self.detector.reset(now)
+        self.detector=HomeDetector(self.cfg,now,hold=self.hold)
         self.tracker=StageTracker(require_stages(self.cfg,self.item),self.cfg['home']['max_sample_gap_s'])
     def select_item(self,item,now):
         # Pickup IPC uses A/B internally for both OMX1 and OMX2.
@@ -64,10 +67,14 @@ class RolloutHome:
         self.reset(now)
     def invalidate(self,now):
         self.detector.invalidate(now)
-        self.tracker.reset()
+        if self.tracker:self.tracker.reset()
+    def note_action(self):
+        if hasattr(self.detector,'note_action'):self.detector.note_action()
     def update(self,observation,now):
-        eligible=self.tracker.update(observation,now)
-        done=self.detector.update(observation,now,eligible=eligible)
+        if self.tracker:
+            eligible=self.tracker.update(observation,now)
+            done=self.detector.update(observation,now,eligible=eligible)
+        else:done=self.detector.update(observation,now)
         if done or now>=self.next_report:
             self.next_report=now+1
             rows={j:dict(row) for j,row in self.detector.rows.items()}
@@ -76,8 +83,9 @@ class RolloutHome:
                 q = joints(observation)
                 rows = {j: {"target": self.detector.target[j], "current": q[j],
                             "error": abs(q[j] - self.detector.target[j]),
-                            "tolerance": self.cfg["home"]["tolerance"][j],
-                            "ok": abs(q[j] - self.detector.target[j]) <= self.cfg["home"]["tolerance"][j]}
+                            "tolerance": getattr(self.detector,'profile',{}).get('tolerance',self.cfg['home']['tolerance']).get(j,self.cfg['home']['tolerance'][j]),
+                            "ignored": self.tracker is None and j=='gripper',
+                            "ok": (self.tracker is None and j=='gripper') or abs(q[j] - self.detector.target[j]) <= getattr(self.detector,'profile',{}).get('tolerance',self.cfg['home']['tolerance']).get(j,self.cfg['home']['tolerance'][j])}
                         for j in q}
             try:
                 state=self.detector.last_completion if done else dict(departed=self.detector.departed,in_home_window=self.detector.in_home_window,
@@ -86,7 +94,10 @@ class RolloutHome:
                         "completed":done,"departed":self.detector.departed,"in_home_window":self.detector.in_home_window,
                         "still":self.detector.still,"hold_since":self.detector.since,
                         "sample_gap_s":self.detector.last_gap_s,"gap_reset":self.detector.gap_reset,
-                        "item":self.item,"stage_index":self.tracker.index,"stage_total":len(self.tracker.stages),
+                        "item":self.item,"stage_index":self.tracker.index if self.tracker else None,"stage_total":len(self.tracker.stages) if self.tracker else None,
+                        "counter_mode":"ordered_stages" if self.tracker else "cycle",
+                        "actions":getattr(self.detector,'actions',None),"min_actions":self.cfg['counting'].get('min_actions',30),
+                        "phase":getattr(self.detector,'phase','LEGACY'),"peak_excursion":getattr(self.detector,'peak',None),
                         "physical_transfer_verified":False,**state}
                 write_json(ROOT/"state"/"manager"/self.cfg["device_id"]/"joint_errors.json",row,durable=False)
                 if done: write_json(ROOT/'state'/'manager'/self.cfg['device_id']/'last_cycle.json',row,durable=False)
@@ -94,8 +105,13 @@ class RolloutHome:
                 if now>=getattr(self,"next_io_warning",0):
                     logger.warning("Joint diagnostics unavailable (control unchanged): %s",exc)
                     self.next_io_warning=now+10
-        if done: self.tracker.reset()
+        if done and self.tracker:self.tracker.reset()
         return done
+
+
+def note_action(robot):
+    counter=getattr(robot,'_omx_cycle_counter',None)
+    if isinstance(counter,RolloutHome):counter.note_action()
 
 
 def recovery_adapter(robot):

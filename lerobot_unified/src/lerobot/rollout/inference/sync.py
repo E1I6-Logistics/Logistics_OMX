@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import nullcontext
 from copy import copy
 
@@ -119,8 +120,19 @@ class SyncInferenceEngine(InferenceEngine):
                 # than ``policy.reset``: observation history and other episode state stay.
                 logger.info("Task changed to '%s' — dropping precomputed actions", task)
                 self._policy.drop_queued_actions()
-            observation = prepare_observation_for_inference(observation, self._device, task, self._robot_type)
-            observation = self._preprocessor(observation)
+            # Managed OMX ACT queues contain already predicted actions. Avoid
+            # rebuilding/transferring two camera tensors on the other 99 ticks.
+            # select_action still owns queue semantics; postprocessing is unchanged.
+            queued=(os.environ.get('OMX_ACT_FAST_QUEUE')=='1' and self._robot_type=='omx_follower'
+                    and type(self._policy).__name__=='ACTPolicy'
+                    and getattr(self._policy.config,'type',None)=='act'
+                    and getattr(self._policy.config,'temporal_ensemble_coeff',None) is None
+                    and bool(getattr(self._policy,'_action_queue',())))
+            if queued:
+                observation={}
+            else:
+                observation = prepare_observation_for_inference(observation, self._device, task, self._robot_type)
+                observation = self._preprocessor(observation)
             action = self._policy.select_action(observation)
             action = self._postprocessor(action)
         action_tensor = action.squeeze(0).cpu()
