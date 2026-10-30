@@ -193,3 +193,56 @@ def test_automatic_unload_preflight_blocks_unverified_empty_view(tmp_path,monkey
     monkeypatch.setattr(cycles,'require_profile',lambda *a:None)
     with pytest.raises(C.ConfigError,match='overexposed' if bad=='clipping' else 'entire basket'):
         commissioning.require_commissioned(cfg)
+
+
+def test_overexposure_does_not_get_bypassed_by_strong_local_object_candidate(tmp_path):
+    reference=empty(255);reference[:200]=100
+    cfg=configured(tmp_path,reference);current=reference.copy();current[40:100,100:160]=140
+    result,inspector=verdict(cfg,current)
+    assert result=='UNKNOWN' and inspector.reason=='ROI_OVEREXPOSED'
+    assert inspector.snapshot(1)['quality_flags']==['ROI_OVEREXPOSED']
+    assert inspector.snapshot(1)['changed_ratio']>0
+    assert inspector.snapshot(1)['features_computed'] is False
+
+
+def test_unconfirmed_view_also_blocks_occupied_candidate(tmp_path):
+    cfg=configured(tmp_path);cfg['unload']['full_view_confirmed']=False
+    current=empty();current[100:130,100:130]=200
+    result,inspector=verdict(cfg,current)
+    assert result=='UNKNOWN' and inspector.reason=='FULL_VIEW_NOT_CONFIRMED'
+
+
+def test_edge_changes_without_pixel_support_do_not_assert_object(tmp_path,monkeypatch):
+    cfg=configured(tmp_path);inspector=BasketInspector(cfg);compare=inspector.comparator
+    original=compare.features
+    def moving_edges(image):
+        gray,contrast,edges=original(image)
+        edges[50:100,50:100]=255
+        return gray,contrast,edges
+    monkeypatch.setattr(compare,'features',moving_edges)
+    for i in range(5):result=inspector.update(empty(),1+i*.11,1+i*.11)
+    row=inspector.snapshot(2)
+    assert result=='UNKNOWN' and row['reason']=='UNSUPPORTED_EDGE_CHANGE'
+    assert row['changed_ratio']==0 and row['supported_edge_pixels']==0 and row['color_component_pixels']==0
+    assert row['edge_changed_pixels']>=2000
+
+
+@pytest.mark.parametrize('sigma',[1.,2.])
+def test_textured_background_noise_never_asserts_object_without_strong_color_component(tmp_path,sigma):
+    rng=np.random.default_rng(222)
+    base=np.clip(100+rng.normal(0,4,(480,640,1)),0,255).astype(np.uint8)
+    reference=np.repeat(base,3,axis=2);cfg=configured(tmp_path,reference)
+    inspector=BasketInspector(cfg)
+    for i in range(6):
+        frame=np.clip(reference.astype(float)+rng.normal(0,sigma,reference.shape),0,255).astype(np.uint8)
+        result=inspector.update(frame,1+i*.11,1+i*.11)
+        assert result!='OCCUPIED',inspector.snapshot(2)
+
+
+def test_invalid_quality_skips_expensive_features_and_keeps_model_frame_unchanged(tmp_path,monkeypatch):
+    from unittest.mock import Mock
+    cfg=configured(tmp_path,empty(255));inspector=BasketInspector(cfg);image=empty(255);before=image.copy()
+    feature=Mock(side_effect=AssertionError('Invalid view must not run CLAHE/Canny'))
+    monkeypatch.setattr(inspector.comparator,'features',feature)
+    assert inspector.update(image,1,1)=='UNKNOWN'
+    feature.assert_not_called();np.testing.assert_array_equal(image,before)

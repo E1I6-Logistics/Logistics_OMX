@@ -79,34 +79,54 @@ class Comparator:
     def compare(self,image):
         import cv2
         import numpy as np
-        spec=self.spec;gray,contrast,edges=self.features(image)
+        spec=self.spec
         raw=np.max(np.abs(image.astype(np.int16)-self.reference),axis=2)
+        raw_ratio=float((raw[self.mask]>=spec['pixel_threshold']).mean())
+        illumination=float(np.abs(image[self.mask].mean(axis=0)-self.reference_mean).max())
+        clipped=max(self.reference_clipped,float((np.min(image,axis=2)[self.mask]>=250).mean()))
+        # Reject unusable views before spending CPU on contrast/edge components.
+        flags=[]
+        if clipped>spec['max_clipped_ratio']:flags.append('ROI_OVEREXPOSED')
+        if illumination>spec['illumination_limit']:flags.append('LIGHTING_SHIFT')
+        if not spec['full_view_confirmed']:flags.append('FULL_VIEW_NOT_CONFIRMED')
+        if flags:
+            return dict(verdict='UNKNOWN',evidence_reason=flags[0],changed_ratio=raw_ratio,
+                        local_peak_ratio=None,component_pixels=None,edge_changed_pixels=None,
+                        supported_edge_pixels=None,color_component_pixels=None,features_computed=False,
+                        quality_flags=flags,clipped_ratio=clipped,illumination_delta=illumination)
+        gray,contrast,edges=self.features(image)
         gray_delta=np.abs(gray.astype(np.int16)-self.gray16)
         contrast_delta=np.abs(contrast.astype(np.int16)-self.contrast16)
         expanded=cv2.dilate(edges,np.ones((3,3),np.uint8))
         edge_change=((edges>0)&(self.expanded_edges==0))|((self.edges>0)&(expanded==0))
-        sensitive=((gray_delta>=spec['local_pixel_threshold'])|
-                   ((contrast_delta>=12)&(gray_delta>=3))|edge_change)&self.mask
+        # Canny threshold crossings in textured backgrounds are not independent
+        # object evidence. Require an actual low-threshold RGB change nearby.
+        color_support=(raw>=spec['local_pixel_threshold'])&self.mask
+        supported_edges=edge_change&(cv2.dilate(color_support.astype(np.uint8),np.ones((3,3),np.uint8))>0)&self.mask
+        weak_contrast=(contrast_delta>=12)&(gray_delta>=3)&self.mask
+        sensitive=(color_support|weak_contrast|supported_edges)&self.mask
         count,_,stats,_=cv2.connectedComponentsWithStats(sensitive.astype(np.uint8),connectivity=8)
         component=int(stats[1:,cv2.CC_STAT_AREA].max()) if count>1 else 0
         tile_changes=sensitive.reshape(12,20,16,20).sum(axis=(1,3))
         ratios=np.divide(tile_changes,self.tile_areas,out=np.zeros_like(tile_changes,dtype=float),where=self.tile_areas>=40)
         peak=float(ratios.max())
-        raw_ratio=float((raw[self.mask]>=spec['pixel_threshold']).mean())
-        illumination=float(np.abs(image[self.mask].mean(axis=0)-self.reference_mean).max())
-        clipped=max(self.reference_clipped,float((np.min(image,axis=2)[self.mask]>=250).mean()))
-        occupied=raw_ratio>=spec['occupied_ratio'] or (component>=spec['min_component_pixels'] and peak>=spec['local_occupied_ratio'])
+        # Weak contrast/edges alone may veto EMPTY, but cannot assert OCCUPIED.
+        direct_component=0
+        if color_support.any():
+            direct_count,_,direct_stats,_=cv2.connectedComponentsWithStats(color_support.astype(np.uint8),connectivity=8)
+            if direct_count>1:direct_component=int(direct_stats[1:,cv2.CC_STAT_AREA].max())
+        occupied=raw_ratio>=spec['occupied_ratio'] or (direct_component>=spec['min_component_pixels'] and peak>=spec['local_occupied_ratio'])
         reason='LOCAL_OBJECT_EVIDENCE' if occupied else 'MATCHES_EMPTY_REFERENCE'
         verdict='OCCUPIED' if occupied else 'EMPTY'
-        if illumination>spec['illumination_limit']:verdict='UNKNOWN';reason='LIGHTING_SHIFT'
-        elif not occupied:
-            if not spec['full_view_confirmed']:verdict='UNKNOWN';reason='FULL_VIEW_NOT_CONFIRMED'
-            elif clipped>spec['max_clipped_ratio']:verdict='UNKNOWN';reason='ROI_OVEREXPOSED'
-            elif raw_ratio>spec['empty_ratio'] or component>=2 or sensitive.sum()>=4:
+        if not occupied:
+            if raw_ratio>spec['empty_ratio'] or component>=2 or sensitive.sum()>=4:
                 verdict='UNKNOWN';reason='AMBIGUOUS_LOCAL_CHANGE'
+            elif int((edge_change&self.mask).sum())>=4:
+                verdict='UNKNOWN';reason='UNSUPPORTED_EDGE_CHANGE'
         return dict(verdict=verdict,evidence_reason=reason,changed_ratio=raw_ratio,
                     local_peak_ratio=peak,component_pixels=component,edge_changed_pixels=int((edge_change&self.mask).sum()),
-                    clipped_ratio=clipped,illumination_delta=illumination)
+                    supported_edge_pixels=int(supported_edges.sum()),color_component_pixels=direct_component,
+                    features_computed=True,quality_flags=flags,clipped_ratio=clipped,illumination_delta=illumination)
 
 
 def draw_region(frame,spec):

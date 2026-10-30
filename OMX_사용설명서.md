@@ -789,11 +789,17 @@ omx_basket watch
 - `local_peak_ratio`: 타일 중 가장 큰 변화 비율.
 - `component_pixels`: 가장 큰 연결 변화 덩어리 픽셀 수(320×240 기준).
 - `edge_changed_pixels`: 기준과 달라진 경계 픽셀 수.
+- `supported_edge_pixels`: 실제 RGB 픽셀 변화가 근처에서 함께 확인된 경계 픽셀 수. 경계 변화만으로 물건 있음을 확정하지 않습니다.
+- `color_component_pixels`: 실제 RGB 변화의 가장 큰 연결 덩어리. 국소 물건 후보에는 이 근거도 필요합니다.
+- `quality_flags`: 과노출·큰 밝기 변화·전체 시야 미확인 조건 목록. 물건 있음 후보에도 먼저 적용하여 UNKNOWN 처리합니다.
+- `features_computed`: 품질 검사 통과 후 대비·경계 연산까지 실행했는지 여부. 품질 미달이면 해당 연산을 생략하고 관련 지표는 null로 표시해 CPU 낭비를 줄입니다.
 - `clipped_ratio`: 기준 또는 현재 검사 영역의 RGB가 모두 250 이상인 비율.
 - `illumination_delta`: 기준 대비 검사 영역의 평균 색상 변화.
 - `evidence_reason`: 판정 근거. `reason`은 연속 안정 확인 상태도 함께 표시.
 
 `ROI_OVEREXPOSED`는 물건과 바구니를 구분할 정보가 하얗게 날아간 비율이 커 EMPTY를 확정할 수 없다는 뜻입니다. `FULL_VIEW_NOT_CONFIRMED`는 전체 내부 시야 미확인, `AMBIGUOUS_LOCAL_CHANGE`는 작은 변화가 있지만 물건으로 확정하기에는 부족함, `LIGHTING_SHIFT`는 큰 밝기 변화입니다. 중복/오래된 프레임은 계속 UNKNOWN이며 기존 안정 확인 시간은 단축하지 않습니다.
+
+과노출·시야 미확인은 OCCUPIED 후보에도 우선 적용합니다. 픽셀 변화 근거 없이 경계만 달라졌다면 `UNSUPPORTED_EDGE_CHANGE`로 보류합니다. `changed_ratio=0`은 큰 픽셀 차이가 없다는 뜻이며 낮은 문턱의 작은 물건 변화까지 없다는 뜻은 아닙니다. 경계 변화만 물건으로 확정하던 초기 RGB ROI 구현은 수정되었습니다.
 
 전체 시야 미확인 또는 빈 기준 자체의 과노출이 확인되면 자동 운전 시작 전 검사에서 차단합니다. 이 경우 모델을 반복 로딩하지 않고 기존 복구 대기로 들어갑니다. `omx_basket watch`로 원인을 확인할 수 있습니다.
 
