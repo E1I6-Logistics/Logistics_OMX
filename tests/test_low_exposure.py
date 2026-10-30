@@ -94,8 +94,11 @@ def test_restore_failure_preserves_durable_journal_and_blocks_new_session(setup)
 
 def test_ignored_low_exposure_is_detected_then_restored(setup):
     cfg,clock,controls,camera=setup;controls.ignore_low=True
-    with pytest.raises(C.ConfigError,match='setting changed'):
+    with pytest.raises(C.ConfigError,match='setting changed') as caught:
         with E.Session(camera,cfg):pytest.fail('Ignored control must not be accepted')
+    message=str(caught.value)
+    assert 'exposure requested=100 actual=400' in message
+    assert 'backend=opencv-v4l2' in message and 'auto_exposure=1' in message
     assert controls.values==controls.initial and not E.journal_path(cfg).exists()
 
 

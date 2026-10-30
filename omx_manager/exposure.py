@@ -238,8 +238,13 @@ class Session:
         try:
             apply(self.adapter,self.target)
             self.wait_frames(self.clock())
-            for key,value in self.target.items():
-                if abs(self.adapter.get(key)-value)>.51:raise ConfigError('Inspection setting changed: '+key)
+            actual={key:self.adapter.get(key) for key in self.target}
+            mismatches=[f'{key} requested={value:g} actual={actual[key]:g}'
+                        for key,value in self.target.items() if abs(actual[key]-value)>.51]
+            if mismatches:
+                controls=', '.join(f'{key}={value:g}' for key,value in actual.items())
+                raise ConfigError('Inspection setting changed: '+'; '.join(mismatches)
+                                  +f'; backend={self.adapter.backend}; controls: '+controls)
             self.timing['exposure_enter_s']=self.clock()-self.started
             logger.info('[EXPOSURE] inspection ready: %s exposure=%s',self.adapter.backend,self.target['exposure'])
             return self
