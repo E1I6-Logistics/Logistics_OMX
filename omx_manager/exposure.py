@@ -50,21 +50,51 @@ def finite(value):
     return value
 
 
+def control_tolerance(backend,key,requested,*,learning=False):
+    # C920 field evidence: delayed exposure 83->82 and gain 160->159.
+    # Only learn a <=1 raw-unit AND <=2% adjustment on these V4L2 controls.
+    # Saved reference replays and all automatic-mode flags remain strict.
+    if learning and backend=='opencv-v4l2' and key in ('exposure','gain'):
+        return max(.51,min(1.,abs(requested)*.02))
+    return 0. if key in ('auto_exposure','auto_white_balance') else .51
+
+
+def verify_controls(adapter,expected,*,learning=False):
+    actual={key:adapter.get(key) for key in expected}
+    mismatches=[f'{key} requested={value:g} actual={actual[key]:g}'
+                for key,value in expected.items()
+                if abs(actual[key]-value)>control_tolerance(adapter.backend,key,value,learning=learning)]
+    if mismatches:
+        controls=', '.join(f'{key}={value:g}' for key,value in actual.items())
+        raise ConfigError('Inspection setting changed: '+'; '.join(mismatches)
+                          +f'; backend={adapter.backend}; controls: '+controls)
+    return actual
+
+
 def validate_profile(profile,spec):
-    if not isinstance(profile,dict) or set(profile)!={'backend','controls'}:
+    if (not isinstance(profile,dict) or not {'backend','controls'}<=set(profile)
+            or set(profile)-{'backend','controls','requested_controls'}):
         raise ConfigError('Register a new low-exposure empty reference: omx_basket capture')
     if profile['backend'] not in ('opencv-v4l2','realsense-rgb'):raise ConfigError('Unknown reference exposure backend')
-    row=profile['controls'];required={'auto_exposure','exposure','gain'};allowed=required|{'auto_white_balance','white_balance'}
-    if not isinstance(row,dict) or not required<=set(row)<=allowed:
-        raise ConfigError('Invalid reference exposure controls')
-    if ('white_balance' in row)!=('auto_white_balance' in row):raise ConfigError('Incomplete reference white balance controls')
-    for value in row.values():
-        if type(value) not in (int,float):raise ConfigError('Reference camera controls must be numeric')
-        finite(value)
-    manual=1. if profile['backend']=='opencv-v4l2' else 0.
-    if row['auto_exposure']!=manual or row.get('auto_white_balance',0.)!=0.:
-        raise ConfigError('Inspection reference must use fixed camera controls')
-    if abs(row['exposure']-spec['inspection_exposure'])>.51:raise ConfigError('Inspection exposure changed; recapture empty reference')
+    required={'auto_exposure','exposure','gain'};allowed=required|{'auto_white_balance','white_balance'}
+    rows=[profile['controls']]
+    if 'requested_controls' in profile:rows.append(profile['requested_controls'])
+    for row in rows:
+        if not isinstance(row,dict) or not required<=set(row)<=allowed:
+            raise ConfigError('Invalid reference exposure controls')
+        if ('white_balance' in row)!=('auto_white_balance' in row):raise ConfigError('Incomplete reference white balance controls')
+        for value in row.values():
+            if type(value) not in (int,float):raise ConfigError('Reference camera controls must be numeric')
+            finite(value)
+        manual=1. if profile['backend']=='opencv-v4l2' else 0.
+        if row['auto_exposure']!=manual or row.get('auto_white_balance',0.)!=0.:
+            raise ConfigError('Inspection reference must use fixed camera controls')
+    actual=profile['controls'];requested=profile.get('requested_controls',actual)
+    if set(actual)!=set(requested):raise ConfigError('Reference camera control capabilities changed')
+    if abs(requested['exposure']-spec['inspection_exposure'])>.51:raise ConfigError('Inspection exposure changed; recapture empty reference')
+    for key,value in requested.items():
+        if abs(actual[key]-value)>control_tolerance(profile['backend'],key,value,learning=True):
+            raise ConfigError('Reference camera adjustment outside bounded range: '+key)
 
 
 def validate_original(row,adapter):
@@ -190,10 +220,10 @@ class Session:
         self.target=target;self.guard=guard;self.stopped=stopped;self.clock=clock or time.perf_counter;self.sleep=sleep or time.sleep
         self.path=journal_path(cfg);self.original=None;self.started=None;self.timing={}
         self.allow_scene_change=allow_scene_change
-    def wait_frames(self,after,*,restoring=False,baseline=None):
+    def wait_frames(self,after,*,restoring=False,baseline=None,control_target=None,learning=False):
         from .basket import read_camera
         from .hooks import heartbeat
-        deadline=self.clock()+self.spec['exposure_switch_timeout_s'];last=None;seen=0;held=None;previous=None
+        deadline=self.clock()+self.spec['exposure_switch_timeout_s'];last=None;seen=0;held=None;previous=None;previous_controls=None
         while self.clock()<deadline:
             if not restoring:
                 if self.stopped():raise InterruptedError('Inspection stopped')
@@ -205,7 +235,12 @@ class Session:
             gap=last is not None and stamp-last>self.cfg['home']['max_sample_gap_s']
             last=stamp;seen+=1;value=luma(frame)
             if seen<=self.spec['exposure_discard_frames']:previous=value;continue
-            stable=previous is not None and abs(value-previous)<=self.spec['stability_delta'] and not gap
+            controls_stable=True
+            if control_target is not None:
+                actual=verify_controls(self.adapter,control_target,learning=learning)
+                controls_stable=previous_controls is not None and all(abs(actual[k]-previous_controls[k])<=.51 for k in actual)
+                previous_controls=actual;self.settled_controls=actual
+            stable=previous is not None and abs(value-previous)<=self.spec['stability_delta'] and not gap and controls_stable
             match=baseline is None or abs(value-baseline)<=self.spec['exposure_restore_luma_tolerance']
             if stable and match:held=stamp if held is None else held
             else:held=None
@@ -220,15 +255,18 @@ class Session:
         # Pre-change fresh frame provides an original-scene brightness check.
         baseline_frame,_=self.wait_frames(self.clock())
         self.baseline=luma(baseline_frame)
-        if self.target is not None:
+        self.learning=self.target is None
+        if not self.learning:
             validate_profile(self.target,self.spec)
             if self.target['backend']!=self.adapter.backend:raise ConfigError('Reference sensor backend changed; recapture empty reference')
             if set(self.target['controls'])!=set(self.original):raise ConfigError('Sensor control capabilities changed')
-            self.target=dict(self.target['controls'])
-        else:self.target=dict(self.original)
-        self.target['exposure']=float(self.spec['inspection_exposure'])
-        self.target['auto_exposure']=self.adapter.manual
-        if 'auto_white_balance' in self.target:self.target['auto_white_balance']=0.
+            self.expected=dict(self.target['controls'])
+            self.requested=dict(self.target.get('requested_controls',self.expected))
+        else:
+            self.expected=None;self.requested=dict(self.original)
+            self.requested['exposure']=float(self.spec['inspection_exposure'])
+            self.requested['auto_exposure']=self.adapter.manual
+            if 'auto_white_balance' in self.requested:self.requested['auto_white_balance']=0.
         self.started=self.clock()
         self.record=dict(schema_version=1,device_id=self.cfg['device_id'],camera=self.spec['camera'],
                          hardware=self.cfg['hardware']['cameras'][self.spec['camera']],backend=self.adapter.backend,
@@ -236,20 +274,21 @@ class Session:
         write_json(self.path,self.record)
         self.camera._omx_exposure_blocked=True
         try:
-            apply(self.adapter,self.target)
-            self.wait_frames(self.clock())
-            actual={key:self.adapter.get(key) for key in self.target}
-            mismatches=[f'{key} requested={value:g} actual={actual[key]:g}'
-                        for key,value in self.target.items() if abs(actual[key]-value)>.51]
-            if mismatches:
-                controls=', '.join(f'{key}={value:g}' for key,value in actual.items())
-                raise ConfigError('Inspection setting changed: '+'; '.join(mismatches)
-                                  +f'; backend={self.adapter.backend}; controls: '+controls)
+            apply(self.adapter,self.requested)
+            self.wait_frames(self.clock(),control_target=self.requested if self.learning else self.expected,learning=self.learning)
+            self.target=dict(self.settled_controls)
+            if self.target!=self.requested:
+                logger.info('[EXPOSURE] stable sensor readback: requested=%s actual=%s',self.requested,self.target)
             self.timing['exposure_enter_s']=self.clock()-self.started
             logger.info('[EXPOSURE] inspection ready: %s exposure=%s',self.adapter.backend,self.target['exposure'])
             return self
         except BaseException:
             self.finish();raise
+    def verify(self):
+        return verify_controls(self.adapter,self.target)
+    def profile(self):
+        # Replay the same command, require the SAME settled actual values as capture.
+        return dict(backend=self.adapter.backend,controls=dict(self.target),requested_controls=dict(self.requested))
     def finish(self):
         start=self.clock()
         try:
@@ -267,7 +306,10 @@ class Session:
             self.record.update(phase='RESTORE_REQUIRED',reason=str(exc),at=time.time())
             write_json(self.path,self.record)
             raise RuntimeError('Camera restoration unverified; model remains blocked; use omx_basket restore') from exc
-    def __exit__(self,*_):self.finish()
+    def __exit__(self,exc_type,*_):
+        try:
+            if exc_type is None:self.verify()
+        finally:self.finish()
 
 
 def recover(camera,cfg,*,clock=None,sleep=None):
@@ -301,6 +343,7 @@ def inspect(camera,cfg,inspector,*,guard=lambda:None,stopped=lambda:False,report
             if stopped():raise InterruptedError('Inspection stopped')
             guard();heartbeat()
             frame,stamp=read_camera(camera,inspector.spec['max_frame_age_s'])
+            session.verify()
             result=inspector.update(frame,time.perf_counter(),stamp)
             row=inspector.snapshot(time.time());row.update(camera_state='INSPECTION_LOW',restore_verified=False)
             report(row)

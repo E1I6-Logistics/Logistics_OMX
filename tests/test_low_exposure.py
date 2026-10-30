@@ -345,3 +345,129 @@ def test_two_consecutive_jobs_restore_camera_before_each_model_cycle(setup,tmp_p
     run()
     assert len(done)==2 and phases.count('RUNNING')==4 and sent
     assert controls.values==controls.initial and not E.journal_path(cfg).exists()
+
+
+def c920_adjustment(setup,exposure=82.,gain=159.):
+    cfg,clock,controls,camera=setup
+    cfg['unload']['inspection_exposure']=83.
+    controls.values.update(exposure=333.,gain=160.);controls.initial=controls.values.copy()
+    read=camera.read_latest_with_timestamp
+    def delayed_read(**kwargs):
+        if controls.values['auto_exposure']==1. and controls.values['exposure']==83.:
+            controls.values.update(exposure=exposure,gain=gain)
+        return read(**kwargs)
+    camera.read_latest_with_timestamp=delayed_read
+    return cfg,clock,controls,camera
+
+
+def test_c920_delayed_one_unit_readback_is_stable_saved_and_replayed_exactly(setup,tmp_path):
+    cfg,clock,controls,camera=c920_adjustment(setup)
+    with E.Session(camera,cfg) as session:
+        profile=session.profile()
+        assert profile['requested_controls']['exposure']==83 and profile['controls']['exposure']==82
+        assert profile['requested_controls']['gain']==160 and profile['controls']['gain']==159
+    assert controls.values==controls.initial and not E.journal_path(cfg).exists()
+    E.validate_profile(profile,basket.options(cfg))
+    cfg['home']['target']={j:0. for j in C.JOINTS}
+    destination=tmp_path/'actual-reference.npz';spec=basket.options(cfg)
+    np.savez_compressed(destination,image=np.full((240,320,3),80,np.uint8),roi=spec['roi'],roi_signature=signature(spec),exposure_profile=json.dumps(profile))
+    cfg['unload'].update(reference=str(destination),reference_binding=registration_binding(cfg))
+    inspector=basket.BasketInspector(cfg)
+    controls.values.update(exposure=500.,gain=190.,white_balance=5200.);original=controls.values.copy()
+    for _ in range(3):
+        with E.Session(camera,cfg,target=inspector.exposure_profile) as again:
+            assert again.target['exposure']==82 and again.target['gain']==159
+            assert again.requested['exposure']==83 and again.requested['gain']==160
+        assert controls.values==original
+    assert inspector.exposure_profile==profile # no accumulating adjustment
+    cfg['unload']['inspection_exposure']=84.
+    with pytest.raises(C.ConfigError,match='changed'):E.validate_profile(profile,basket.options(cfg))
+
+
+@pytest.mark.parametrize('exposure,gain',[(81.,159.),(82.,158.),(75.,150.)])
+def test_c920_larger_adjustment_fails_and_restores(setup,exposure,gain):
+    cfg,clock,controls,camera=c920_adjustment(setup,exposure,gain)
+    with pytest.raises(C.ConfigError,match='setting changed'):
+        with E.Session(camera,cfg):pytest.fail('Large control change accepted')
+    assert controls.values==controls.initial and not E.journal_path(cfg).exists()
+
+
+def test_reference_replay_never_relearns_an_extra_one_unit_change(setup):
+    cfg,clock,controls,camera=c920_adjustment(setup)
+    with E.Session(camera,cfg) as first:profile=first.profile()
+    read=camera.read_latest_with_timestamp
+    def drift(**kwargs):
+        frame,stamp=read(**kwargs)
+        if controls.values['auto_exposure']==1.:controls.values['exposure']=81.
+        return frame,stamp
+    camera.read_latest_with_timestamp=drift
+    with pytest.raises(C.ConfigError,match='exposure requested=82 actual=81'):
+        with E.Session(camera,cfg,target=profile):pytest.fail('Reference drift accepted')
+    assert profile['controls']['exposure']==82 and controls.values==controls.initial
+
+
+def test_control_changes_inside_small_range_still_need_stable_window(setup):
+    cfg,clock,controls,camera=c920_adjustment(setup)
+    read=camera.read_latest_with_timestamp
+    def oscillate(**kwargs):
+        frame,stamp=read(**kwargs)
+        if controls.values['auto_exposure']==1.:controls.values['exposure']=82.+(int(stamp*30)%2)
+        return frame,stamp
+    camera.read_latest_with_timestamp=oscillate
+    with pytest.raises(TimeoutError,match='stabilize'):
+        with E.Session(camera,cfg):pytest.fail('Oscillating control accepted')
+    assert controls.values==controls.initial and not E.journal_path(cfg).exists()
+
+
+@pytest.mark.parametrize('key,value',[('auto_exposure',3.),('auto_white_balance',1.),('white_balance',4599.)])
+def test_mode_flags_and_white_balance_remain_strict(setup,key,value):
+    cfg,clock,controls,camera=setup;read=camera.read_latest_with_timestamp
+    switched=False
+    def change(**kwargs):
+        nonlocal switched
+        if controls.values['auto_exposure']==1.:
+            controls.values[key]=value;switched=True
+        return read(**kwargs)
+    camera.read_latest_with_timestamp=change
+    with pytest.raises(C.ConfigError,match='setting changed'):
+        with E.Session(camera,cfg):pytest.fail('Mode or WB change accepted')
+    assert switched and controls.values==controls.initial
+
+
+def test_low_numeric_controls_do_not_get_large_relative_tolerance(setup):
+    cfg,clock,controls,camera=setup;cfg['unload']['inspection_exposure']=3.
+    read=camera.read_latest_with_timestamp
+    def low(**kwargs):
+        if controls.values['auto_exposure']==1.:controls.values['exposure']=2.
+        return read(**kwargs)
+    camera.read_latest_with_timestamp=low
+    with pytest.raises(C.ConfigError,match='setting changed'):
+        with E.Session(camera,cfg):pytest.fail('33 percent exposure change accepted')
+    assert controls.values==controls.initial
+
+
+def test_realsense_one_unit_change_is_not_treated_as_c920_adjustment(setup):
+    cfg,clock,controls,camera=setup
+    controls.backend='realsense-rgb';controls.manual=0.;controls.values['auto_exposure']=1.;controls.initial=controls.values.copy()
+    read=camera.read_latest_with_timestamp
+    def change(**kwargs):
+        if controls.values['auto_exposure']==0.:controls.values['exposure']=99.
+        return read(**kwargs)
+    camera.read_latest_with_timestamp=change
+    with pytest.raises(C.ConfigError,match='setting changed'):
+        with E.Session(camera,cfg):pytest.fail('RealSense mismatch accepted')
+    assert controls.values==controls.initial
+
+
+def test_profile_rejects_tampered_command_actual_pair(setup):
+    cfg,clock,controls,camera=c920_adjustment(setup)
+    with E.Session(camera,cfg) as session:profile=session.profile()
+    profile['controls']['exposure']=70.
+    with pytest.raises(C.ConfigError,match='bounded range'):E.validate_profile(profile,basket.options(cfg))
+
+
+def test_control_drift_after_entry_fails_and_restores_before_accepting_image(setup):
+    cfg,clock,controls,camera=c920_adjustment(setup)
+    with pytest.raises(C.ConfigError,match='setting changed'):
+        with E.Session(camera,cfg):controls.values['gain']=158.
+    assert controls.values==controls.initial and not E.journal_path(cfg).exists()

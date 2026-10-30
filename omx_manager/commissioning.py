@@ -131,9 +131,11 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0):
             target=inspector.exposure_profile if inspector else None
             with Session(camera,cfg,target=target,guard=check_pose,allow_scene_change=watch) as session:
                 print(f"[BASKET] 검사 전용 노출={session.target['exposure']} / 모델 동작 차단. 종료 시 원래 설정을 복원합니다.",flush=True)
-                result=_basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,
+                def check_inspection():
+                    check_pose();session.verify()
+                result=_basket_connected(cfg,camera,check_inspection,inspector,capture,watch,samples_limit,opened,connection_s,
                                          dict(inspection_exposure=session.target['exposure'],camera_state='INSPECTION_LOW'))
-                profile=dict(backend=session.adapter.backend,controls=dict(session.target))
+                profile=session.profile()
             if capture:
                 return dict(image=result,exposure_profile=profile,timings=session.timing)
             result.update(session.timing,camera_state='NORMAL_RESTORED');return result
