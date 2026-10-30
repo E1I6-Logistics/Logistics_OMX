@@ -2,12 +2,13 @@
 import time
 from .config import ConfigError, number, only_keys, path_value
 from .rgb_roi import DEFAULTS as RGB_DEFAULTS
+from .exposure import DEFAULTS as EXPOSURE_DEFAULTS
 
 DEFAULTS = dict(camera="top", roi=None, reference=None, reference_binding=None,
                 pixel_threshold=25, empty_ratio=.01, occupied_ratio=.04,
                 illumination_limit=18, stability_delta=3., sample_interval_s=.1,
                 stable_samples=3,confirmation_s=.2,max_frame_age_s=.25,inspect_timeout_s=12., max_attempts=16,
-                max_no_change=2, job_timeout_s=900., require_quantity_match=True,**RGB_DEFAULTS)
+                max_no_change=2, job_timeout_s=900., require_quantity_match=True,**RGB_DEFAULTS,**EXPOSURE_DEFAULTS)
 
 
 def options(cfg): return dict(DEFAULTS, **cfg.get("unload", {}))
@@ -42,6 +43,12 @@ def validate_unload(cfg):
     if spec['confirmation_s']>=spec['inspect_timeout_s']:raise ConfigError('Confirmation window exceeds inspection timeout')
     from .rgb_roi import validate
     validate(spec)
+    from .exposure import validate as validate_exposure
+    validate_exposure(spec)
+    if spec['vision_method']=='low_template' and not spec['low_exposure_enabled']:
+        raise ConfigError('low_template requires inspection-only low exposure')
+    if spec['low_exposure_enabled'] and spec['vision_method']!='low_template':
+        raise ConfigError('Low exposure uses low_template comparison; configure omx_basket low VALUE')
 
 
 def crop(image, spec):
@@ -55,7 +62,7 @@ def crop(image, spec):
         raise ConfigError("Basket ROI does not fit current image")
     # Fixed small analysis image; policy images are never resized or masked.
     from .rgb_roi import SIZE
-    size=SIZE if spec.get('vision_method')=='rgb_roi' else (160,120)
+    size=SIZE if spec.get('vision_method') in ('rgb_roi','low_template') else (160,120)
     small = cv2.resize(image[y:y+h,x:x+w], size, interpolation=cv2.INTER_AREA)
     return cv2.GaussianBlur(small,(3,3),0)
 
@@ -77,7 +84,13 @@ class BasketInspector:
             self.reference = data["image"].copy()
             roi = data["roi"].tolist()
             saved_signature=str(data['roi_signature'].item()) if 'roi_signature' in data else None
-        enhanced=self.spec['vision_method']=='rgb_roi'
+            import json
+            self.exposure_profile=json.loads(str(data['exposure_profile'].item())) if 'exposure_profile' in data else None
+        if self.spec['low_exposure_enabled']:
+            from .exposure import validate_profile
+            validate_profile(self.exposure_profile,self.spec)
+        elif self.exposure_profile is not None:raise ConfigError('Low-exposure reference cannot be compared with normal camera frames')
+        enhanced=self.spec['vision_method'] in ('rgb_roi','low_template')
         shape=(240,320,3) if enhanced else (120,160,3)
         if self.reference.shape != shape or self.reference.dtype != np.uint8 or roi != self.spec["roi"]:
             raise ConfigError("Empty reference image/ROI mismatch; register again")

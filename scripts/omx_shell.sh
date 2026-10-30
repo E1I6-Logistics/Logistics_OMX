@@ -67,6 +67,12 @@ omx_basket() {
     check) _omx_ctl basket-check;;
     watch) _omx_ctl basket-watch;;
     status) _omx_ctl basket-status;;
+    exposure) _omx_ctl basket-exposure;;
+    low)
+      if [[ $# -ne 2 ]]; then echo '사용법: omx_basket low 노출값 / omx_basket low off' >&2; return 2; fi
+      _omx_ctl basket-low --value "$2";;
+    low-snapshot) _omx_ctl basket-low-snapshot;;
+    restore) _omx_ctl basket-restore-exposure;;
     roi|polygon)
       if [[ $# -ne 2 ]]; then echo '사용법: omx_basket roi "[x,y,w,h]" / omx_basket polygon "[[x,y],...]" (해제: null)' >&2; return 2; fi
       local key=unload.roi
@@ -75,7 +81,7 @@ omx_basket() {
     confirm-view)
       if [[ $# -ne 1 ]]; then echo '사용법: omx_basket confirm-view — 바구니 내부 전체와 정차 오차를 직접 확인한 경우에만 실행' >&2; return 2; fi
       _omx_ctl set --key unload.full_view_confirmed --value true;;
-    *) echo '사용법: omx_basket snapshot|capture|check|watch|status|roi|polygon|confirm-view — 전체 내부 시야 확인 후 confirm-view, 빈 상태에서만 capture' >&2; return 2;;
+    *) echo '사용법: omx_basket exposure|low 값|low-snapshot|restore|snapshot|capture|check|watch|status|roi|polygon|confirm-view — 전체 시야 확인 후 confirm-view, 빈 상태에서만 capture' >&2; return 2;;
   esac
 }
 omx_resume() { _omx_ctl resume --confirm-motion "$@"; }
@@ -136,6 +142,10 @@ omx_basket status           실행 중 컨트롤러의 최신 영상 판정 조�
 omx_basket roi '[x,y,w,h]'   검사 사각형 설정 (전체 시야 확인 해제, 기준 재등록 필요)
 omx_basket polygon '[[x,y],...]' 바구니 내부 다각형 설정 (null로 해제)
 omx_basket confirm-view     내부 전체·정차 오차·모서리 검출을 직접 확인한 뒤에만 사용
+omx_basket exposure         상단 카메라 노출·게인·자동 설정 조회 (모터/노출 쓰기 없음)
+omx_basket low 값           검사 전용 고정 노출 설정 (같은 노출로 빈 기준 재등록 필요)
+omx_basket low-snapshot     정밀 홈에서 저노출 미리보기 → 원래 설정·프레임 복원
+omx_basket restore          강제 종료/복원 실패 뒤 남은 원래 카메라 설정 복원 (작업 재실행 없음)
 omx_resume                  물품 확인 후 실행 중인 복구 대기에 재점검 요청 (작업 재실행 안 함)
 omx_unload [수량]            OMX3/4 하차: 수량 생략 시 빈 바구니까지, 지정 시 수량도 대조
 omx_order A 1               수동 MQTT 실물 주문 (장비에 맞는 품목 사용)

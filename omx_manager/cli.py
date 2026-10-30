@@ -122,9 +122,20 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
         write_json(state_dir(cfg)/'resume_request.json',dict(at=time.time(),token=uuid.uuid4().hex,config=str(Path(path).resolve())))
         print('Recovery recheck requested. Failed/interrupted jobs remain failed; inspect recovery_wait.json for the result.');return
     with device_lock(cfg):
+        if command in ('basket-exposure','basket-restore-exposure'):
+            from .commissioning import camera_operation
+            result=camera_operation(cfg,command);print(json.dumps(result,ensure_ascii=False,indent=2));return result
+        if command=='basket-low':
+            from .commissioning import initialize
+            if cfg['role']!='unload':raise ValueError('Low-exposure basket inspection is for OMX3/4')
+            updated=initialize(cfg)
+            if value=='off':updated['unload'].update(low_exposure_enabled=False,vision_method='rgb_roi')
+            else:updated['unload'].update(low_exposure_enabled=True,inspection_exposure=float(value),vision_method='low_template',full_view_confirmed=False)
+            save(path,updated);print('Inspection mode saved. Test low-snapshot, then recapture empty reference. Home/model camera configuration preserved.');return
         if command=='tune':
             from .commissioning import tune
-            save(path,tune(cfg));print('CPU threads=4; cycle counting enabled. OMX3/4 RGB ROI inspection enabled: verify ROI/full view and recapture empty reference. Home/models/camera settings preserved.');return
+            updated=tune(cfg);save(path,updated)
+            print('CPU threads=4; cycle counting enabled; inspection mode='+updated.get('unload',{}).get('vision_method','not applicable')+'. Home/models/camera configuration preserved. Verify matching empty reference for OMX3/4.');return
         if command=='cycle-calibrate':
             if not confirm_motion:raise ValueError('Model rollout calibration requires --confirm-motion')
             from .cycle_calibration import run
@@ -159,12 +170,21 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 if digest(path)!=original: raise RuntimeError('YAML changed while sampling; registration refused')
                 require_home(updated)
                 save(path,updated);print('Observed pose registered. No motor writes; return routes remain unapproved until route-test.');return
-            elif command in ('basket-capture','basket-check','basket-snapshot','basket-watch'):
+            elif command in ('basket-capture','basket-check','basket-snapshot','basket-low-snapshot','basket-watch'):
                 from .commissioning import basket_operation,initialize
                 if cfg['role']!='unload': raise ValueError('Basket inspection is for OMX3/4')
-                result=basket_operation(cfg,device,capture='snapshot' if command=='basket-snapshot' else command=='basket-capture',watch=command=='basket-watch',samples_limit=samples)
+                capture_mode='snapshot' if command=='basket-snapshot' else 'low_snapshot' if command=='basket-low-snapshot' else command=='basket-capture'
+                result=basket_operation(cfg,device,capture=capture_mode,watch=command=='basket-watch',samples_limit=samples)
                 if command=='basket-watch':return result
                 if command=='basket-check': print(json.dumps(result));return result
+                exposure_profile=None
+                if isinstance(result,dict):
+                    exposure_profile=result.get('exposure_profile');result=result['image']
+                if command=='basket-low-snapshot':
+                    import cv2
+                    destination=state_dir(cfg)/'basket_low.png';destination.parent.mkdir(parents=True,exist_ok=True)
+                    if not cv2.imwrite(str(destination),cv2.cvtColor(result,cv2.COLOR_RGB2BGR)):raise OSError('Cannot save low-exposure preview')
+                    print(str(destination)+' (original camera restored; preview does not register an empty reference)');return
                 if command=='basket-snapshot':
                     import cv2
                     destination=state_dir(cfg)/'basket_view.png';destination.parent.mkdir(parents=True,exist_ok=True)
@@ -185,17 +205,21 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 destination.parent.mkdir(parents=True,exist_ok=True)
                 from .rgb_roi import signature
                 from .basket import options
-                np.savez_compressed(destination,image=result,roi=updated['unload']['roi'],roi_signature=signature(options(updated)))
+                np.savez_compressed(destination,image=result,roi=updated['unload']['roi'],roi_signature=signature(options(updated)),exposure_profile=json.dumps(exposure_profile))
                 updated['unload']['reference']=str(destination)
                 updated['unload']['reference_binding']=registration_binding(cfg)
                 if digest(path)!=original: raise RuntimeError('YAML changed while sampling; registration refused')
                 require_home(updated);save(path,updated)
                 print('Operator-confirmed empty reference registered. Test empty AND occupied baskets before production.')
-                if options(updated)['vision_method']=='rgb_roi':
+                if options(updated)['vision_method'] in ('rgb_roi','low_template'):
                     from .rgb_roi import Comparator
                     spec=options(updated);clipped=Comparator(result,spec).reference_clipped
                     if clipped>spec['max_clipped_ratio']:
                         print(f'[BASKET] ROI_OVEREXPOSED: clipped={clipped:.3f}; automatic EMPTY verification unavailable. Original camera/model input was not changed.')
+                    if spec['low_exposure_enabled']:
+                        comparator=Comparator(result,spec)
+                        if comparator.reference_dark>spec['inspection_max_dark_ratio'] or float(comparator.reference_mean.mean())<spec['inspection_min_luma']:
+                            print('[BASKET] ROI_UNDEREXPOSED: choose a brighter inspection exposure and recapture; automatic empty verification unavailable.')
                 return
             elif command in ('route-test','return-home'):
                 from .return_path import return_home,route_signature
@@ -251,7 +275,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True,help="params/omx1.yaml etc.")
-    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate"))
+    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure"))
     parser.add_argument("--confirm-motion",action="store_true")
     parser.add_argument("--expected-device",choices=("omx1","omx2","omx3","omx4"),help="Launcher device/YAML consistency check")
     parser.add_argument("--key");parser.add_argument("--value")

@@ -43,7 +43,7 @@ def run(strategy,ctx,send_action,make_timer):
 
     def basket_report(snapshot):
         nonlocal basket_tag,next_basket_report
-        tag=(snapshot['verdict'],snapshot.get('candidate'),snapshot.get('reason'))
+        tag=(snapshot['verdict'],snapshot.get('candidate'),snapshot.get('reason'),snapshot.get('camera_state'),snapshot.get('restore_verified'))
         now=time.perf_counter()
         if tag!=basket_tag or now>=next_basket_report:
             write_json(basket_path,snapshot,durable=False)
@@ -101,32 +101,41 @@ def run(strategy,ctx,send_action,make_timer):
                     stop.wait(min(.05,next_inspect-now));continue
                 next_inspect=now+options['sample_interval_s']
                 camera=inner.cameras[options['camera']]
-                if hasattr(inner,'get_joint_observation') and hasattr(camera,'read_latest_with_timestamp'):
-                    obs=inner.get_joint_observation()
-                    try:frame,stamp=read_camera(camera,options['max_frame_age_s'])
-                    except TimeoutError:
-                        inspector.update(None,time.perf_counter(),None)
-                        basket_report(inspector.snapshot(time.time()))
-                        continue
-                    except RuntimeError:
-                        inspector.reset()
-                        inspector.reason='CAMERA_RECONNECTING'
-                        basket_report(inspector.snapshot(time.time()))
-                        strategy._get_observation_with_camera_recovery(robot,engine)
-                        frame,stamp=read_camera(camera,options['max_frame_age_s'])
-                        obs=inner.get_joint_observation()
-                    reconnected=False
-                else:
-                    obs,reconnected=strategy._get_observation_with_camera_recovery(robot,engine)
-                    frame=obs.get(options['camera']);stamp=getattr(camera,'latest_timestamp',None)
                 engine.pause()
-                now=time.perf_counter()
-                if reconnected: inspector.reset()
-                # Inspection only at the strict registered Home; no policy actions here.
-                if max(errors(obs,cfg['home']['target']).values())>cfg['home']['arrival_tolerance']:
-                    raise RuntimeError('Arm moved away from basket inspection Home')
-                verdict=inspector.update(frame,now,stamp)
-                basket_report(inspector.snapshot(time.time()))
+                if options['low_exposure_enabled']:
+                    from .exposure import inspect as inspect_low
+                    def check_home():
+                        q=inner.get_joint_observation()
+                        if max(errors(q,cfg['home']['target']).values())>cfg['home']['arrival_tolerance']:
+                            raise RuntimeError('Arm moved away from inspection Home')
+                    verdict=inspect_low(camera,cfg,inspector,guard=check_home,stopped=stop.is_set,report=basket_report)
+                    check_home();now=time.perf_counter()
+                else:
+                    if hasattr(inner,'get_joint_observation') and hasattr(camera,'read_latest_with_timestamp'):
+                        obs=inner.get_joint_observation()
+                        try:frame,stamp=read_camera(camera,options['max_frame_age_s'])
+                        except TimeoutError:
+                            inspector.update(None,time.perf_counter(),None)
+                            basket_report(inspector.snapshot(time.time()))
+                            continue
+                        except RuntimeError:
+                            inspector.reset()
+                            inspector.reason='CAMERA_RECONNECTING'
+                            basket_report(inspector.snapshot(time.time()))
+                            strategy._get_observation_with_camera_recovery(robot,engine)
+                            frame,stamp=read_camera(camera,options['max_frame_age_s'])
+                            obs=inner.get_joint_observation()
+                        reconnected=False
+                    else:
+                        obs,reconnected=strategy._get_observation_with_camera_recovery(robot,engine)
+                        frame=obs.get(options['camera']);stamp=getattr(camera,'latest_timestamp',None)
+                    now=time.perf_counter()
+                    if reconnected: inspector.reset()
+                    # Inspection only at the strict registered Home; no policy actions here.
+                    if max(errors(obs,cfg['home']['target']).values())>cfg['home']['arrival_tolerance']:
+                        raise RuntimeError('Arm moved away from basket inspection Home')
+                    verdict=inspector.update(frame,now,stamp)
+                    basket_report(inspector.snapshot(time.time()))
                 if verdict=='UNKNOWN': continue
                 if after_cycle:
                     if inspector.transfer_changed(baseline,inspector.latest):

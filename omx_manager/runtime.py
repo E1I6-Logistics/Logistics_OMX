@@ -125,6 +125,8 @@ class Supervisor:
     def stop(self, *_): self.stopped.set()
     def preflight(self,cfg,allow_motion=True,verify_registration=True,operator_confirmed=False):
         """Motor-only checks before loading Torch/cameras; no order replay."""
+        from .exposure import require_restored
+        require_restored(cfg)
         from .commissioning import require_commissioned
         from .hardware import FollowerBus
         from .home import errors

@@ -115,6 +115,8 @@ class OpenCVCamera(Camera):
         self.thread: Thread | None = None
         self.stop_event: Event | None = None
         self.frame_lock: Lock = Lock()
+        # Serialize capture reads with managed inspection sensor controls.
+        self.control_lock: Lock = Lock()
         self.latest_frame: NDArray[Any] | None = None
         self.latest_timestamp: float | None = None
         self.new_frame_event: Event = Event()
@@ -365,7 +367,8 @@ class OpenCVCamera(Camera):
         if self.videocapture is None:
             raise DeviceNotConnectedError(f"{self} videocapture is not initialized")
 
-        ret, frame = self.videocapture.read()
+        with self.control_lock:
+            ret, frame = self.videocapture.read()
 
         if not ret:
             raise RuntimeError(f"{self} read failed (status={ret}).")

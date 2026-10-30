@@ -273,7 +273,7 @@ unload:
   confirmation_s: 0.2
   # 바구니 판정에 허용할 프레임 최대 나이(초): 오래된 영상은 UNKNOWN
   max_frame_age_s: 0.25
-  # 검사 방식: rgb_roi=검사용 대비·경계·국소 변화(320×240), legacy=이전 전체 변화율(160×120). 모델 입력은 원본 유지
+  # 검사 방식: low_template=검사 전용 저노출·빈 기준 픽셀 비교, rgb_roi=대비·경계, legacy=이전 방식. 모델 구동에는 원래 카메라 설정 복원
   vision_method: rgb_roi
   # 바구니 내부 다각형: 원본 영상의 [[x,y],...] 절대 좌표(볼록, 3~12점). null이면 사각형 ROI 전체 사용
   roi_polygon: null
@@ -291,3 +291,19 @@ unload:
   contrast_clip_limit: 2.0
   # 검사 영역에서 RGB 모두 250 이상인 과노출 픽셀 비율 한도: 초과 시 EMPTY 확정 금지
   max_clipped_ratio: 0.15
+  # 홈에서 검사할 때만 센서를 저노출로 전환: 검사 후 원래 설정·새 프레임 확인 전 모델 동작 금지
+  low_exposure_enabled: false
+  # 검사 전용 고정 노출값: 카메라별 단위가 다르므로 exposure 조회·low-snapshot 시험 후 지정
+  inspection_exposure: null
+  # 노출 전환/복원 뒤 버릴 서로 다른 새 프레임 수: 이전 영상 재사용 방지
+  exposure_discard_frames: 5
+  # 전환/복원 뒤 신선한 영상의 평균 밝기가 안정돼야 할 연속 시간(초)
+  exposure_settle_s: 0.2
+  # 원래/검사 영상 안정 확인의 단계별 제한 시간(초): 실패 시 모델 동작 차단
+  exposure_switch_timeout_s: 5.0
+  # 자동 검사 뒤 원래 영상과 비교할 평균 밝기 허용 차이(0~255): 자동노출 복원 확인
+  exposure_restore_luma_tolerance: 8.0
+  # 저노출 기준/현재 ROI의 최소 평균 밝기: 지나치게 어두우면 UNKNOWN
+  inspection_min_luma: 15.0
+  # 저노출 ROI의 RGB 모두 5 이하인 픽셀 비율 한도: 초과 시 UNKNOWN
+  inspection_max_dark_ratio: 0.3

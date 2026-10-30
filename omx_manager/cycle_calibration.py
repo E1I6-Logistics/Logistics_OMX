@@ -138,6 +138,8 @@ def run(config_path,item):
     from .logs import Capture
     from .home import errors
     cfg=load(config_path)
+    from .exposure import require_restored
+    require_restored(cfg)
     if item not in profile(cfg)['items']:raise ConfigError('Choose a model item for this device')
     check_files(cfg);require_home(cfg)
     initial=digest(config_path)

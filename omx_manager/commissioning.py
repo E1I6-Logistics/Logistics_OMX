@@ -13,7 +13,9 @@ def initialize(cfg):
     result.setdefault('workflow',{'items':{}})
     from .cycles import DEFAULTS as CYCLE_DEFAULTS
     for key,value in CYCLE_DEFAULTS.items():result['counting'].setdefault(key,copy.deepcopy(value))
-    if cfg['role']=='unload': result.setdefault('unload',dict(DEFAULTS))
+    if cfg['role']=='unload':
+        unload=result.setdefault('unload',{})
+        for key,value in DEFAULTS.items():unload.setdefault(key,copy.deepcopy(value))
     for key,value in dict(auto_home=True,poll_s=5.,routes={}).items(): result['recovery'].setdefault(key,value)
     return result
 
@@ -26,7 +28,9 @@ def tune(cfg):
         result['unload'].update(sample_interval_s=.1,stable_samples=3,confirmation_s=.2,max_frame_age_s=.25)
         from .rgb_roi import DEFAULTS as RGB_DEFAULTS
         for key,value in RGB_DEFAULTS.items():result['unload'].setdefault(key,copy.deepcopy(value))
-        result['unload']['vision_method']='rgb_roi'
+        from .exposure import DEFAULTS as EXPOSURE_DEFAULTS
+        for key,value in EXPOSURE_DEFAULTS.items():result['unload'].setdefault(key,copy.deepcopy(value))
+        result['unload']['vision_method']='low_template' if result['unload']['low_exposure_enabled'] else 'rgb_roi'
     return result
 
 
@@ -47,6 +51,9 @@ def require_commissioned(cfg):
                 raise ConfigError('Confirm entire basket interior and parking variation coverage before automatic unloading: unload.full_view_confirmed')
             if inspector.comparator and inspector.comparator.reference_clipped>inspector.spec['max_clipped_ratio']:
                 raise ConfigError('Empty RGB ROI reference is overexposed; automatic empty verification unavailable. Inspect using omx_basket watch')
+            if inspector.spec['low_exposure_enabled'] and (inspector.comparator.reference_dark>inspector.spec['inspection_max_dark_ratio']
+                    or float(inspector.comparator.reference_mean.mean())<inspector.spec['inspection_min_luma']):
+                raise ConfigError('Low-exposure reference is too dark; test another exposure with low-snapshot and recapture')
         except (ConfigError,OSError,ValueError) as exc: missing.append(str(exc))
     if missing: raise ConfigError(' / '.join(missing))
 
@@ -100,60 +107,93 @@ def camera_for(cfg):
 
 
 def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0):
-    import numpy as np
-    from .basket import options,crop,BasketInspector,read_camera
+    from .basket import options,BasketInspector
+    from .exposure import Session,require_restored
     require_home(cfg)
     def check_pose():
         if max(errors(device.read(),cfg['home']['target']).values())>cfg['home']['arrival_tolerance']:
             raise ConfigError('Basket inspection/reference capture requires strict registered Home')
-    check_pose()
-    spec=options(cfg)
-    # Reject stale reference geometry before paying camera connection/warmup cost.
+    check_pose();spec=options(cfg);require_restored(cfg)
     inspector=None if capture else BasketInspector(cfg)
+    if capture=='low_snapshot' and not spec['low_exposure_enabled']:
+        raise ConfigError('Configure omx_basket low VALUE before low-snapshot')
     camera=camera_for(cfg)
     try:
         opened=time.perf_counter()
-        print(f"[BASKET] 카메라 연결/준비 중 (설정 warmup={cfg['hardware']['cameras'][spec['camera']].get('warmup_s',0)}초). watch는 한 번 연결 후 계속 검사합니다.",flush=True)
-        camera.connect()
-        connection_s=time.perf_counter()-opened
+        print(f"[BASKET] 카메라 연결/준비 중 (설정 warmup={cfg['hardware']['cameras'][spec['camera']].get('warmup_s',0)}초).",flush=True)
+        camera.connect();connection_s=time.perf_counter()-opened
         print(f'[BASKET] 카메라 준비 완료: {connection_s:.2f}초',flush=True)
         if capture=='snapshot':
             frame=camera.read_latest().copy();check_pose();return frame
-        if capture:
-            samples=[];last=None;deadline=time.perf_counter()+spec['inspect_timeout_s']
-            while time.perf_counter()<deadline and len(samples)<spec['stable_samples']:
-                frame,stamp=read_camera(camera,spec['max_frame_age_s'])
-                if stamp is not None and (last is None or stamp>last) and 0<=time.perf_counter()-stamp<=.5:
-                    image=crop(frame,spec)
-                    if samples and float(np.abs(image.astype(float)-samples[-1]).mean())>spec['stability_delta']:
-                        samples=[]
-                    samples.append(image);last=stamp
-                time.sleep(spec['sample_interval_s'])
-            if len(samples)<spec['stable_samples']: raise ConfigError('Empty reference camera not stable/fresh')
-            image=np.median(np.stack(samples),axis=0).astype(np.uint8)
-            check_pose()
-            return image
-        deadline=time.perf_counter()+spec['inspect_timeout_s']
-        iterations=0;last_print=None;next_print=0.
-        while watch or time.perf_counter()<deadline:
-            check_pose()
-            try:
-                frame,stamp=read_camera(camera,spec['max_frame_age_s'])
-                result=inspector.update(frame,time.perf_counter(),stamp)
-            except TimeoutError:
-                result=inspector.update(None,time.perf_counter(),None)
-            snapshot=inspector.snapshot(time.time())
-            snapshot.update(connection_s=connection_s,elapsed_s=time.perf_counter()-opened)
-            if watch:
-                tag=(snapshot['verdict'],snapshot['candidate'],snapshot['reason'])
-                if tag!=last_print or time.perf_counter()>=next_print:
-                    print(__import__('json').dumps(snapshot,ensure_ascii=False),flush=True)
-                    last_print=tag;next_print=time.perf_counter()+1
-                iterations+=1
-                if samples_limit and iterations>=samples_limit:return snapshot
-            if result!='UNKNOWN':
-                if not watch:return snapshot
-            time.sleep(spec['sample_interval_s'])
-        return inspector.snapshot(time.time())
+        if spec['low_exposure_enabled']:
+            target=inspector.exposure_profile if inspector else None
+            with Session(camera,cfg,target=target,guard=check_pose,allow_scene_change=watch) as session:
+                print(f"[BASKET] 검사 전용 노출={session.target['exposure']} / 모델 동작 차단. 종료 시 원래 설정을 복원합니다.",flush=True)
+                result=_basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,
+                                         dict(inspection_exposure=session.target['exposure'],camera_state='INSPECTION_LOW'))
+                profile=dict(backend=session.adapter.backend,controls=dict(session.target))
+            if capture:
+                return dict(image=result,exposure_profile=profile,timings=session.timing)
+            result.update(session.timing,camera_state='NORMAL_RESTORED');return result
+        return _basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,{})
     finally:
-        if camera.is_connected: camera.disconnect()
+        if camera.is_connected:camera.disconnect()
+
+
+def _basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,metadata):
+    import numpy as np
+    from .basket import options,crop,read_camera
+    from .hooks import heartbeat
+    spec=options(cfg)
+    if capture=='low_snapshot':
+        frame,_=read_camera(camera,spec['max_frame_age_s']);check_pose();return frame.copy()
+    if capture:
+        samples=[];last=None;deadline=time.perf_counter()+spec['inspect_timeout_s']
+        while time.perf_counter()<deadline and len(samples)<spec['stable_samples']:
+            check_pose();heartbeat()
+            frame,stamp=read_camera(camera,spec['max_frame_age_s'])
+            if last is None or stamp>last:
+                image=crop(frame,spec)
+                if samples and float(np.abs(image.astype(float)-samples[-1]).mean())>spec['stability_delta']:samples=[]
+                samples.append(image);last=stamp
+            time.sleep(spec['sample_interval_s'])
+        if len(samples)<spec['stable_samples']:raise ConfigError('Empty reference camera not stable/fresh')
+        result=np.median(np.stack(samples),axis=0).astype(np.uint8);check_pose();return result
+    deadline=time.perf_counter()+spec['inspect_timeout_s'];iterations=0;last_print=None;next_print=0.
+    while watch or time.perf_counter()<deadline:
+        check_pose();heartbeat()
+        try:
+            frame,stamp=read_camera(camera,spec['max_frame_age_s'])
+            result=inspector.update(frame,time.perf_counter(),stamp)
+        except TimeoutError:result=inspector.update(None,time.perf_counter(),None)
+        snapshot=inspector.snapshot(time.time())
+        snapshot.update(metadata,connection_s=connection_s,elapsed_s=time.perf_counter()-opened)
+        if watch:
+            tag=(snapshot['verdict'],snapshot['candidate'],snapshot['reason'])
+            if tag!=last_print or time.perf_counter()>=next_print:
+                print(__import__('json').dumps(snapshot,ensure_ascii=False),flush=True);last_print=tag;next_print=time.perf_counter()+1
+            iterations+=1
+            if samples_limit and iterations>=samples_limit:return snapshot
+        if result!='UNKNOWN' and not watch:return snapshot
+        time.sleep(spec['sample_interval_s'])
+    return inspector.snapshot(time.time())
+
+
+def camera_operation(cfg,command):
+    from .exposure import controls_for,recover,require_restored
+    if cfg['role']!='unload':raise ConfigError('Inspection exposure is for OMX3/4')
+    if command!='basket-restore-exposure':require_restored(cfg)
+    camera=camera_for(cfg)
+    try:
+        camera.connect()
+        if command=='basket-restore-exposure':return recover(camera,cfg)
+        controls=controls_for(camera);current=controls.snapshot()
+        suggested=max(1,int(current['exposure']/4));ranges=controls.ranges()
+        if ranges:
+            suggested=max(ranges['min'],min(ranges['max'],suggested))
+            if ranges['step']>0:suggested=ranges['min']+round((suggested-ranges['min'])/ranges['step'])*ranges['step']
+        return dict(backend=controls.backend,current=current,exposure_range=ranges,
+                    suggested_test_exposure=suggested,next_test_command=f'omx_basket low {suggested:g}',
+                    note='Read-only probe. Suggested value is only a test candidate; confirm low-snapshot and restoration on this camera.')
+    finally:
+        if camera.is_connected:camera.disconnect()

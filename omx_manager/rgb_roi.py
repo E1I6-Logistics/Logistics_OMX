@@ -11,7 +11,7 @@ DEFAULTS=dict(vision_method='legacy',roi_polygon=None,full_view_confirmed=False,
 
 
 def validate(spec):
-    if spec['vision_method'] not in ('legacy','rgb_roi'):raise ConfigError('Unknown unload.vision_method')
+    if spec['vision_method'] not in ('legacy','rgb_roi','low_template'):raise ConfigError('Unknown unload.vision_method')
     if type(spec['full_view_confirmed']) is not bool:raise ConfigError('full_view_confirmed must be boolean')
     for key,low,high in (('local_pixel_threshold',2,30),('local_occupied_ratio',.005,.5),
                          ('edge_threshold',4,100),('contrast_clip_limit',1,4),('max_clipped_ratio',.01,.5)):
@@ -56,14 +56,17 @@ class Comparator:
         import numpy as np
         self.spec=spec;self.mask=mask_for(spec)
         self.reference=reference.astype(np.int16)
+        self.template_only=spec['vision_method']=='low_template'
+        self.reference_mean=reference[self.mask].mean(axis=0)
+        self.tile_areas=self.mask.reshape(12,20,16,20).sum(axis=(1,3))
+        self.reference_clipped=float((np.min(reference,axis=2)[self.mask]>=250).mean())
+        self.reference_dark=float((np.max(reference,axis=2)[self.mask]<=5).mean())
+        if self.template_only:return
         self.clahe=cv2.createCLAHE(clipLimit=spec['contrast_clip_limit'],tileGridSize=(8,8))
         self.gray,self.contrast,self.edges=self.features(reference)
         self.gray16=self.gray.astype(np.int16)
         self.contrast16=self.contrast.astype(np.int16)
-        self.reference_mean=reference[self.mask].mean(axis=0)
-        self.tile_areas=self.mask.reshape(12,20,16,20).sum(axis=(1,3))
         self.expanded_edges=cv2.dilate(self.edges,np.ones((3,3),np.uint8))
-        self.reference_clipped=float((np.min(reference,axis=2)[self.mask]>=250).mean())
 
     def features(self,image):
         import cv2
@@ -87,12 +90,33 @@ class Comparator:
         # Reject unusable views before spending CPU on contrast/edge components.
         flags=[]
         if clipped>spec['max_clipped_ratio']:flags.append('ROI_OVEREXPOSED')
+        dark=max(self.reference_dark,float((np.max(image,axis=2)[self.mask]<=5).mean())) if self.template_only else 0.
+        if self.template_only and (dark>spec['inspection_max_dark_ratio'] or min(float(self.reference_mean.mean()),float(image[self.mask].mean()))<spec['inspection_min_luma']):
+            flags.append('ROI_UNDEREXPOSED')
         if illumination>spec['illumination_limit']:flags.append('LIGHTING_SHIFT')
         if not spec['full_view_confirmed']:flags.append('FULL_VIEW_NOT_CONFIRMED')
         if flags:
             return dict(verdict='UNKNOWN',evidence_reason=flags[0],changed_ratio=raw_ratio,
                         local_peak_ratio=None,component_pixels=None,edge_changed_pixels=None,
                         supported_edge_pixels=None,color_component_pixels=None,features_computed=False,
+                        quality_flags=flags,clipped_ratio=clipped,illumination_delta=illumination)
+        if self.template_only:
+            changed=(raw>=spec['local_pixel_threshold'])&self.mask
+            count,_,stats,_=cv2.connectedComponentsWithStats(changed.astype(np.uint8),connectivity=8)
+            component=int(stats[1:,cv2.CC_STAT_AREA].max()) if count>1 else 0
+            tile_changes=changed.reshape(12,20,16,20).sum(axis=(1,3))
+            peak=float(np.divide(tile_changes,self.tile_areas,out=np.zeros_like(tile_changes,dtype=float),where=self.tile_areas>=40).max())
+            occupied=raw_ratio>=spec['occupied_ratio'] or (component>=spec['min_component_pixels'] and peak>=spec['local_occupied_ratio'])
+            weak=(raw>=max(2.,spec['local_pixel_threshold']*.5))&self.mask
+            weak_component=0
+            if not occupied and weak.any():
+                weak_count,_,weak_stats,_=cv2.connectedComponentsWithStats(weak.astype(np.uint8),connectivity=8)
+                if weak_count>1:weak_component=int(weak_stats[1:,cv2.CC_STAT_AREA].max())
+            uncertain=raw_ratio>spec['empty_ratio'] or component>=2 or int(changed.sum())>=4 or weak_component>=max(4,spec['min_component_pixels']//2)
+            verdict='OCCUPIED' if occupied else 'UNKNOWN' if uncertain else 'EMPTY'
+            return dict(verdict=verdict,evidence_reason='TEMPLATE_OBJECT_CHANGE' if occupied else 'AMBIGUOUS_LOCAL_CHANGE' if uncertain else 'MATCHES_EMPTY_REFERENCE',
+                        changed_ratio=raw_ratio,local_peak_ratio=peak,component_pixels=component,color_component_pixels=component,
+                        edge_changed_pixels=None,supported_edge_pixels=None,weak_component_pixels=weak_component,features_computed=True,comparison='low_template',
                         quality_flags=flags,clipped_ratio=clipped,illumination_delta=illumination)
         gray,contrast,edges=self.features(image)
         gray_delta=np.abs(gray.astype(np.int16)-self.gray16)

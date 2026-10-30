@@ -351,6 +351,8 @@ def send_next_action(
     # The guard is repeated immediately before send_action because inference can block.
     abort_path = os.environ.get("OMX_ABORT_FILE", "")
     def abort_if_requested():
+        from omx_manager.exposure import ensure_policy_ready
+        ensure_policy_ready(getattr(ctx.hardware.robot_wrapper,'inner',ctx.hardware.robot_wrapper))
         shutdown=getattr(getattr(ctx,'runtime',None),'shutdown_event',None)
         if shutdown is not None and shutdown.is_set():
             interpolator.reset();engine.reset()

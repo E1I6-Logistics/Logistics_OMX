@@ -9,7 +9,7 @@ import threading
 import time
 
 HEARTBEAT = re.compile(r"\[SEND\].*/status:.*['\"]state['\"]: ['\"](?:IDLE|WORKING)['\"]")
-IMPORTANT = re.compile(r"error|warn|exception|traceback|safety|recovery|diagnostic|\[HOME\]|\[ORDER\]|\[UNLOAD\]|\[CPU\]|calibration|COMMAND RECEIVED|/ack:|/progress:|/result:|WORKSTATION|registered|connected|disconnect|camera.*(?:failed|reconnect)|inventory|cycle completed|order.*(?:complete|progress|counter|failed)|Base strategy ready|policy loaded", re.I)
+IMPORTANT = re.compile(r"error|warn|exception|traceback|safety|recovery|diagnostic|\[HOME\]|\[ORDER\]|\[UNLOAD\]|\[CPU\]|\[EXPOSURE\]|calibration|COMMAND RECEIVED|/ack:|/progress:|/result:|WORKSTATION|registered|connected|disconnect|camera.*(?:failed|reconnect)|inventory|cycle completed|order.*(?:complete|progress|counter|failed)|Base strategy ready|policy loaded", re.I)
 
 class LogFilter:
     def __init__(self,cadence_interval=10.): self.traceback = False; self.last_cadence = float("-inf"); self.cadence_interval=cadence_interval

@@ -208,7 +208,7 @@ class Stop:
     def wait(self,dt):self.clock.sleep(dt);return self.is_set()
 
 
-def controller(cfg,tmp_path,monkeypatch,*,count=2,expected=2,no_change=False,wrong_session=False,stage_failure=False,stale=False,jobs=1,paired=False):
+def controller(cfg,tmp_path,monkeypatch,*,count=2,expected=2,no_change=False,wrong_session=False,stage_failure=False,stale=False,jobs=1,paired=False,controls=None):
     # Load only the real IPC file, never the LeRobot torch/model package.
     ipc_path=ROOT/'lerobot_unified/src/lerobot/rollout/workstation_ipc.py'
     spec=importlib.util.spec_from_file_location('lerobot.rollout.workstation_ipc',ipc_path)
@@ -222,6 +222,7 @@ def controller(cfg,tmp_path,monkeypatch,*,count=2,expected=2,no_change=False,wro
     monkeypatch.setattr(hooks,'ROOT',tmp_path)
     phases=[];run_samples={};sent=[];done_rows=[]
     inner=NS(q=pose(),cameras={'top':NS(latest_timestamp=None)})
+    if controls is not None:inner.cameras['top']._omx_test_controls=controls
     def home(robot,stopped):
         if stopped():raise InterruptedError()
         robot.q=pose()
@@ -268,6 +269,9 @@ def controller(cfg,tmp_path,monkeypatch,*,count=2,expected=2,no_change=False,wro
     ctx=NS(runtime=NS(cfg=NS(fps=30,use_torch_compile=False),shutdown_event=stop,cadence_report=None),
            hardware=NS(robot_wrapper=NS(inner=inner)),processors=None)
     def send(*args):
+        if controls is not None:
+            from omx_manager.exposure import ensure_policy_ready
+            ensure_policy_ready(inner)
         assert ipc.read_json(status_path)['phase']=='RUNNING'
         sent.append(inner.q.copy())
         strategy._manager_home.note_action()
