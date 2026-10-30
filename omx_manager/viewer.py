@@ -18,7 +18,7 @@ from .view_options import options, camera_name
 
 LOG=logging.getLogger(__name__)
 MAX_PACKET=2*1024*1024
-ASSETS={'normal':'basket_view.png','low':'basket_low.png'}
+ASSETS={'normal':'basket_view.png','low':'basket_low.png','compare':'basket_compare.png'}
 
 
 def channel(cfg):
@@ -131,7 +131,7 @@ PAGE='''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewpor
 <p><small>모터·모델·노출을 조작하지 않는 보기 전용 화면. 영상은 보기용 JPEG이며 저노출 검사 중에는 해당 상태를 표시합니다.</small></p>
 <div id="state">연결 중…</div><img id="live" alt="최신 카메라 영상 대기"><p><a id="download" href="/live.jpg" download="camera.jpg">현재 영상 저장</a></p>
 <h3>저장된 스냅샷</h3><p>아래는 저장 시점의 사진입니다. 촬영은 기존 터미널 명령으로 수행합니다.</p>
-<button onclick="showSaved('normal')">원본 + ROI/격자</button><button onclick="showSaved('low')">저노출 스냅샷</button>
+<button onclick="showSaved('normal')">원본 + ROI/격자</button><button onclick="showSaved('low')">저노출 스냅샷</button><button onclick="showSaved('compare')">기준·현재·차이</button>
 <div id="savedTime"></div><a id="savedLink" download><img id="saved" alt="스냅샷 선택"></a>
 <script>
 let paused=false,busy=false,assets={};const state=document.querySelector('#state'),live=document.querySelector('#live');
@@ -213,7 +213,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self.server.touch();self.reply(200,'application/json',json.dumps(self.server.status(),ensure_ascii=False).encode())
             elif path=='/live.jpg':
                 self.server.touch();row,jpeg=self.server.frame();self.reply(200,'image/jpeg',jpeg)
-            elif path in ('/saved/normal.png','/saved/low.png'):
+            elif path in ('/saved/normal.png','/saved/low.png','/saved/compare.png'):
                 kind=path.split('/')[-1].split('.')[0];self.reply(200,'image/png',self.server.asset(kind).read_bytes())
             else:self.reply(404,'text/plain',b'Not found')
         except (OSError,ValueError,KeyError,TypeError):

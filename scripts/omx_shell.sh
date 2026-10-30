@@ -67,6 +67,7 @@ omx_basket() {
     check) _omx_ctl basket-check;;
     watch) _omx_ctl basket-watch;;
     status) _omx_ctl basket-status;;
+    diagnose) _omx_ctl basket-diagnose;;
     exposure) _omx_ctl basket-exposure;;
     low)
       if [[ $# -ne 2 ]]; then echo '사용법: omx_basket low 노출값 / omx_basket low off' >&2; return 2; fi
@@ -81,7 +82,7 @@ omx_basket() {
     confirm-view)
       if [[ $# -ne 1 ]]; then echo '사용법: omx_basket confirm-view — 바구니 내부 전체와 정차 오차를 직접 확인한 경우에만 실행' >&2; return 2; fi
       _omx_ctl set --key unload.full_view_confirmed --value true;;
-    *) echo '사용법: omx_basket exposure|low 값|low-snapshot|restore|snapshot|capture|check|watch|status|roi|polygon|confirm-view — 전체 시야 확인 후 confirm-view, 빈 상태에서만 capture' >&2; return 2;;
+    *) echo '사용법: omx_basket exposure|low 값|low-snapshot|restore|snapshot|capture|check|watch|diagnose|status|roi|polygon|confirm-view — 전체 시야 확인 후 confirm-view, 빈 상태에서만 capture' >&2; return 2;;
   esac
 }
 omx_resume() { _omx_ctl resume --confirm-motion "$@"; }
@@ -139,6 +140,7 @@ omx_route_test fold         홈에서 첫 경유점까지 역방향 이동 후 �
 omx_return_home             홈 접근 또는 시험된 경로를 이용한 실제 복귀
 omx_view                    노트북 브라우저용 보기 서버 (기존 카메라 공유, 읽기 전용)
 omx_view --camera-only      모델 정지 상태에서 고정 카메라만 열기 (모터 미접속)
+omx_basket diagnose         저장 기준·현재 ROI·차이 위치 비교 PNG 저장 (기준 자동 변경 없음)
 omx_basket snapshot         홈에서 상단 영상 좌표 격자 PNG 저장
 omx_basket capture          빈 바구니 직접 확인 후 기준 저장
 omx_basket check            빈 바구니/물건 있음/불명확 판정 시험

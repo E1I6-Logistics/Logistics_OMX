@@ -106,7 +106,7 @@ def camera_for(cfg):
     return make_cameras_from_configs({name:spec})[name]
 
 
-def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0):
+def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0,diagnose=False):
     from .basket import options,BasketInspector
     from .exposure import Session,require_restored
     require_home(cfg)
@@ -115,6 +115,17 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0):
             raise ConfigError('Basket inspection/reference capture requires strict registered Home')
     check_pose();spec=options(cfg);require_restored(cfg)
     inspector=None if capture else BasketInspector(cfg)
+    def finalize(result):
+        if not diagnose:return result
+        age=result.get('frame_age_ms')
+        if (inspector is None or inspector.latest is None or not isinstance(age,(int,float))
+                or not 0<=age<=spec['max_frame_age_s']*1000):
+            raise ConfigError('No fresh ROI available for comparison')
+        from .rgb_roi import comparison_view
+        image,details=comparison_view(inspector.reference,inspector.latest,spec)
+        return dict(result,diagnostic_image=image,diagnostic=details,
+                    diagnostic_frame_at=time.time()-(time.perf_counter()-inspector.last_frame))
+
     if capture=='low_snapshot' and not spec['low_exposure_enabled']:
         raise ConfigError('Configure omx_basket low VALUE before low-snapshot')
     camera=camera_for(cfg);preview=None
@@ -138,8 +149,8 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0):
                 profile=session.profile()
             if capture:
                 return dict(image=result,exposure_profile=profile,timings=session.timing)
-            result.update(session.timing,camera_state='NORMAL_RESTORED');return result
-        return _basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,{})
+            result.update(session.timing,camera_state='NORMAL_RESTORED');return finalize(result)
+        return finalize(_basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,{}))
     finally:
         if preview:preview.close()
         if camera.is_connected:camera.disconnect()

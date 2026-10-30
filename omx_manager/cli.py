@@ -173,9 +173,18 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 if digest(path)!=original: raise RuntimeError('YAML changed while sampling; registration refused')
                 require_home(updated)
                 save(path,updated);print('Observed pose registered. No motor writes; return routes remain unapproved until route-test.');return
-            elif command in ('basket-capture','basket-check','basket-snapshot','basket-low-snapshot','basket-watch'):
+            elif command in ('basket-capture','basket-check','basket-snapshot','basket-low-snapshot','basket-watch','basket-diagnose'):
                 from .commissioning import basket_operation,initialize
                 if cfg['role']!='unload': raise ValueError('Basket inspection is for OMX3/4')
+                if command=='basket-diagnose':
+                    import cv2
+                    result=basket_operation(cfg,device,diagnose=True)
+                    image=result.pop('diagnostic_image');destination=state_dir(cfg)/'basket_compare.png'
+                    destination.parent.mkdir(parents=True,exist_ok=True)
+                    if not cv2.imwrite(str(destination),image):raise OSError('Cannot save comparison diagnostic')
+                    result['diagnostic_path']=str(destination)
+                    print(json.dumps(result,ensure_ascii=False,indent=2))
+                    print('Read-only diagnostic saved. Reference, thresholds and counting settings unchanged.');return result
                 capture_mode='snapshot' if command=='basket-snapshot' else 'low_snapshot' if command=='basket-low-snapshot' else command=='basket-capture'
                 result=basket_operation(cfg,device,capture=capture_mode,watch=command=='basket-watch',samples_limit=samples)
                 if command=='basket-watch':return result
@@ -278,7 +287,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True,help="params/omx1.yaml etc.")
-    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure"))
+    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose"))
     parser.add_argument("--confirm-motion",action="store_true")
     parser.add_argument("--expected-device",choices=("omx1","omx2","omx3","omx4"),help="Launcher device/YAML consistency check")
     parser.add_argument("--key");parser.add_argument("--value")

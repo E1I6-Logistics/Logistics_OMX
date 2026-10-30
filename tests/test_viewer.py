@@ -213,3 +213,12 @@ def test_bash_view_shortcut_forwards_config_and_camera_only_from_any_cwd(tmp_pat
     assert result.returncode==0,result.stderr
     row=json.loads(result.stdout);assert row['args']==['--config',str(config),'--camera-only']
     assert row['python']==sys.executable
+
+
+def test_comparison_diagnostic_is_a_whitelisted_saved_asset(http):
+    server,get,_,_=http;server.asset_dir.mkdir(parents=True)
+    image=server.asset_dir/'basket_compare.png';image.write_bytes(b'comparison-test')
+    assert get('/saved/compare.png')[0]==200
+    assert get('/saved/compare.png')[2]==image.read_bytes()
+    assert json.loads(get('/status.json')[2])['assets']['compare']['name']=='basket_compare.png'
+    assert "showSaved('compare')" in V.PAGE

@@ -246,3 +246,24 @@ def test_invalid_quality_skips_expensive_features_and_keeps_model_frame_unchange
     monkeypatch.setattr(inspector.comparator,'features',feature)
     assert inspector.update(image,1,1)=='UNKNOWN'
     feature.assert_not_called();np.testing.assert_array_equal(image,before)
+
+
+def test_comparison_view_shows_low_threshold_evidence_without_changing_inputs(tmp_path):
+    from omx_manager.rgb_roi import comparison_view,mask_for
+    cfg=configured(tmp_path);spec=options(cfg)
+    reference=np.full((240,320,3),80,np.uint8);current=reference.copy();current[90:110,110:130]+=8
+    ref_before=reference.copy();current_before=current.copy()
+    panel,details=comparison_view(reference,current,spec)
+    assert panel.shape==(304,960,3)
+    assert details['global_changed_pixels']==0 and details['local_changed_pixels']==400
+    assert details['component_boxes_roi'][0]==dict(x=110,y=90,width=20,height=20,pixels=400)
+    assert (panel[32+100,640+120]==[0,0,255]).all()
+    np.testing.assert_array_equal(reference,ref_before);np.testing.assert_array_equal(current,current_before)
+
+
+def test_comparison_view_respects_polygon_mask(tmp_path):
+    from omx_manager.rgb_roi import comparison_view
+    cfg=configured(tmp_path,roi_polygon=[[160,80],[480,80],[480,400],[160,400]])
+    reference=np.full((240,320,3),80,np.uint8);current=reference.copy();current[:,:30]=200
+    _,details=comparison_view(reference,current,options(cfg))
+    assert details['local_changed_pixels']==0 and details['component_boxes_roi']==[]

@@ -162,3 +162,39 @@ def draw_region(frame,spec):
         x,y,w,h=spec['roi'];cv2.rectangle(preview,(x,y),(x+w-1,y+h-1),(0,180,255),2)
     if spec['roi_polygon'] is not None:cv2.polylines(preview,[np.array(spec['roi_polygon'],np.int32)],True,(255,80,255),2)
     return preview
+
+
+def comparison_view(reference,current,spec):
+    """Manual diagnostic only: exact reference/current ROI plus raw RGB difference."""
+    import cv2
+    import numpy as np
+    if reference.shape!=(SIZE[1],SIZE[0],3) or current.shape!=reference.shape:
+        raise ConfigError('Reference/current diagnostic image shape mismatch')
+    mask=mask_for(spec)
+    delta=np.max(np.abs(current.astype(np.int16)-reference.astype(np.int16)),axis=2)
+    changed=(delta>=spec['local_pixel_threshold'])&mask
+    heat=np.clip(delta.astype(np.int32)*8,0,255).astype(np.uint8)
+    heat=cv2.cvtColor(heat,cv2.COLOR_GRAY2BGR);heat[changed]=(0,0,255);heat[~mask]=0
+    count,_,stats,_=cv2.connectedComponentsWithStats(changed.astype(np.uint8),connectivity=8)
+    rows=sorted((row.tolist() for row in stats[1:]),key=lambda row:row[cv2.CC_STAT_AREA],reverse=True)
+    boxes=[]
+    for row in rows[:8]:
+        x,y,w,h,area=row
+        if area<spec['min_component_pixels']:continue
+        cv2.rectangle(heat,(x,y),(x+w-1,y+h-1),(0,255,255),1)
+        boxes.append(dict(x=x,y=y,width=w,height=h,pixels=area))
+    panels=[]
+    for rgb in (reference,current):
+        bgr=cv2.cvtColor(rgb,cv2.COLOR_RGB2BGR);bgr[~mask]//=3;panels.append(bgr)
+    panels.append(heat)
+    canvas=np.zeros((SIZE[1]+64,SIZE[0]*3,3),np.uint8)
+    for index,(panel,title) in enumerate(zip(panels,('EMPTY REFERENCE','CURRENT: SAME CONTROLS','RED: LOCAL PIXEL CHANGE'))):
+        offset=index*SIZE[0];canvas[32:32+SIZE[1],offset:offset+SIZE[0]]=panel
+        cv2.putText(canvas,title,(offset+6,21),cv2.FONT_HERSHEY_SIMPLEX,.48,(255,255,255),1,cv2.LINE_AA)
+    description=f"Local >= {spec['local_pixel_threshold']:g}: {int(changed.sum())} px | Global >= {spec['pixel_threshold']:g}: {int(((delta>=spec['pixel_threshold'])&mask).sum())} px"
+    cv2.putText(canvas,description,(6,SIZE[1]+53),cv2.FONT_HERSHEY_SIMPLEX,.48,(255,255,255),1,cv2.LINE_AA)
+    return canvas,dict(local_threshold=spec['local_pixel_threshold'],global_threshold=spec['pixel_threshold'],
+                       mask_pixels=int(mask.sum()),local_changed_pixels=int(changed.sum()),
+                       global_changed_pixels=int(((delta>=spec['pixel_threshold'])&mask).sum()),
+                       median_rgb_delta=float(np.median(delta[mask])),p95_rgb_delta=float(np.percentile(delta[mask],95)),
+                       component_boxes_roi=boxes,coordinates='320x240 cropped ROI; not full camera pixels')

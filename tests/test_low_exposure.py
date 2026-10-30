@@ -471,3 +471,30 @@ def test_control_drift_after_entry_fails_and_restores_before_accepting_image(set
     with pytest.raises(C.ConfigError,match='setting changed'):
         with E.Session(camera,cfg):controls.values['gain']=158.
     assert controls.values==controls.initial and not E.journal_path(cfg).exists()
+
+
+def test_comparison_diagnostic_uses_reference_controls_restores_and_keeps_registration(setup,tmp_path,monkeypatch):
+    from omx_manager import cli
+    from contextlib import nullcontext
+    cfg,clock,controls,camera=setup;camera.shape=(480,640,3)
+    reference(cfg,tmp_path);path=tmp_path/'cfg.yaml';C.save(path,cfg)
+    before=path.read_bytes();saved_reference=Path(cfg['unload']['reference']).read_bytes()
+    read=camera.read_latest_with_timestamp
+    def changed(**kwargs):
+        image,stamp=read(**kwargs)
+        if controls.values['auto_exposure']==1.:image[100:140,100:140]=90
+        return image,stamp
+    camera.read_latest_with_timestamp=changed
+    monkeypatch.setattr(commissioning,'time',NS(perf_counter=clock,monotonic=clock,sleep=clock.sleep,time=lambda:1000+clock()))
+    monkeypatch.setattr(commissioning,'require_home',lambda _:None)
+    monkeypatch.setattr(commissioning,'camera_for',lambda _:camera)
+    monkeypatch.setattr(cli,'device_lock',lambda _:nullcontext())
+    monkeypatch.setattr(cli,'FollowerBus',lambda _:nullcontext(NS(read=lambda:cfg['home']['target'])))
+    monkeypatch.setattr(cli,'state_dir',lambda _:tmp_path/'state')
+    result=cli.invoke(path,'basket-diagnose')
+    diagnostic=cv2.imread(result['diagnostic_path'])
+    assert diagnostic.shape==(304,960,3)
+    assert result['diagnostic']['global_changed_pixels']==0 and result['diagnostic']['local_changed_pixels']>0
+    assert result['diagnostic']['component_boxes_roi']
+    assert controls.values==controls.initial and not E.journal_path(cfg).exists()
+    assert path.read_bytes()==before and Path(cfg['unload']['reference']).read_bytes()==saved_reference
