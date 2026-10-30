@@ -1,51 +1,82 @@
 #!/usr/bin/env bash
-# Loaded once through ~/.bashrc. Compatible with older omx_start aliases.
-[[ $- == *i* ]] || return 0
-[[ -f "$HOME/.config/logistics_omx/device.env" ]] || return 0
-source "$HOME/.config/logistics_omx/device.env"
-unalias omx_start 2>/dev/null || true
-omx_start() {
-  "$HOME/Logistics_OMX/run_omx_mqtt.sh" "$@"
-}
-if [[ "$OMX_ROBOT_ID" == omx1 || "$OMX_ROBOT_ID" == omx2 ]]; then
-  omx_reset() {
-    local file="${OMX_INVENTORY_STATE_PATH:-$HOME/Logistics_OMX/state/omx_inventory.json}"
-    if [[ ! -f "$file" ]]; then echo "상태 파일이 없습니다: $file"; return 1; fi
-    if pgrep -af '[l]erobot-rollout|[o]mx_mqtt_client.py' >/dev/null 2>&1; then
-      echo '[ERROR] OMX 실행 중에는 주문/재고 초기화를 허용하지 않습니다.' >&2
-      return 1
-    fi
-    echo '주의: 기존 주문 및 재고 카운터를 초기화합니다.'
-    local answer
-    read -r -p '실제 물품을 다시 채웠습니까? (yes): ' answer
-    [[ "$answer" == yes ]] || return 0
-    cp -a "$file" "$file.bak.$(date +%Y%m%d_%H%M%S)"
-    OMX_RESET_FILE="$file" "${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}/bin/python" - <<'__OMX_RESET_PY__'
-import json
-import os
-import time
-from pathlib import Path
-path = Path(os.environ['OMX_RESET_FILE']).expanduser()
-data = json.loads(path.read_text(encoding='utf-8'))
-now = time.strftime('%Y-%m-%dT%H:%M:%S%z')
-data.update({
-    'total_completed': 0, 'remaining': 0,
-    'order_item': 'WAIT', 'order_quantity': 0,
-    'order_completed': 0, 'order_started_at': now,
-    'order_started_at_epoch': time.time(), 'updated_at': now,
-})
-temporary = path.with_suffix(path.suffix + '.tmp')
-temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
-os.replace(temporary, path)
-print(f"초기화 완료: capacity={data.get('capacity')}, total_completed=0, remaining=0, WAIT")
-__OMX_RESET_PY__
-  }
+# .bashrc에서 불러오는 단축 명령. 불러오기만 할 때 장치/서비스를 실행하지 않습니다.
+_OMX_SHELL_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+_OMX_SHELL_REGISTRY="$HOME/.config/logistics_omx/shell.env"
+if [[ -f "$_OMX_SHELL_REGISTRY" ]]; then
+  source "$_OMX_SHELL_REGISTRY"
+elif [[ -f "$HOME/.config/logistics_omx/device.env" ]]; then
+  source "$HOME/.config/logistics_omx/device.env"
+  OMX_CONFIG_PATH="$_OMX_SHELL_ROOT/state/config/${OMX_ROBOT_ID:-}.yaml"
+  OMX_PYTHON="${OMX_PYTHON:-${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}/bin/python}"
 else
-  # OMX3/4에는 재고 초기화 기능이 없어야 한다.
-  unset -f omx_reset 2>/dev/null || true
+  return 0
 fi
-
-# Follower-only Home registration and parameter menu (runtime must be stopped).
-omx_calibrate() {
-  "$HOME/Logistics_OMX/omx_control" --config "$HOME/Logistics_OMX/params/$OMX_ROBOT_ID.yaml" menu
+export OMX_ROBOT_ID OMX_CONFIG_PATH OMX_PYTHON
+# 이전 alias와 재고 직접 초기화 함수를 제거하고 현재 YAML 관리 명령을 사용합니다.
+for _omx_name in omx_start omx_home omx_arm omx_release omx_observe omx_capture omx_check omx_calibrate omx_logs omx_monitor omx_status omx_recover omx_reset omx_order omx_service omx_info omx_help omx_cd; do
+  unalias "$_omx_name" 2>/dev/null || true
+done
+unset -f omx_reset 2>/dev/null || true
+unset _omx_name
+_omx_ctl() {
+  if [[ ! -f "${OMX_CONFIG_PATH:-}" ]]; then
+    echo '[ERROR] 현장 YAML이 없습니다. bash scripts/install_omx_shell.sh 로 등록하세요.' >&2
+    return 2
+  fi
+  "$_OMX_SHELL_ROOT/omx_control" --config "$OMX_CONFIG_PATH" --expected-device "$OMX_ROBOT_ID" "$@"
+}
+omx_start() {
+  echo "[OMX] $OMX_ROBOT_ID 실행: $OMX_CONFIG_PATH"
+  "$_OMX_SHELL_ROOT/run_omx_mqtt.sh" --robot-id "$OMX_ROBOT_ID" --config "$OMX_CONFIG_PATH" --confirm-motion --important-only "$@"
+}
+omx_home() { _omx_ctl home --confirm-motion "$@"; }
+omx_arm() { _omx_ctl arm --confirm-motion "$@"; }
+omx_release() { _omx_ctl release --confirm-motion "$@"; }
+omx_observe() { _omx_ctl observe "$@"; }
+omx_capture() { _omx_ctl capture "$@"; }
+omx_check() { _omx_ctl check "$@"; }
+omx_calibrate() { _omx_ctl menu "$@"; }
+omx_logs() { _omx_ctl logs "$@"; }
+omx_monitor() { _omx_ctl monitor "$@"; }
+omx_status() { _omx_ctl monitor --samples 1 "$@"; }
+omx_recover() { _omx_ctl acknowledge-recovery --confirm-motion "$@"; }
+omx_order() {
+  if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo '사용법: omx_order 품목 [수량=1] — 실제 팔이 움직입니다.' >&2
+    return 2
+  fi
+  _omx_ctl order --item "$1" --quantity "${2:-1}"
+}
+omx_service() {
+  local action="${1:-status}"
+  if [[ $# -gt 0 ]]; then shift; fi
+  case "$action" in
+    start|enable) _omx_ctl service --action "$action" --confirm-motion "$@";;
+    *) _omx_ctl service --action "$action" "$@";;
+  esac
+}
+omx_cd() { cd -- "$_OMX_SHELL_ROOT"; }
+omx_info() {
+  printf 'OMX: %s\nYAML: %s\nPython: %s\nRepo: %s\n' "$OMX_ROBOT_ID" "$OMX_CONFIG_PATH" "$OMX_PYTHON" "$_OMX_SHELL_ROOT"
+}
+omx_help() {
+  omx_info
+  cat <<'HELP'
+omx_start [--diagnostics]   실행 / 전경 실행 종료는 Ctrl+C
+omx_home                    등록 홈 근처에서 제한 복귀 (실제 이동)
+omx_arm                     현재 자세 유지 토크 ON (홈 접근 범위 안)
+omx_release                 YAML 대기 시간 후 전체 토크 OFF — 팔 지지 필수
+omx_observe                 관절값 확인
+omx_capture                 현재 자세를 홈으로 저장 — 복귀 명령이 아님
+omx_check                   파일·등록 홈 검사
+omx_calibrate               설정/보정 메뉴
+omx_status                  현재 상태 한 번 조회
+omx_monitor                 성능 모니터 (Ctrl+C로 모니터만 종료)
+omx_logs [--follow]          중요 로그 조회
+omx_recover                 물품 확인 후 중단 작업 기록 보관/해제
+omx_order A 1               수동 MQTT 실물 주문 (장비에 맞는 품목 사용)
+omx_service install         자동 재시작 서비스 설치만 수행
+omx_service start|stop|status 서비스 구동/수동 정지/상태
+omx_cd                      저장소로 이동
+HELP
 }

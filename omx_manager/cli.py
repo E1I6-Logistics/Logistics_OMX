@@ -20,7 +20,7 @@ def table(cfg,q):
 
 def edit_value(cfg,key,text):
     import yaml
-    allowed={"models.active_profile","runtime.cpu_threads","runtime.fps","home.hold_s","home.unload_hold_s","home.still_delta", "home.max_start_error", "home.move_speed", "counting.min_cycle_s", "counting.stall_s", "counting.leave_tolerance", "home.arrival_tolerance", "home.move_timeout_s", "home.max_step", "home.max_following_error", "home.max_sample_gap_s"}
+    allowed={"models.active_profile","runtime.cpu_threads","runtime.fps","home.hold_s","home.unload_hold_s","home.still_delta", "home.max_start_error", "home.move_speed", "counting.min_cycle_s", "counting.stall_s", "counting.leave_tolerance", "home.arrival_tolerance", "home.move_timeout_s", "home.max_step", "home.max_following_error", "home.max_sample_gap_s", "recovery.release_delay_s"}
     allowed.update("home.tolerance."+j for j in JOINTS)
     allowed.update("diagnostics."+name for name in diagnostic_options(cfg))
     allowed.update("service."+name for name in service_options(cfg))
@@ -58,10 +58,13 @@ def menu(path):
         except KeyboardInterrupt: print("관측/작업 중단")
         except Exception as exc: print("[ERROR]",exc)
 
-def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=None,important_only=None,follow=False,interval=None,samples=0,json_output=False,lines=50,action=None,expected_device=None):
+def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=None,important_only=None,follow=False,interval=None,samples=0,json_output=False,lines=50,action=None,expected_device=None,item=None,quantity=1):
     cfg=load(path)
     if expected_device is not None and cfg["device_id"]!=expected_device:
         raise ValueError("Device mismatch: requested "+expected_device+", YAML is "+cfg["device_id"])
+    if command=="order":
+        from .orders import send_order
+        return send_order(cfg,item,quantity)
     if command=="menu": return menu(path)
     if command=="service":
         from .service import manage
@@ -91,9 +94,9 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
         if command=="acknowledge-recovery":
             if not confirm_motion: raise ValueError("Inspect physical cargo and use --confirm-motion to reconcile interrupted work")
             acknowledge_recovery(cfg);print("Interrupted state archived; counters/jobs were not silently replayed");return
-        if command in ("home", "arm"):
-            if not confirm_motion: raise ValueError("Home movement requires --confirm-motion")
-            require_home(cfg)
+        if command in ("home", "arm", "release"):
+            if not confirm_motion: raise ValueError("Home/torque operation requires --confirm-motion")
+            if command != "release": require_home(cfg)
         original=digest(path)
         original_binding=binding(cfg) if command == "capture" else None
         with FollowerBus(cfg) as device:
@@ -108,6 +111,12 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 if binding(cfg) != original_binding: raise RuntimeError("Calibration/model changed during capture; registration rejected")
                 cfg["home"]["target"]=target;cfg["home"]["binding"]=original_binding
                 save(path,cfg);table(cfg,target);print("Registered stable Home; existing motor calibration unchanged")
+            elif command=="release":
+                delay=cfg["recovery"].get("release_delay_s",10)
+                print(f"[RELEASE] {cfg['device_id']}: {delay:g}초 뒤 전체 토크 OFF. 물품을 내려놓고 팔을 지지하세요. 취소는 Ctrl+C.",flush=True)
+                time.sleep(delay)
+                states=device.release()
+                print("전체 토크 OFF 확인 완료:",states)
             elif command=="arm":
                 device.arm();print("Current pose goal installed; torque enabled. Verify locally before Home move")
             elif command=="home":
@@ -118,10 +127,11 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True,help="params/omx1.yaml etc.")
-    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service"))
+    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order"))
     parser.add_argument("--confirm-motion",action="store_true")
     parser.add_argument("--expected-device",choices=("omx1","omx2","omx3","omx4"),help="Launcher device/YAML consistency check")
     parser.add_argument("--key");parser.add_argument("--value")
+    parser.add_argument("--item");parser.add_argument("--quantity",type=int,default=1)
     parser.add_argument("--action",choices=("install","start","stop","status","logs","enable","disable","uninstall"))
     parser.add_argument("--diagnostics",action="store_true",default=None,help="Opt-in camera/loop/ACT counters and bounded logs")
     parser.add_argument("--important-only",action="store_true",default=None,help="Capture bounded full logs, show important events only")
@@ -131,7 +141,7 @@ def main(argv=None):
     parser.add_argument("--samples",type=int,default=0,help="0 means continuous monitor")
     parser.add_argument("--json",action="store_true",dest="json_output")
     args=parser.parse_args(argv)
-    try: invoke(args.config,args.command,args.confirm_motion,args.key,args.value,args.diagnostics,args.important_only,args.follow,args.interval,args.samples,args.json_output,args.lines,args.action,args.expected_device)
+    try: invoke(args.config,args.command,args.confirm_motion,args.key,args.value,args.diagnostics,args.important_only,args.follow,args.interval,args.samples,args.json_output,args.lines,args.action,args.expected_device,args.item,args.quantity)
     except KeyboardInterrupt: print("Stopped by operator");return 130
     except Exception as exc: print(f"[ERROR] {type(exc).__name__}: {exc}",file=sys.stderr);return 2
     return 0

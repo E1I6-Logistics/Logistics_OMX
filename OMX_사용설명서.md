@@ -375,3 +375,83 @@ mosquitto_sub -h 192.168.0.16 -p 1883 -v -t omx1/ack -t omx1/progress -t omx1/re
 브로커 주소/포트는 각 현장 YAML과 일치시킵니다. 새 실행마다 새 작업 ID를 생성하며 retain 옵션은 사용하지 않습니다.
 접수 후 완료 결과를 기다린 뒤 다음 주문을 보냅니다. 같은 작업 ID 재전송은 재동작을 의미하지 않습니다.
 1개 주문 완료 뒤 새로운 ID로 1개 주문을 5회 이상 반복해 다음 작업 전 홈 정렬과 대기를 확인합니다.
+
+## 13. Pi별 Bash 단축 명령 등록
+
+각 Pi에서 한 번만 실행합니다. `omx01/omx02/omx03/omx4` 호스트 이름을 각각
+`omx1/omx2/omx3/omx4`로 자동 인식합니다. 기존 등록과 이름이 충돌하면 자동 변경하지 않고 오류를 표시합니다.
+
+```bash
+cd ~/Logistics_OMX
+git pull --ff-only origin dev
+bash scripts/install_omx_shell.sh
+source ~/.bashrc
+omx_info
+omx_help
+```
+
+자동 식별이 안 되면 해당 번호를 명시합니다.
+
+```bash
+bash scripts/install_omx_shell.sh --robot-id omx4
+# 사용자 지정 현장 YAML/가상환경이 있다면 명시
+# bash scripts/install_omx_shell.sh --robot-id omx4 --config state/config/omx4.yaml --python "$HOME/venv/.venv/bin/python"
+source ~/.bashrc
+```
+
+번호·현장 YAML·Python 경로는 `~/.config/logistics_omx/shell.env`에 저장하고 `.bashrc`에 source 블록 한 개만 등록합니다.
+기존 `.bashrc`는 변경 전에 백업하며, 재설치 시 같은 블록을 중복 추가하지 않습니다.
+기존 `state/config/omxN.yaml`은 보존합니다. 없을 때만 배포 템플릿에서 복사합니다.
+모델·모터 보정·기존 가상환경은 바꾸지 않습니다. 설치/터미널 시작만으로 장치나 서비스가 구동되지는 않습니다.
+매번 가상환경을 활성화하거나 저장소로 이동할 필요 없이 아래 명령을 사용할 수 있습니다.
+
+| 단축 명령 | 동작 |
+|---|---|
+| `omx_start` | 해당 팔 실행, 중요 로그 표시. 종료는 이 터미널에서 Ctrl+C |
+| `omx_start --diagnostics` | 카메라/제어/ACT 성능 계측을 켜고 실행 |
+| `omx_home` | 등록 홈 근처에서 제한 복귀. 실제 팔 이동 |
+| `omx_arm` | 홈 접근 범위 안에서 현재 위치 목표를 설정하고 토크 ON |
+| `omx_release` | 설정된 대기 시간 후 전체 토크 OFF. 물품을 내려놓고 팔 지지 필수 |
+| `omx_observe` | 관절값·등록 홈 오차 확인 |
+| `omx_capture` | 현재 안정 자세를 홈으로 저장. 복귀 명령이 아님 |
+| `omx_check` | 파일·모델 I/O·등록 홈 검사 |
+| `omx_calibrate` | 대화형 설정/보정 메뉴 |
+| `omx_status` | 상태·성능 한 번 조회 |
+| `omx_monitor` | 성능 연속 조회. Ctrl+C는 모니터만 종료 |
+| `omx_logs --follow` | 중요 로그 실시간 조회 |
+| `omx_recover` | 실제 물품 확인 후 중단 작업 기록 보관/해제 |
+| `omx_order A 1` | 해당 팔에 수동 MQTT 실물 주문. FMS 없이 브로커만 필요 |
+| `omx_service install` | 자동 재시작 서비스 설치만 수행 |
+| `omx_service start` | 설치한 서비스 시작. 실제 팔 구동 가능 |
+| `omx_service stop` | 서비스를 사용자가 정지. 자동 재시작하지 않음 |
+| `omx_service status` | 서비스 상태 |
+| `omx_info`, `omx_help` | 현재 등록과 명령 목록 |
+| `omx_cd` | 저장소로 이동 |
+
+품목은 OMX1 A/B, OMX2 C/D, OMX3 E, OMX4 F입니다. `omx_order`는 내부에서 `mosquitto_pub`를 호출하고
+YAML의 브로커 주소/포트를 사용하며 매번 새 작업 ID를 생성합니다. 완료 후 다음 주문을 보냅니다.
+OMX3/4의 수량 1은 하차 작업 시작용이며 물품 1개 하차를 보장하지 않습니다. 다른 수량은 수동 명령에서 거절합니다.
+
+`omx_release`는 현재 자세가 홈에서 멀어도 사용 가능합니다. 기본 대기는 10초이며
+`recovery.release_delay_s`로 3~60초 범위에서 설정할 수 있습니다. 토크를 끄기 전에 물품을 내려놓고 팔을 받칩니다.
+대기 중 Ctrl+C로 취소할 수 있습니다. 6개 관절의 토크 OFF 확인 후에만 수동으로 자세를 맞춥니다.
+다음으로 팔을 지지한 상태에서 `omx_arm`, 팔이 안정적으로 버티면 손을 치우고 `omx_home` 순서로 복귀합니다.
+기존 모터 영점·방향·범위·Goal Position을 토크 해제 명령이 재설정하지 않습니다.
+구형 `omx_reset`의 직접 재고 초기화는 제거했습니다. 중단 작업은 `omx_recover`를 사용합니다.
+
+GitHub 접속이 안 되지만 같은 LAN에서 다른 Pi에 접속 가능한 경우, 업데이트된 OMX2에서 증분 Git bundle을 보낼 수 있습니다.
+아래 예시는 OMX1의 현재 커밋이 `4116f5f`인 경우이며 실제 현재 버전을 먼저 확인하세요.
+
+```bash
+# 업데이트된 OMX2에서 실행. 수신지는 실제 OMX1 IP와 사용자명 사용
+cd ~/Logistics_OMX
+git bundle create /tmp/omx-update.bundle 4116f5f..dev
+scp /tmp/omx-update.bundle omx01@192.168.0.151:/tmp/omx-update.bundle
+# OMX1에서 실행
+cd ~/Logistics_OMX
+git bundle verify /tmp/omx-update.bundle
+git pull --ff-only /tmp/omx-update.bundle dev
+# 이후 위 단축 명령 설치 절차 수행
+```
+
+이 방식은 origin의 추적 정보는 갱신하지 않습니다. 인터넷이 복구된 뒤 `git fetch origin`으로 동기화합니다.

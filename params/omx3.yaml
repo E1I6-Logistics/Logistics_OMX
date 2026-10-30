@@ -173,6 +173,8 @@ recovery:
   retry_initial_s: 3
   # 재시도 간격을 늘릴 때의 최대 대기 시간(초)
   retry_max_s: 60
+  # 전체 토크 OFF 전 대기 시간(초): 팔을 지지한 뒤 실행, 기본 10초
+  release_delay_s: 10
 # 선택적 중요 로그·성능 계측: 기본 비활성, 제어·영상 설정과 별개
 diagnostics:
   # 상세 성능 카운터와 파일 로그 기본 활성 여부: false 권장 시작값

@@ -93,7 +93,7 @@ def validate(cfg):
     only_keys(cfg["home"], "target binding tolerance hold_s unload_hold_s still_delta max_sample_gap_s capture_s capture_max_span arrival_tolerance move_speed move_timeout_s max_start_error max_step max_following_error", "home")
     only_keys(cfg["models"], "active_profile profiles", "models")
     only_keys(cfg["runtime"], "broker_host broker_port cpu_threads fps cycle_timeout_s order_per_unit_s order_load_grace_s startup_timeout_s heartbeat_timeout_s shutdown_timeout_s", "runtime")
-    only_keys(cfg["recovery"], "retry_initial_s retry_max_s", "recovery")
+    only_keys(cfg["recovery"], "retry_initial_s retry_max_s release_delay_s", "recovery")
     only_keys(cfg["counting"], "leave_tolerance min_cycle_s stall_s progress_epsilon", "counting")
     hw = cfg["hardware"]
     for key in ("port", "calibration_file", "robot_id"): path_value(hw.get(key))
@@ -156,7 +156,9 @@ def validate(cfg):
     number(service["restart_s"],"service.restart_s",1,120)
     number(service["stop_timeout_s"],"service.stop_timeout_s",10,7200)
     if type(service["enable_on_boot"]) is not bool:raise ConfigError("service.enable_on_boot must be true/false")
+    number(cfg["recovery"].get("release_delay_s", 10), "recovery.release_delay_s", 3, 60)
     return cfg
+
 
 def binding(cfg):
     artifacts = {}

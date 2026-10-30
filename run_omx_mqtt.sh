@@ -4,8 +4,11 @@ set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 DEVICE="$HOME/.config/logistics_omx/device.env"
 if [[ -f "$DEVICE" ]]; then source "$DEVICE"; fi
+REGISTRY="$HOME/.config/logistics_omx/shell.env"
+if [[ -f "$REGISTRY" ]]; then source "$REGISTRY"; fi
+export OMX_PYTHON
 ID="${OMX_ROBOT_ID:-}"
-CONFIG=""
+CONFIG="${OMX_CONFIG_PATH:-}"
 CONFIRM=()
 DIAGNOSTICS=()
 EXPECTED=()

@@ -84,6 +84,13 @@ class FollowerBus:
         for j in JOINTS:
             status = self.bus.read("Hardware_Error_Status", j)
             if status: raise RuntimeError(f"Motor hardware error: {j}={status}; no motion")
+    def release(self):
+        # Torque only: never rewrite mode, offset, limits, calibration or goals.
+        self.bus.disable_torque(num_retry=3)
+        states = {joint: self.bus.read("Torque_Enable", joint) for joint in JOINTS}
+        if any(value != 0 for value in states.values()):
+            raise RuntimeError("Torque OFF verification failed; keep supporting the arm: " + str(states))
+        return states
     def arm(self):
         from .config import require_home
         from .home import errors
