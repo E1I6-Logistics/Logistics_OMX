@@ -146,8 +146,11 @@ def run(strategy,ctx,send_action,make_timer):
                 if verdict=='EMPTY':
                     if options['require_quantity_match'] and expected is not None and transfers!=expected:
                         raise RuntimeError(f'Empty basket but estimated transfer count {transfers} differs from expected {expected}; inspect cargo')
-                    status('DONE',reason='basket_empty_confirmed',basket_empty_verified=True,count_is_estimate=True)
-                    logger.info('[WORKSTATION] DONE job=%s: basket empty; exact item transfer count remains unverified',job)
+                    partial=options['registration_allow_partial']
+                    status('DONE',reason='visible_empty_confirmed' if partial else 'basket_empty_confirmed',
+                           basket_empty_verified=not partial,visible_region_empty_verified=True,
+                           inspection_scope='visible_only' if partial else 'full',count_is_estimate=True)
+                    logger.info('[WORKSTATION] DONE job=%s: %s empty; exact item transfer count remains unverified',job,'visible region' if partial else 'basket')
                     continue
                 if expected is not None and transfers>=expected and options['require_quantity_match']:
                     raise RuntimeError('Expected count reached but basket still occupied; quantity mismatch')

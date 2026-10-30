@@ -12,7 +12,7 @@ import sys
 import time
 
 ROOT=Path(__file__).resolve().parents[1]
-TESTS=['tests/test_manager.py','tests/test_follower_bus_lifecycle.py','tests/test_home_motion.py','tests/test_shell_shortcuts.py','tests/test_diagnostics.py','tests/test_service.py','tests/test_workstation_protocol.py','tests/test_unload_client_protocol.py','tests/test_workflow_recovery.py','tests/test_cycle_counting.py','tests/test_rgb_roi.py','tests/test_low_exposure.py','tests/test_viewer.py']
+TESTS=['tests/test_manager.py','tests/test_follower_bus_lifecycle.py','tests/test_home_motion.py','tests/test_shell_shortcuts.py','tests/test_diagnostics.py','tests/test_service.py','tests/test_workstation_protocol.py','tests/test_unload_client_protocol.py','tests/test_workflow_recovery.py','tests/test_cycle_counting.py','tests/test_rgb_roi.py','tests/test_low_exposure.py','tests/test_viewer.py','tests/test_basket_registration.py']
 
 def fingerprint():
     paths=set(subprocess.check_output(['git','ls-files','--cached','--others','--exclude-standard','-z'],cwd=ROOT).decode().split('\0'))

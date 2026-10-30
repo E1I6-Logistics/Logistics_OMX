@@ -34,7 +34,11 @@ def validate(spec):
 
 
 def signature(spec):
-    return hashlib.sha256(json.dumps(dict(version=2,size=SIZE,roi=spec['roi'],polygon=spec['roi_polygon']),sort_keys=True).encode()).hexdigest()
+    material=dict(version=2,size=SIZE,roi=spec['roi'],polygon=spec['roi_polygon'])
+    if spec.get('registration_enabled'):
+        from .basket_registration import DEFAULTS
+        material.update(version=3,registration={k:spec[k] for k in DEFAULTS})
+    return hashlib.sha256(json.dumps(material,sort_keys=True).encode()).hexdigest()
 
 
 def mask_for(spec):

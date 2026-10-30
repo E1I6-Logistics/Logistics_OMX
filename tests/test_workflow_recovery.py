@@ -528,3 +528,53 @@ def test_actual_preflight_never_enables_torque_or_opens_unknown_cargo(cfg,tmp_pa
     else:
         supervisor.preflight(cfg,verify_registration=False,operator_confirmed=True)
         assert abs(device.q['gripper']-50)<=.8
+
+
+def test_partial_controller_completion_does_not_claim_whole_basket_empty(cfg,tmp_path,monkeypatch):
+    # Reuse fake-vision controller fixture to isolate completion/status semantics.
+    cfg['unload']['registration_allow_partial']=True
+    run,phases,sent,done,path=controller(cfg,tmp_path,monkeypatch)
+    run()
+    assert done[0]['reason']=='visible_empty_confirmed'
+    assert done[0]['inspection_scope']=='visible_only' and done[0]['visible_region_empty_verified'] is True
+    assert done[0]['basket_empty_verified'] is False and done[0]['physical_unloading_verified'] is False
+
+
+@pytest.mark.parametrize('bad',[None,'full_claim','reason','scope','evidence'])
+def test_mqtt_partial_completion_is_explicit_and_checked(monkeypatch,tmp_path,bad):
+    tree=ast.parse((ROOT/'lerobot_unified/omx_mqtt_client.py').read_text())
+    fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='execute_unload')
+    import os
+    monkeypatch.setenv('OMX_MANAGED_UNLOAD','1');monkeypatch.setenv('OMX_UNLOAD_VIEW_SCOPE','visible_only')
+    row=dict(session='test',phase='DONE',job_id='j',reason='visible_empty_confirmed',
+             basket_empty_verified=False,visible_region_empty_verified=True,inspection_scope='visible_only',estimated_transfers=0)
+    if bad=='full_claim':row['basket_empty_verified']=True
+    if bad=='reason':row['reason']='basket_empty_confirmed'
+    if bad=='scope':row['inspection_scope']='full'
+    if bad=='evidence':row['visible_region_empty_verified']=False
+    current={'phase':'READY'};commands=[]
+    def write(path,data):commands.append(data);current['phase']='READY' if data['command']=='CLEAR' else 'RUNNING'
+    clock=Clock()
+    ns=dict(robot_id='omx3',WORKSTATION_IDS=('omx3','omx4'),workstation_ready=lambda:current['phase']=='READY',
+            workstation_session='test',workstation_command=tmp_path/'cmd',atomic_json=write,
+            workstation_state=lambda:row,_workstation_process_alive=lambda _:True,os=os,
+            time=NS(time=clock,monotonic=clock,sleep=clock.sleep),publish=lambda *a:None)
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),'partial client','exec'),ns)
+    if bad:
+        with pytest.raises(RuntimeError):ns['execute_unload']('j',{})
+    else:
+        result=ns['execute_unload']('j',{})
+        assert result['basket_empty_verified'] is False and commands[-1]['command']=='CLEAR'
+
+
+@pytest.mark.parametrize('success',[True,False])
+def test_partial_result_payload_labels_observed_scope(monkeypatch,success):
+    import os
+    monkeypatch.setenv('OMX_MANAGED_UNLOAD','1');monkeypatch.setenv('OMX_UNLOAD_VIEW_SCOPE','visible_only')
+    tree=ast.parse((ROOT/'lerobot_unified/omx_mqtt_client.py').read_text())
+    fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='send_result')
+    sent=[];ns=dict(os=os,robot_id='omx3',publish=lambda topic,payload:sent.append(payload))
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[fn],type_ignores=[])),'partial result','exec'),ns)
+    ns['send_result']('job',success,'visible region only')
+    assert sent[0]['inspection_scope']=='visible_only' and sent[0]['basket_empty_verified'] is False
+    assert sent[0]['visible_region_empty_verified'] is success

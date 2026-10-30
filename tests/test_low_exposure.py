@@ -498,3 +498,34 @@ def test_comparison_diagnostic_uses_reference_controls_restores_and_keeps_regist
     assert result['diagnostic']['component_boxes_roi']
     assert controls.values==controls.initial and not E.journal_path(cfg).exists()
     assert path.read_bytes()==before and Path(cfg['unload']['reference']).read_bytes()==saved_reference
+
+
+def test_registered_capture_saves_geometry_after_restore_and_can_inspect(setup,tmp_path,monkeypatch):
+    from contextlib import nullcontext
+    from omx_manager import cli
+    from test_basket_registration import scene
+    cfg,clock,controls,camera=setup
+    cfg['unload'].update(roi=[190,70,240,220],registration_enabled=True)
+    cfg['home']['target']={j:0. for j in C.JOINTS}
+    base,_=scene()
+    def frame(**kwargs):
+        stamp=int(clock()*30)/30
+        # Original/manual scenes differ in brightness, just like the fake transaction tests.
+        scale=1.2 if controls.values['auto_exposure']==3. else 1.
+        return np.clip(base.astype(float)*scale,0,255).astype(np.uint8),stamp
+    camera.read_latest_with_timestamp=frame
+    path=tmp_path/'cfg.yaml';C.save(path,cfg)
+    monkeypatch.setattr(commissioning,'time',NS(perf_counter=clock,monotonic=clock,sleep=clock.sleep,time=lambda:1000+clock()))
+    monkeypatch.setattr(commissioning,'require_home',lambda _:None);monkeypatch.setattr(cli,'require_home',lambda _:None)
+    monkeypatch.setattr(commissioning,'camera_for',lambda _:camera)
+    monkeypatch.setattr(cli,'device_lock',lambda _:nullcontext())
+    motor=NS(read=lambda:cfg['home']['target'],send=Mock())
+    monkeypatch.setattr(cli,'FollowerBus',lambda _:nullcontext(motor));monkeypatch.setattr(cli,'state_dir',lambda _:tmp_path/'state')
+    cli.invoke(path,'basket-capture',confirm_empty=True)
+    saved=C.load(path);inspector=basket.BasketInspector(saved)
+    assert inspector.reference.shape==(128,128,3) and inspector.registration_profile['frame_shape']==[480,640]
+    assert controls.values==controls.initial and not E.journal_path(cfg).exists()
+    assert saved['home']==cfg['home'] and saved['models']==cfg['models']
+    for i in range(5):verdict=inspector.update(base,1+i*.11,1+i*.11)
+    assert verdict=='EMPTY'
+    motor.send.assert_not_called()

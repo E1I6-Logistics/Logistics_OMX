@@ -222,3 +222,12 @@ def test_comparison_diagnostic_is_a_whitelisted_saved_asset(http):
     assert get('/saved/compare.png')[2]==image.read_bytes()
     assert json.loads(get('/status.json')[2])['assets']['compare']['name']=='basket_compare.png'
     assert "showSaved('compare')" in V.PAGE
+
+
+def test_tray_pose_preview_is_whitelisted_without_control_endpoint(http):
+    server,get,_,_=http;server.asset_dir.mkdir(parents=True)
+    preview=server.asset_dir/'basket_pose.png';preview.write_bytes(b'tray pose preview')
+    assert get('/saved/pose.png')[0]==200
+    assert json.loads(get('/status.json')[2])['assets']['pose']['name']=='basket_pose.png'
+    assert "showSaved('pose')" in V.PAGE
+    assert get('/align/on')[0]==404

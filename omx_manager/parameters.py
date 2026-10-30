@@ -11,6 +11,29 @@ DIAGNOSTIC_DEFAULTS = {
 SERVICE_DEFAULTS = {"restart_s":5.,"stop_timeout_s":45.,"enable_on_boot":False}
 
 COMMENTS = {
+    'registration_partial_component_pixels':'부분 시야에서 물건 확정에 필요한 연결 면적: 추정 모서리·초점 차이로 인한 작은 변화는 UNKNOWN',
+    'registration_partial_color_limit':'부분 시야의 중앙 RGB 밝기 차이 보정 한도: 넘으면 UNKNOWN',
+
+    'registration_allow_partial':'부분 시야 검사 허용: true이면 보이는 영역만 판단하며 전체 비움으로 보고하지 않음',
+    'registration_visible_confirmed':'사용자가 보이는 영역만 검사하는 범위를 확인했는지 여부',
+    'registration_min_visible_ratio':'128 정렬 영상에서 요구할 최소 관측 비율: 보이지 않는 부분은 비교에서 제외',
+    'registration_max_extrapolation':'상단 잘림 모서리 위치 추정의 최대 거리: ROI 크기에 대한 비율, 추정 영역은 비움 근거로 사용하지 않음',
+
+    'registration_still_px':'확정 대기 중 기준 모서리에서 허용할 원본 영상 움직임(픽셀): 정렬 영상만 보고 정지 판단하지 않음',
+    'registration_enabled':'이동·회전하는 바구니 정렬 검사 사용 여부: 변경 시 빈 기준 재등록 필요',
+    'registration_search_pad':'기존 사각 ROI 밖으로 바구니를 찾을 추가 여유 픽셀: 원본 영상 기준',
+    'registration_threshold_factor':'흰 바구니 외곽 후보의 밝기 문턱 계수: Otsu 자동 문턱에 곱함',
+    'registration_min_area_ratio':'바구니 후보의 최소 면적: 기존 사각 ROI 면적 대비 비율',
+    'registration_max_shift_px':'기준 바구니 중심에서 허용할 최대 이동 거리: 원본 영상 픽셀',
+    'registration_max_rotation_deg':'기준 바구니에서 허용할 최대 영상 내 회전 각도(도)',
+    'registration_scale_tolerance':'기준 대비 허용할 바구니 영상 면적 변화 비율',
+    'registration_inner_margin':'128 정렬 영상에서 테두리 혼합 픽셀을 제외할 폭: 과도한 확대 금지',
+    'registration_pixel_threshold':'정렬 후 물건 후보로 사용할 RGB 차이 문턱',
+    'registration_weak_threshold':'정렬 후 약한 변화 확인 문턱: 물건 확정이 어려우면 UNKNOWN',
+    'registration_component_pixels':'가는 선을 제거한 뒤 물건 확정에 필요한 연결 면적(128 정렬 영상 픽셀)',
+    'registration_weak_pixels':'약한 변화 때문에 EMPTY를 보류할 연결 면적(128 정렬 영상 픽셀)',
+    'registration_color_limit':'보정할 수 있는 중앙 RGB 밝기 차이 한도: 넘으면 UNKNOWN',
+
     "view":"노트북 브라우저용 읽기 전용 뷰어: omx_view 실행 시에만 네트워크 서버 시작",
     "bind":"뷰어가 받을 Pi IPv4 주소: 0.0.0.0=Pi의 모든 네트워크 인터페이스",
     "port":"뷰어 웹 포트: 노트북에서 http://Pi주소:포트/ 접속",

@@ -308,6 +308,50 @@ unload:
   # 저노출 ROI의 RGB 모두 5 이하인 픽셀 비율 한도: 초과 시 UNKNOWN
   inspection_max_dark_ratio: 0.3
 
+
+  # 선택적 이동 바구니 정렬 검사: 기본 꺼짐, 켠 뒤 빈 기준 재등록
+  # 이동·회전하는 바구니 정렬 검사 사용 여부: 변경 시 빈 기준 재등록 필요
+  registration_enabled: false
+  # 기존 사각 ROI 밖으로 바구니를 찾을 추가 여유 픽셀: 원본 영상 기준
+  registration_search_pad: 60
+  # 흰 바구니 외곽 후보의 밝기 문턱 계수: Otsu 자동 문턱에 곱함
+  registration_threshold_factor: 1.35
+  # 바구니 후보의 최소 면적: 기존 사각 ROI 면적 대비 비율
+  registration_min_area_ratio: 0.1
+  # 기준 바구니 중심에서 허용할 최대 이동 거리: 원본 영상 픽셀
+  registration_max_shift_px: 60.0
+  # 기준 바구니에서 허용할 최대 영상 내 회전 각도(도)
+  registration_max_rotation_deg: 15.0
+  # 기준 대비 허용할 바구니 영상 면적 변화 비율
+  registration_scale_tolerance: 0.25
+  # 128 정렬 영상에서 테두리 혼합 픽셀을 제외할 폭: 과도한 확대 금지
+  registration_inner_margin: 6
+  # 정렬 후 물건 후보로 사용할 RGB 차이 문턱
+  registration_pixel_threshold: 8.0
+  # 정렬 후 약한 변화 확인 문턱: 물건 확정이 어려우면 UNKNOWN
+  registration_weak_threshold: 6.0
+  # 가는 선을 제거한 뒤 물건 확정에 필요한 연결 면적(128 정렬 영상 픽셀)
+  registration_component_pixels: 32
+  # 약한 변화 때문에 EMPTY를 보류할 연결 면적(128 정렬 영상 픽셀)
+  registration_weak_pixels: 32
+  # 보정할 수 있는 중앙 RGB 밝기 차이 한도: 넘으면 UNKNOWN
+  registration_color_limit: 6.0
+  # 확정 대기 중 바구니 모서리에 허용할 원본 영상 움직임(픽셀)
+  registration_still_px: 3.0
+  # 부분 시야 검사 허용: true이면 보이는 영역만 판단하며 전체 비움으로 보고하지 않음
+  registration_allow_partial: false
+  # 사용자가 보이는 영역만 검사하는 범위를 확인했는지 여부
+  registration_visible_confirmed: false
+  # 128 정렬 영상에서 요구할 최소 관측 비율: 보이지 않는 부분은 비교에서 제외
+  registration_min_visible_ratio: 0.65
+  # 상단 잘림 모서리 위치 추정의 최대 거리: ROI 크기에 대한 비율, 추정 영역은 비움 근거로 사용하지 않음
+  registration_max_extrapolation: 0.35
+
+  # 부분 시야에서 물건 확정에 필요한 연결 면적: 추정 모서리·초점 차이로 인한 작은 변화는 UNKNOWN
+  registration_partial_component_pixels: 64
+  # 부분 시야의 중앙 RGB 밝기 차이 보정 한도: 넘으면 UNKNOWN
+  registration_partial_color_limit: 20.0
+
 # 노트북용 읽기 전용 카메라 웹 뷰어: omx_view 명령으로 시작
 view:
   # auto=top 카메라 우선, 없으면 front. wrist를 자동 선택하지 않음

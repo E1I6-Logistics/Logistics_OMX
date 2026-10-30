@@ -47,7 +47,9 @@ def require_commissioned(cfg):
         from .basket import BasketInspector
         try:
             inspector=BasketInspector(cfg)
-            if inspector.comparator and not inspector.spec['full_view_confirmed']:
+            if inspector.spec['registration_allow_partial'] and not inspector.spec['registration_visible_confirmed']:
+                raise ConfigError('Confirm visible-only inspection with omx_basket confirm-visible')
+            if inspector.comparator and not inspector.spec['registration_allow_partial'] and not inspector.spec['full_view_confirmed']:
                 raise ConfigError('Confirm entire basket interior and parking variation coverage before automatic unloading: unload.full_view_confirmed')
             if inspector.comparator and inspector.comparator.reference_clipped>inspector.spec['max_clipped_ratio']:
                 raise ConfigError('Empty RGB ROI reference is overexposed; automatic empty verification unavailable. Inspect using omx_basket watch')
@@ -120,9 +122,13 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0,diag
         age=result.get('frame_age_ms')
         if (inspector is None or inspector.latest is None or not isinstance(age,(int,float))
                 or not 0<=age<=spec['max_frame_age_s']*1000):
-            raise ConfigError('No fresh ROI available for comparison')
-        from .rgb_roi import comparison_view
-        image,details=comparison_view(inspector.reference,inspector.latest,spec)
+            raise ConfigError('No fresh ROI available for comparison: '+str(result.get('reason','UNKNOWN')))
+        if spec['registration_enabled']:
+            from .basket_registration import comparison_view
+        else:from .rgb_roi import comparison_view
+        if spec['registration_enabled']:
+            image,details=comparison_view(inspector.reference,inspector.latest,spec,inspector.reference_valid_mask,inspector.tracker.valid_mask)
+        else:image,details=comparison_view(inspector.reference,inspector.latest,spec)
         return dict(result,diagnostic_image=image,diagnostic=details,
                     diagnostic_frame_at=time.time()-(time.perf_counter()-inspector.last_frame))
 
@@ -148,6 +154,7 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0,diag
                                          dict(inspection_exposure=session.target['exposure'],camera_state='INSPECTION_LOW'))
                 profile=session.profile()
             if capture:
+                if isinstance(result,dict):return dict(result,exposure_profile=profile,timings=session.timing)
                 return dict(image=result,exposure_profile=profile,timings=session.timing)
             result.update(session.timing,camera_state='NORMAL_RESTORED');return finalize(result)
         return finalize(_basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,{}))
@@ -164,17 +171,27 @@ def _basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limi
     if capture=='low_snapshot':
         frame,_=read_camera(camera,spec['max_frame_age_s']);check_pose();return frame.copy()
     if capture:
-        samples=[];last=None;deadline=time.perf_counter()+spec['inspect_timeout_s']
+        tracker=None
+        if spec['registration_enabled']:
+            from .basket_registration import Tracker
+            tracker=Tracker(spec)
+        samples=[];sample_masks=[];last=None;deadline=time.perf_counter()+spec['inspect_timeout_s']
         while time.perf_counter()<deadline and len(samples)<spec['stable_samples']:
             check_pose();heartbeat()
             frame,stamp=read_camera(camera,spec['max_frame_age_s'])
             if last is None or stamp>last:
-                image=crop(frame,spec)
-                if samples and float(np.abs(image.astype(float)-samples[-1]).mean())>spec['stability_delta']:samples=[]
+                image=tracker.extract(frame) if tracker else crop(frame,spec)
+                if tracker and not tracker.last_info['pose_stable']:
+                    samples=[];sample_masks=[];last=stamp;time.sleep(spec['sample_interval_s']);continue
+                if samples and float(np.abs(image.astype(float)-samples[-1]).mean())>spec['stability_delta']:
+                    samples=[];sample_masks=[]
                 samples.append(image);last=stamp
+                if tracker:sample_masks.append(tracker.valid_mask.copy())
             time.sleep(spec['sample_interval_s'])
         if len(samples)<spec['stable_samples']:raise ConfigError('Empty reference camera not stable/fresh')
-        result=np.median(np.stack(samples),axis=0).astype(np.uint8);check_pose();return result
+        result=np.median(np.stack(samples),axis=0).astype(np.uint8);check_pose()
+        if tracker:return dict(image=result,registration_profile=tracker.last_profile,registration_mask=np.logical_and.reduce(sample_masks))
+        return result
     deadline=time.perf_counter()+spec['inspect_timeout_s'];iterations=0;last_print=None;next_print=0.
     while watch or time.perf_counter()<deadline:
         check_pose();heartbeat()

@@ -132,7 +132,10 @@ def send_progress(job_id, current, total):
 
 # 결과를 전송한다.
 def send_result(job_id, success, message=""):
-    publish(f"{robot_id}/result", {"job_id": job_id, "success": success, "message": message})
+    payload={"job_id":job_id,"success":success,"message":message}
+    if os.environ.get('OMX_MANAGED_UNLOAD')=='1' and os.environ.get('OMX_UNLOAD_VIEW_SCOPE')=='visible_only':
+        payload.update(inspection_scope='visible_only',basket_empty_verified=False,visible_region_empty_verified=bool(success))
+    publish(f"{robot_id}/result",payload)
 
 
 # =============================================================
@@ -348,9 +351,13 @@ def execute_unload(job_id, items):
             if phase == "RUNNING":
                 saw_running = True
             if phase == "DONE":
-                if status.get("reason") != ('basket_empty_confirmed' if managed else 'home_stillness_after_departure'):
+                partial=managed and os.environ.get('OMX_UNLOAD_VIEW_SCOPE')=='visible_only'
+                expected_reason='visible_empty_confirmed' if partial else 'basket_empty_confirmed' if managed else 'home_stillness_after_departure'
+                if status.get("reason") != expected_reason:
                     raise RuntimeError("Unexpected workstation completion reason")
-                if managed and status.get('basket_empty_verified') is not True:
+                if partial and (status.get('visible_region_empty_verified') is not True or status.get('basket_empty_verified') is not False or status.get('inspection_scope')!='visible_only'):
+                    raise RuntimeError('Visible-only completion evidence missing')
+                if managed and not partial and status.get('basket_empty_verified') is not True:
                     raise RuntimeError('Unload completion lacks empty-basket confirmation')
                 # Release completion event; next order must wait until READY again.
                 atomic_json(workstation_command, {"session": workstation_session,
@@ -413,7 +420,7 @@ def run_job(job_id, orders):
                     print("[SAFETY] Failed to signal rollout abort", flush=True)
 
     finally:
-        done_message = (("Basket empty confirmed; transfer count estimated, physical destination unverified" if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
+        done_message = ((("Visible basket region empty; unseen region unverified; transfer count estimated" if os.environ.get("OMX_UNLOAD_VIEW_SCOPE")=="visible_only" else "Basket empty confirmed; transfer count estimated, physical destination unverified") if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
                          else "Home stillness detected after movement; physical unloading unverified")
                         if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
         try:
@@ -436,7 +443,7 @@ def run_job(job_id, orders):
         if success:
             print(f"[ORDER] Job 완료: {job_id}", flush=True)
 
-        done_message = (("Basket empty confirmed; transfer count estimated, physical destination unverified" if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
+        done_message = ((("Visible basket region empty; unseen region unverified; transfer count estimated" if os.environ.get("OMX_UNLOAD_VIEW_SCOPE")=="visible_only" else "Basket empty confirmed; transfer count estimated, physical destination unverified") if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
                          else "Home stillness detected after movement; physical unloading unverified")
                         if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
         send_result(job_id, success, done_message if success else result_message)

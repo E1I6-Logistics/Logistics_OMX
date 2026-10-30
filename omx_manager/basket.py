@@ -3,12 +3,13 @@ import time
 from .config import ConfigError, number, only_keys, path_value
 from .rgb_roi import DEFAULTS as RGB_DEFAULTS
 from .exposure import DEFAULTS as EXPOSURE_DEFAULTS
+from .basket_registration import DEFAULTS as REGISTRATION_DEFAULTS
 
 DEFAULTS = dict(camera="top", roi=None, reference=None, reference_binding=None,
                 pixel_threshold=25, empty_ratio=.01, occupied_ratio=.04,
                 illumination_limit=18, stability_delta=3., sample_interval_s=.1,
                 stable_samples=3,confirmation_s=.2,max_frame_age_s=.25,inspect_timeout_s=12., max_attempts=16,
-                max_no_change=2, job_timeout_s=900., require_quantity_match=True,**RGB_DEFAULTS,**EXPOSURE_DEFAULTS)
+                max_no_change=2, job_timeout_s=900., require_quantity_match=True,**RGB_DEFAULTS,**EXPOSURE_DEFAULTS,**REGISTRATION_DEFAULTS)
 
 
 def options(cfg): return dict(DEFAULTS, **cfg.get("unload", {}))
@@ -45,6 +46,8 @@ def validate_unload(cfg):
     validate(spec)
     from .exposure import validate as validate_exposure
     validate_exposure(spec)
+    from .basket_registration import validate as validate_registration
+    validate_registration(spec)
     if spec['vision_method']=='low_template' and not spec['low_exposure_enabled']:
         raise ConfigError('low_template requires inspection-only low exposure')
     if spec['low_exposure_enabled'] and spec['vision_method']!='low_template':
@@ -56,6 +59,9 @@ def crop(image, spec):
     import numpy as np
     if not isinstance(image, np.ndarray) or image.dtype != np.uint8 or image.ndim != 3 or image.shape[2] != 3:
         raise ConfigError("Expected uint8 RGB camera image")
+    if spec.get("registration_enabled"):
+        from .basket_registration import Tracker
+        return Tracker(spec).extract(image)
     if spec["roi"] is None: raise ConfigError("Register a basket ROI first")
     x,y,w,h = spec["roi"]
     if x < 0 or y < 0 or min(w,h)<8 or y+h>image.shape[0] or x+w>image.shape[1]:
@@ -86,19 +92,32 @@ class BasketInspector:
             saved_signature=str(data['roi_signature'].item()) if 'roi_signature' in data else None
             import json
             self.exposure_profile=json.loads(str(data['exposure_profile'].item())) if 'exposure_profile' in data else None
+            self.registration_profile=json.loads(str(data['registration_profile'].item())) if 'registration_profile' in data else None
+            self.reference_valid_mask=data['registration_mask'].astype(bool) if 'registration_mask' in data else None
         if self.spec['low_exposure_enabled']:
             from .exposure import validate_profile
             validate_profile(self.exposure_profile,self.spec)
         elif self.exposure_profile is not None:raise ConfigError('Low-exposure reference cannot be compared with normal camera frames')
         enhanced=self.spec['vision_method'] in ('rgb_roi','low_template')
-        shape=(240,320,3) if enhanced else (120,160,3)
+        self.tracker=None
+        if self.spec['registration_enabled']:
+            from .basket_registration import Tracker,validate_profile
+            camera=cfg['hardware']['cameras'][self.spec['camera']]
+            validate_profile(self.registration_profile,self.spec,(camera['height'],camera['width']))
+            if self.spec['registration_allow_partial'] and self.reference_valid_mask is None:raise ConfigError('Partial view requires a new visible-area reference')
+            self.tracker=Tracker(self.spec,self.registration_profile)
+        elif self.registration_profile is not None:raise ConfigError('Registration reference requires alignment mode; recapture reference')
+        shape=(128,128,3) if self.tracker else (240,320,3) if enhanced else (120,160,3)
         if self.reference.shape != shape or self.reference.dtype != np.uint8 or roi != self.spec["roi"]:
             raise ConfigError("Empty reference image/ROI mismatch; register again")
         self.comparator=None
         if enhanced:
             from .rgb_roi import Comparator,signature
             if saved_signature!=signature(self.spec):raise ConfigError('RGB ROI/polygon reference changed; run omx_basket capture with an empty basket')
-            self.comparator=Comparator(self.reference,self.spec)
+            if self.tracker:
+                from .basket_registration import Comparator as RegisteredComparator
+                self.comparator=RegisteredComparator(self.reference,self.spec,self.reference_valid_mask)
+            else:self.comparator=Comparator(self.reference,self.spec)
         self.reference16=self.reference.astype(np.int16)
         self.reference_mean=self.reference.mean(axis=(0,1))
         self.reset()
@@ -133,14 +152,25 @@ class BasketInspector:
         if self.last_sample is not None and not 0 < now-self.last_sample <= 2*self.spec["sample_interval_s"]+.1:
             self.samples=0;self.since=None
         begun=time.perf_counter()
-        current = crop(image,self.spec)
+        if self.tracker:
+            from .basket_registration import ViewError
+            try:current=self.tracker.extract(image)
+            except ViewError as exc:
+                self.samples=0;self.since=None;self.verdict=None;self.previous=None;self.latest=None;self.ratio=None
+                self.last_sample=now;self.last_frame=frame_timestamp;self.reason=str(exc)
+                self.evidence=dict(quality_flags=[str(exc)],registration='REJECTED',features_computed=False)
+                self.processing_ms=(time.perf_counter()-begun)*1000
+                return 'UNKNOWN'
+        else:current=crop(image,self.spec)
         self.latest=current
         self.last_sample=now; self.last_frame=frame_timestamp
         # Reuse immutable reference statistics and one small int16 ROI buffer.
         # Full camera frames stay in the camera's same-process latest-frame buffer.
         current16=current.astype(np.int16)
         if self.comparator:
-            self.evidence=self.comparator.compare(current);verdict=self.evidence['verdict'];self.ratio=self.evidence['changed_ratio']
+            self.evidence=self.comparator.compare(current,self.tracker.valid_mask) if self.tracker else self.comparator.compare(current)
+            if self.tracker:self.evidence.update(self.tracker.last_info)
+            verdict=self.evidence['verdict'];self.ratio=self.evidence['changed_ratio']
         else:
             self.ratio=float((np.max(np.abs(current16-self.reference16),axis=2)>=self.spec['pixel_threshold']).mean())
             illumination=float(np.abs(current.mean(axis=(0,1))-self.reference_mean).max())
@@ -148,6 +178,7 @@ class BasketInspector:
             if illumination>self.spec['illumination_limit']:verdict='UNKNOWN'
         difference=None if self.previous is None else np.abs(current16-self.previous)
         stable = difference is not None and float(difference[self.comparator.mask].mean() if self.comparator else difference.mean()) <= self.spec["stability_delta"]
+        if self.tracker:stable=stable and self.tracker.last_info['pose_stable']
         continuing=stable and verdict==self.verdict and verdict!='UNKNOWN'
         self.samples=self.samples+1 if continuing else 1 if verdict!='UNKNOWN' else 0
         self.since=self.since if continuing and self.since is not None else now if verdict!='UNKNOWN' else None
@@ -169,7 +200,10 @@ class BasketInspector:
         if not self.comparator:return changed_ratio(before,after,self.spec['pixel_threshold'])>=self.spec['occupied_ratio']
         from .rgb_roi import Comparator
         spec=dict(self.spec,full_view_confirmed=True)
-        evidence=Comparator(before,spec).compare(after)
+        if self.tracker:
+            from .basket_registration import Comparator as RegisteredComparator
+            evidence=RegisteredComparator(before,spec,self.comparator.reference_mask).compare(after,(before.max(2)>0)&(after.max(2)>0))
+        else:evidence=Comparator(before,spec).compare(after)
         return evidence['verdict']=='OCCUPIED'
 
 

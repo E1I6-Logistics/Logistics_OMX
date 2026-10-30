@@ -45,8 +45,9 @@ def edit_value(cfg,key,text):
     nodes=key.split("."); section=result
     for part in nodes[:-1]: section=section[part]
     section[nodes[-1]]=yaml.safe_load(text)
-    if key in ('unload.roi','unload.roi_polygon'):
+    if key in ('unload.roi','unload.roi_polygon') or key.startswith('unload.registration_') and key!='unload.registration_visible_confirmed':
         result['unload']['full_view_confirmed']=False
+        result['unload']['registration_visible_confirmed']=False
     validate(result)
     return result
 
@@ -132,7 +133,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
             from .commissioning import initialize
             if cfg['role']!='unload':raise ValueError('Low-exposure basket inspection is for OMX3/4')
             updated=initialize(cfg)
-            if value=='off':updated['unload'].update(low_exposure_enabled=False,vision_method='rgb_roi')
+            if value=='off':updated['unload'].update(low_exposure_enabled=False,vision_method='rgb_roi',registration_enabled=False,registration_allow_partial=False)
             else:updated['unload'].update(low_exposure_enabled=True,inspection_exposure=float(value),vision_method='low_template',full_view_confirmed=False)
             save(path,updated);print('Inspection mode saved. Test low-snapshot, then recapture empty reference. Home/model camera configuration preserved.');return
         if command=='tune':
@@ -173,7 +174,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 if digest(path)!=original: raise RuntimeError('YAML changed while sampling; registration refused')
                 require_home(updated)
                 save(path,updated);print('Observed pose registered. No motor writes; return routes remain unapproved until route-test.');return
-            elif command in ('basket-capture','basket-check','basket-snapshot','basket-low-snapshot','basket-watch','basket-diagnose'):
+            elif command in ('basket-capture','basket-check','basket-snapshot','basket-low-snapshot','basket-watch','basket-diagnose','basket-pose'):
                 from .commissioning import basket_operation,initialize
                 if cfg['role']!='unload': raise ValueError('Basket inspection is for OMX3/4')
                 if command=='basket-diagnose':
@@ -185,13 +186,21 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                     result['diagnostic_path']=str(destination)
                     print(json.dumps(result,ensure_ascii=False,indent=2))
                     print('Read-only diagnostic saved. Reference, thresholds and counting settings unchanged.');return result
-                capture_mode='snapshot' if command=='basket-snapshot' else 'low_snapshot' if command=='basket-low-snapshot' else command=='basket-capture'
+                capture_mode='snapshot' if command=='basket-snapshot' else 'low_snapshot' if command in ('basket-low-snapshot','basket-pose') else command=='basket-capture'
                 result=basket_operation(cfg,device,capture=capture_mode,watch=command=='basket-watch',samples_limit=samples)
                 if command=='basket-watch':return result
                 if command=='basket-check': print(json.dumps(result));return result
-                exposure_profile=None
+                exposure_profile=None;registration_profile=None;registration_mask=None
                 if isinstance(result,dict):
-                    exposure_profile=result.get('exposure_profile');result=result['image']
+                    exposure_profile=result.get('exposure_profile');registration_profile=result.get('registration_profile');registration_mask=result.get('registration_mask');result=result['image']
+                if command=='basket-pose':
+                    import cv2
+                    from .basket import options
+                    from .basket_registration import Tracker,pose_view
+                    spec=options(cfg);tracker=Tracker(spec);tracker.extract(result)
+                    destination=state_dir(cfg)/'basket_pose.png';destination.parent.mkdir(parents=True,exist_ok=True)
+                    if not cv2.imwrite(str(destination),pose_view(result,spec,tracker.last_profile)):raise OSError('Cannot save tray pose preview')
+                    print(json.dumps(dict(tracker.last_info,path=str(destination)),ensure_ascii=False,indent=2));return
                 if command=='basket-low-snapshot':
                     import cv2
                     destination=state_dir(cfg)/'basket_low.png';destination.parent.mkdir(parents=True,exist_ok=True)
@@ -217,7 +226,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 destination.parent.mkdir(parents=True,exist_ok=True)
                 from .rgb_roi import signature
                 from .basket import options
-                np.savez_compressed(destination,image=result,roi=updated['unload']['roi'],roi_signature=signature(options(updated)),exposure_profile=json.dumps(exposure_profile))
+                np.savez_compressed(destination,image=result,roi=updated['unload']['roi'],roi_signature=signature(options(updated)),exposure_profile=json.dumps(exposure_profile),registration_profile=json.dumps(registration_profile),registration_mask=registration_mask if registration_mask is not None else np.ones(result.shape[:2],np.uint8))
                 updated['unload']['reference']=str(destination)
                 updated['unload']['reference_binding']=registration_binding(cfg)
                 if digest(path)!=original: raise RuntimeError('YAML changed while sampling; registration refused')
@@ -225,7 +234,10 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 print('Operator-confirmed empty reference registered. Test empty AND occupied baskets before production.')
                 if options(updated)['vision_method'] in ('rgb_roi','low_template'):
                     from .rgb_roi import Comparator
-                    spec=options(updated);clipped=Comparator(result,spec).reference_clipped
+                    spec=options(updated)
+                    if spec['registration_enabled']:
+                        from .basket_registration import Comparator
+                    clipped=Comparator(result,spec).reference_clipped
                     if clipped>spec['max_clipped_ratio']:
                         print(f'[BASKET] ROI_OVEREXPOSED: clipped={clipped:.3f}; automatic EMPTY verification unavailable. Original camera/model input was not changed.')
                     if spec['low_exposure_enabled']:
@@ -287,7 +299,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True,help="params/omx1.yaml etc.")
-    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose"))
+    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose","basket-pose"))
     parser.add_argument("--confirm-motion",action="store_true")
     parser.add_argument("--expected-device",choices=("omx1","omx2","omx3","omx4"),help="Launcher device/YAML consistency check")
     parser.add_argument("--key");parser.add_argument("--value")

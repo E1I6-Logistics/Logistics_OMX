@@ -48,6 +48,7 @@ def acknowledge_recovery(cfg):
 def build(cfg, config_path, python=sys.executable, session=None, calibration_item=None):
     directory = state_dir(cfg); session = session or uuid.uuid4().hex
     env = os.environ.copy()
+    env.pop("OMX_UNLOAD_VIEW_SCOPE",None)
     for key in ('OMX_CYCLE_CALIBRATION','OMX_CALIBRATION_ITEM','OMX_CALIBRATION_COMMAND','OMX_CALIBRATION_STATUS',
                 'OMX_CALIBRATION_OUTPUT','OMX_CALIBRATION_PARENT_PID','OMX_CALIBRATION_PARENT_START'):
         env.pop(key,None)
@@ -85,6 +86,7 @@ def build(cfg, config_path, python=sys.executable, session=None, calibration_ite
         env.update(OMX_WORKSTATION_MODE="true", OMX_WORKSTATION_SESSION=session,OMX_MANAGED_UNLOAD='1',
             OMX_WORKSTATION_STATUS_FILE=str(directory/"workstation_status.json"), OMX_WORKSTATION_CONTROL_FILE=str(directory/"workstation_command.json"))
         from .basket import options as unload_options
+        env['OMX_UNLOAD_VIEW_SCOPE']='visible_only' if unload_options(cfg)['registration_allow_partial'] else 'full'
         env['OMX_UNLOAD_TIMEOUT_S']=str(unload_options(cfg)['job_timeout_s']+timing['startup_timeout_s'])
         generated["workstation_status.json"]={"session":session,"phase":"BOOTING","pid":None}
         # Never consume a stale command from a previous launcher instance.
