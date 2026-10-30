@@ -39,10 +39,12 @@ def run(strategy,ctx,send_action,make_timer):
     job_started=cycle_started=inspect_started=0.
     baseline=None;after_cycle=False;next_inspect=0.
     basket_path=status_path.with_name('basket_status.json')
-    basket_tag=None;next_basket_report=0.
+    basket_tag=None;next_basket_report=0.;last_basket_snapshot=None
 
     def basket_report(snapshot):
-        nonlocal basket_tag,next_basket_report
+        nonlocal basket_tag,next_basket_report,last_basket_snapshot
+        snapshot=dict(snapshot,job_id=job,session=session,pid=os.getpid())
+        last_basket_snapshot=snapshot
         tag=(snapshot['verdict'],snapshot.get('candidate'),snapshot.get('reason'),snapshot.get('camera_state'),snapshot.get('restore_verified'))
         now=time.perf_counter()
         if tag!=basket_tag or now>=next_basket_report:
@@ -86,7 +88,7 @@ def run(strategy,ctx,send_action,make_timer):
                 engine.pause();strategy.reset_control_state()
                 initialize_home(inner,stopped=stop.is_set)
                 inspect();continue
-            if phase=='DONE':
+            if phase in ('DONE','INSPECTION_FAILED'):
                 if same and command.get('command')=='CLEAR':
                     strategy.reset_control_state();job=None;status('READY')
                 else: stop.wait(strategy.config.workstation_poll_s)
@@ -103,12 +105,24 @@ def run(strategy,ctx,send_action,make_timer):
                 camera=inner.cameras[options['camera']]
                 engine.pause()
                 if options['low_exposure_enabled']:
-                    from .exposure import inspect as inspect_low
+                    from .exposure import inspect as inspect_low,InspectionUncertain
                     def check_home():
                         q=inner.get_joint_observation()
                         if max(errors(q,cfg['home']['target']).values())>cfg['home']['arrival_tolerance']:
                             raise RuntimeError('Arm moved away from inspection Home')
-                    verdict=inspect_low(camera,cfg,inspector,guard=check_home,stopped=stop.is_set,report=basket_report)
+                    try:
+                        verdict=inspect_low(camera,cfg,inspector,guard=check_home,stopped=stop.is_set,report=basket_report)
+                    except InspectionUncertain as exc:
+                        check_home()
+                        # Exposure Session restored/verified before this catch.
+                        # Keep the loaded model paused; fail only this job.
+                        failure=dict(last_basket_snapshot or {},failure_at=time.time(),message=str(exc),
+                                     camera_state='NORMAL_RESTORED',restore_verified=True,job_id=job,session=session)
+                        write_json(status_path.with_name('basket_failure.json'),failure)
+                        logger.warning('[BASKET] Inspection job failed; cameras/model remain loaded: %s',exc)
+                        status('INSPECTION_FAILED',message=str(exc),basket_empty_verified=False,
+                               visible_region_empty_verified=False,restore_verified=True)
+                        continue
                     check_home();now=time.perf_counter()
                 else:
                     if hasattr(inner,'get_joint_observation') and hasattr(camera,'read_latest_with_timestamp'):

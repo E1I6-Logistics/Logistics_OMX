@@ -240,6 +240,27 @@ class OmxFollower(Robot):
         self.bus.sync_write("Goal_Position", goal_pos)
         return {f"{motor}.pos": val for motor, val in goal_pos.items()}
 
+    def hold_current_position(self):
+        """One final hold command; keep torque, modes, gains and gripper goal."""
+        if not self.bus.is_connected:return
+        self._omx_last_health=-1e9
+        self._check_motor_health(require_torque=True)
+        from omx_manager.home import joints
+        # Read the bus directly: a failed camera must not prevent a healthy
+        # motor-only hold during cleanup.
+        raw=self.bus.sync_read('Present_Position',normalize=False)
+        for name,value in raw.items():
+            cal=self.calibration[name]
+            if not cal.range_min<=value<=cal.range_max:
+                raise RuntimeError('Shutdown hold refused: raw position outside calibration')
+        q=joints(self.bus.sync_read('Present_Position'))
+        goal={name:value for name,value in q.items() if name!='gripper'}
+        for name in goal:
+            if self.bus.read('Operating_Mode',name)!=4:
+                raise RuntimeError('Motor mode mismatch; shutdown hold refused')
+        self.bus.sync_write('Goal_Position',goal)
+        logger.info('[HOLD] Arm goal latched to measured pose; torque and gripper goal preserved')
+
     def disconnect(self):
         from omx_manager.hardware import cleanup_resources
         failures = cleanup_resources(robot=self)

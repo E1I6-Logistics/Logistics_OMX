@@ -111,7 +111,8 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None, 
             f"target={target[joint]:.3f} tolerance={h['arrival_tolerance']:.3f}"
             for joint in sorted(JOINTS, key=lambda name: err[name], reverse=True)
             if err[joint] > h["arrival_tolerance"]
-        ) or "all joints within arrival tolerance"
+        ) or ("all joints within arrival tolerance; waiting for continuous stillness; " +
+              "; ".join(f"{joint} step_delta={abs(q[joint]-last_q[joint]):.3f}" for joint in JOINTS))
 
     def emit(phase, now, reason=None, force=False):
         nonlocal next_report, report_warned
@@ -122,6 +123,7 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None, 
                        "tolerance": h["arrival_tolerance"],
                        "count_tolerance": h["tolerance"][joint],
                        "goal": goal[joint], "following_error": abs(goal[joint] - q[joint]),
+                       "movement_delta": abs(q[joint]-last_q[joint]),
                        "ok": abs(q[joint] - target[joint]) <= h["arrival_tolerance"]}
                 for joint in JOINTS}
         try:

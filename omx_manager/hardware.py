@@ -45,8 +45,12 @@ def cleanup_resources(engine=None, robot=None):
         if preview is not None: attempt("viewer", preview.close)
     if engine is not None: attempt("inference", engine.stop)
     if robot is not None:
-        for name, camera in getattr(robot, "cameras", {}).items(): attempt("camera." + name, camera.disconnect)
         bus = getattr(robot, "bus", None)
+        if bus is not None:
+            hold = getattr(robot, 'hold_current_position', None)
+            if callable(hold) and not robot.config.disable_torque_on_disconnect:
+                attempt('motor_hold',hold)
+        for name, camera in getattr(robot, "cameras", {}).items(): attempt("camera." + name, camera.disconnect)
         if bus is not None:
             def close_bus():
                 try:
@@ -63,6 +67,7 @@ class FollowerBus:
         self.bus = None
         self.robot = None
         self.lease = None
+        self.motion_sent = False
     def __enter__(self):
         check_files(self.cfg, models=False)
         hw = self.cfg["hardware"]
@@ -125,10 +130,22 @@ class FollowerBus:
         for j in JOINTS:
             if self.bus.read("Torque_Enable", j) != 1: raise RuntimeError(f"Torque OFF: {j}; tool will not enable it automatically")
         self.bus.sync_write("Goal_Position", values)
+        self.motion_sent = True
+    def hold_current_position(self):
+        q=self.read()
+        arms={joint:value for joint,value in q.items() if joint!='gripper'}
+        for joint in arms:
+            if self.bus.read('Torque_Enable',joint)!=1 or self.bus.read('Operating_Mode',joint)!=4:
+                raise RuntimeError('Shutdown hold refused: torque/mode mismatch')
+        self.bus.sync_write('Goal_Position',arms)
+        logger.info('[HOLD] Tool motion ended; arm goal latched to measured pose, gripper preserved')
     def __exit__(self, exc_type, exc_value, traceback):
         failures = []
         try:
             if self.bus is not None:
+                if self.motion_sent:
+                    try:self.hold_current_position()
+                    except Exception as exc:logger.warning('Final arm hold unavailable: %s',exc)
                 _close_port_if_open(self.bus)
         except Exception as exc:
             failures.append(exc)

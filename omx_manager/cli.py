@@ -104,7 +104,10 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
         from .diagnostics import read_json
         data=read_json(state_dir(cfg)/'basket_status.json')
         if not data or not isinstance(data.get('at'),(int,float)) or not 0<=time.time()-data['at']<=.5:
-            data=dict(verdict='UNKNOWN',reason='NO_FRESH_BASKET_SNAPSHOT')
+            saved=data
+            data=dict(verdict='UNKNOWN',reason='NO_FRESH_BASKET_SNAPSHOT',
+                      snapshot_age_s=time.time()-saved['at'] if isinstance(saved.get('at'),(int,float)) else None,
+                      last_snapshot=saved,last_failure=read_json(state_dir(cfg)/'basket_failure.json'))
         print(json.dumps(data,ensure_ascii=False));return data
     if command=="validate":
         print(f"YAML valid: {cfg['device_id']}; home_registered={cfg['home']['target'] is not None}"); return
@@ -168,7 +171,11 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
         original=digest(path)
         original_binding=binding(cfg) if command == "capture" else None
         with FollowerBus(cfg) as device:
-            if command in ('stage-capture','route-capture'):
+            if command=='motor-check':
+                from .motor_diagnostics import save as motor_report
+                result=motor_report(device,cfg,samples or 20)
+                print(json.dumps({key:value for key,value in result.items() if key!='samples'},ensure_ascii=False,indent=2));return result
+            elif command in ('stage-capture','route-capture'):
                 from .commissioning import capture_stage,capture_route
                 updated=capture_stage(cfg,device,item,name) if command=='stage-capture' else capture_route(cfg,device,name)
                 if digest(path)!=original: raise RuntimeError('YAML changed while sampling; registration refused')
@@ -299,7 +306,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True,help="params/omx1.yaml etc.")
-    parser.add_argument("command",choices=("menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose","basket-pose"))
+    parser.add_argument("command",choices=("motor-check","menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose","basket-pose"))
     parser.add_argument("--confirm-motion",action="store_true")
     parser.add_argument("--expected-device",choices=("omx1","omx2","omx3","omx4"),help="Launcher device/YAML consistency check")
     parser.add_argument("--key");parser.add_argument("--value")

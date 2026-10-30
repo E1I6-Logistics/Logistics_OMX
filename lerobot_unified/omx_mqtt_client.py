@@ -343,6 +343,17 @@ def execute_unload(job_id, items):
         if phase == "ERROR":
             raise RuntimeError(f"Workstation fault: {status.get('message', '')}")
         if status.get("job_id") == job_id:
+            if phase=='INSPECTION_FAILED':
+                if status.get('restore_verified') is not True:
+                    raise RuntimeError('Inspection failed without verified restoration')
+                failure_message=status.get('message','Basket inspection uncertain')
+                atomic_json(workstation_command,{'session':workstation_session,'command':'CLEAR',
+                                                'job_id':str(job_id),'requested_at':time.time()})
+                for _ in range(100):
+                    if workstation_ready():break
+                    time.sleep(.1)
+                else:raise RuntimeError('Inspection failed and workstation did not return READY')
+                raise RuntimeError('Basket inspection failed; idle restored; '+failure_message)
             if managed and status.get('estimated_transfers')!=last_progress:
                 last_progress=status.get('estimated_transfers',0)
                 publish(f'{robot_id}/progress',dict(job_id=job_id,current=last_progress,
@@ -423,9 +434,11 @@ def run_job(job_id, orders):
         done_message = ((("Visible basket region empty; unseen region unverified; transfer count estimated" if os.environ.get("OMX_UNLOAD_VIEW_SCOPE")=="visible_only" else "Basket empty confirmed; transfer count estimated, physical destination unverified") if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
                          else "Home stillness detected after movement; physical unloading unverified")
                         if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
+        journal_committed=True
         try:
             journal.finish(job_id, success, done_message if success else result_message)
         except Exception as exc:
+            journal_committed=False
             success = False
             result_message = f"Journal commit failed: {exc}"
             abort_path = os.environ.get("OMX_ABORT_FILE", "")
@@ -433,7 +446,9 @@ def run_job(job_id, orders):
         # 작업이 끝난 뒤 상태를 먼저 정리해야 Result 직후의 다음 Command를 받을 수 있다.
         current_job_id = None
         current_orders = None
-        current_state = ("IDLE" if success and (robot_id not in WORKSTATION_IDS or workstation_ready()) else "ERROR")
+        current_state = ("IDLE" if journal_committed and
+                         ((robot_id in WORKSTATION_IDS and workstation_ready()) or
+                          (success and robot_id not in WORKSTATION_IDS)) else "ERROR")
 
         try:
             send_status()

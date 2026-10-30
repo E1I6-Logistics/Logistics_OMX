@@ -11,6 +11,12 @@ DIAGNOSTIC_DEFAULTS = {
 SERVICE_DEFAULTS = {"restart_s":5.,"stop_timeout_s":45.,"enable_on_boot":False}
 
 COMMENTS = {
+    'camera_auto_reconnect':'영상 읽기 실패 시 모델 명령을 멈추고 같은 USB 카메라 재연결 시도: 토크·모터 모드는 변경하지 않음',
+    'camera_reconnect_attempts':'카메라 자동 재연결 최대 횟수(1~3): 실패 시 복구 대기, 미완료 주문 자동 재실행 없음',
+    'camera_reconnect_interval_s':'카메라 재연결 시도 사이 대기 시간(초)',
+    'interrupted_order_action':'집기 중단 주문 처리: fail_and_idle=기록·실패 보존 후 홈 점검 및 새 주문 대기, require_ack=기존 수동 확인',
+    'inspection_median_frames':'신선하게 정렬한 최근 검사 영상의 중앙값 장수(1/3/5): 3 권장, 움직임·오래된 영상이면 초기화',
+    'inspection_control_poll_s':'검사 중 노출·게인 확인 간격(초): 복원 전에는 별도로 모든 설정을 다시 확인',
     'registration_partial_component_pixels':'부분 시야에서 물건 확정에 필요한 연결 면적: 추정 모서리·초점 차이로 인한 작은 변화는 UNKNOWN',
     'registration_partial_color_limit':'부분 시야의 중앙 RGB 밝기 차이 보정 한도: 넘으면 UNKNOWN',
 

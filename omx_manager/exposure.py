@@ -12,7 +12,10 @@ logger=logging.getLogger(__name__)
 DEFAULTS=dict(low_exposure_enabled=False,inspection_exposure=None,
               exposure_discard_frames=5,exposure_settle_s=.2,
               exposure_switch_timeout_s=5.,exposure_restore_luma_tolerance=8.,
-              inspection_min_luma=15.,inspection_max_dark_ratio=.3)
+              inspection_min_luma=15.,inspection_max_dark_ratio=.3,inspection_control_poll_s=.5)
+
+class InspectionUncertain(TimeoutError):
+    """Fresh inspection could not decide; sensor restoration has completed."""
 
 
 def validate(spec):
@@ -24,7 +27,7 @@ def validate(spec):
     if type(spec['exposure_discard_frames']) is not int or not 2<=spec['exposure_discard_frames']<=30:
         raise ConfigError('exposure_discard_frames must be 2..30')
     for key,lo,hi in (('exposure_settle_s',.1,2),('exposure_switch_timeout_s',2,20),('exposure_restore_luma_tolerance',1,20),
-                      ('inspection_min_luma',5,60),('inspection_max_dark_ratio',.05,.5)):
+                      ('inspection_min_luma',5,60),('inspection_max_dark_ratio',.05,.5),('inspection_control_poll_s',.1,1.)):
         number(spec[key],key,lo,hi)
     if spec['exposure_settle_s']>=spec['exposure_switch_timeout_s']:raise ConfigError('Exposure settle exceeds timeout')
 
@@ -338,18 +341,30 @@ def inspect(camera,cfg,inspector,*,guard=lambda:None,stopped=lambda:False,report
     from .hooks import heartbeat
     start=time.perf_counter();inspector.reset()
     with Session(camera,cfg,target=inspector.exposure_profile,guard=guard,stopped=stopped) as session:
-        deadline=time.perf_counter()+inspector.spec['inspect_timeout_s']
+        deadline=time.perf_counter()+inspector.spec['inspect_timeout_s'];next_control_check=0.
         while time.perf_counter()<deadline:
             if stopped():raise InterruptedError('Inspection stopped')
             guard();heartbeat()
-            frame,stamp=read_camera(camera,inspector.spec['max_frame_age_s'])
-            session.verify()
+            # USB control reads can be slow. Check them before acquiring the
+            # latest RGB frame, never age a frame while waiting for controls.
+            if time.perf_counter()>=next_control_check:
+                session.verify();next_control_check=time.perf_counter()+inspector.spec['inspection_control_poll_s']
+            try:frame,stamp=read_camera(camera,inspector.spec['max_frame_age_s'])
+            except TimeoutError:
+                inspector.update(None,time.perf_counter(),None)
+                row=inspector.snapshot(time.time());row.update(camera_state='INSPECTION_LOW',restore_verified=False);report(row)
+                time.sleep(inspector.spec['sample_interval_s']);continue
             result=inspector.update(frame,time.perf_counter(),stamp)
             row=inspector.snapshot(time.time());row.update(camera_state='INSPECTION_LOW',restore_verified=False)
             report(row)
             if result!='UNKNOWN':break
             time.sleep(inspector.spec['sample_interval_s'])
-        else:raise TimeoutError('Low-exposure basket inspection remained UNKNOWN; no model action permitted')
+        else:
+            failure=inspector.snapshot(time.time())
+            details={key:failure.get(key) for key in ('reason','candidate','confirmation_reset','quality_flags','frame_age_ms','observation_gap_s','component_pixels','weak_component_pixels')}
+            # Context exit verifies/restores controls before this exception
+            # reaches the workstation's recoverable inspection branch.
+            raise InspectionUncertain('Low-exposure basket inspection remained UNKNOWN; no model action permitted; '+json.dumps(details))
     row=inspector.snapshot(time.time());row.update(session.timing,inspection_total_s=time.perf_counter()-start,camera_state='NORMAL_RESTORED',restore_verified=True)
     row['frame_age_ms']=(time.perf_counter()-inspector.last_frame)*1000
     report(row)

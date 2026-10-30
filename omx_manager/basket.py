@@ -9,7 +9,7 @@ DEFAULTS = dict(camera="top", roi=None, reference=None, reference_binding=None,
                 pixel_threshold=25, empty_ratio=.01, occupied_ratio=.04,
                 illumination_limit=18, stability_delta=3., sample_interval_s=.1,
                 stable_samples=3,confirmation_s=.2,max_frame_age_s=.25,inspect_timeout_s=12., max_attempts=16,
-                max_no_change=2, job_timeout_s=900., require_quantity_match=True,**RGB_DEFAULTS,**EXPOSURE_DEFAULTS,**REGISTRATION_DEFAULTS)
+                max_no_change=2, job_timeout_s=900., require_quantity_match=True,inspection_median_frames=3,**RGB_DEFAULTS,**EXPOSURE_DEFAULTS,**REGISTRATION_DEFAULTS)
 
 
 def options(cfg): return dict(DEFAULTS, **cfg.get("unload", {}))
@@ -20,6 +20,8 @@ def validate_unload(cfg):
     if not isinstance(spec, dict): raise ConfigError("unload must be a mapping")
     only_keys(spec, " ".join(DEFAULTS), "unload")
     spec = options(cfg)
+    if type(spec['inspection_median_frames']) is not int or spec['inspection_median_frames'] not in (1,3,5):
+        raise ConfigError('inspection_median_frames must be 1, 3 or 5')
     if spec["camera"] not in cfg["hardware"]["cameras"] and cfg["role"] == "unload":
         raise ConfigError("unload.camera must be an existing fixed camera")
     roi = spec["roi"]
@@ -134,6 +136,7 @@ class BasketInspector:
         self.since=None
         self.reason='WAIT_FRAME';self.processing_ms=0.;self.frame_age_ms=None
         self.evidence={}
+        self.temporal_frames=[];self.temporal_masks=[];self.latest_valid_mask=None
         self.frame_delta_mean=None;self.confirmation_reset='FIRST_FRAME';self.confirmation_hold_s=0.;self.observation_gap_s=None
 
     def update(self, image, now, frame_timestamp):
@@ -143,6 +146,7 @@ class BasketInspector:
         self.frame_age_ms=None if frame_timestamp is None else (now-frame_timestamp)*1000
         if frame_timestamp is None or not 0<=now-frame_timestamp<=self.spec['max_frame_age_s']:
             self.samples=0;self.since=None;self.verdict=None;self.reason='STALE_FRAME'
+            self.temporal_frames=[];self.temporal_masks=[]
             self.frame_delta_mean=None;self.confirmation_reset='STALE_FRAME';self.confirmation_hold_s=0.
             return self.result
         if self.last_frame is not None and frame_timestamp<=self.last_frame:
@@ -155,27 +159,43 @@ class BasketInspector:
         gap_reset=self.last_sample is not None and not 0 < now-self.last_sample <= 2*self.spec['sample_interval_s']+.1
         if gap_reset:
             self.samples=0;self.since=None
+            self.temporal_frames=[];self.temporal_masks=[]
         begun=time.perf_counter()
         if self.tracker:
             from .basket_registration import ViewError
             try:current=self.tracker.extract(image)
             except ViewError as exc:
                 self.samples=0;self.since=None;self.verdict=None;self.previous=None;self.latest=None;self.ratio=None
+                self.temporal_frames=[];self.temporal_masks=[]
                 self.last_sample=now;self.last_frame=frame_timestamp;self.reason=str(exc)
                 self.frame_delta_mean=None;self.confirmation_reset=str(exc);self.confirmation_hold_s=0.
                 self.evidence=dict(quality_flags=[str(exc)],registration='REJECTED',features_computed=False)
                 self.processing_ms=(time.perf_counter()-begun)*1000
                 return 'UNKNOWN'
         else:current=crop(image,self.spec)
-        self.latest=current
         self.last_sample=now; self.last_frame=frame_timestamp
+        # A small median uses only distinct, fresh, registered observations.
+        # Discard history when the tray moves; never blend unseen black pixels.
+        frames=self.spec['inspection_median_frames'] if self.tracker else 1
+        if self.tracker and not self.tracker.last_info['pose_stable']:
+            self.temporal_frames=[];self.temporal_masks=[]
+        self.temporal_frames.append(current);self.temporal_frames=self.temporal_frames[-frames:]
+        if self.tracker:
+            self.temporal_masks.append(self.tracker.valid_mask.copy());self.temporal_masks=self.temporal_masks[-frames:]
+            self.latest_valid_mask=np.logical_and.reduce(self.temporal_masks)
+        if frames>1 and len(self.temporal_frames)>=frames:
+            current=np.median(np.stack(self.temporal_frames),axis=0).astype(np.uint8)
+        self.latest=current
         # Reuse immutable reference statistics and one small int16 ROI buffer.
         # Full camera frames stay in the camera's same-process latest-frame buffer.
         current16=current.astype(np.int16)
         if self.comparator:
-            self.evidence=self.comparator.compare(current,self.tracker.valid_mask) if self.tracker else self.comparator.compare(current)
+            self.evidence=self.comparator.compare(current,self.latest_valid_mask) if self.tracker else self.comparator.compare(current)
             if self.tracker:self.evidence.update(self.tracker.last_info)
             verdict=self.evidence['verdict'];self.ratio=self.evidence['changed_ratio']
+            self.evidence.update(temporal_samples=len(self.temporal_frames),temporal_required=frames)
+            if len(self.temporal_frames)<frames:
+                verdict='UNKNOWN';self.evidence['evidence_reason']='TEMPORAL_WARMUP'
         else:
             self.ratio=float((np.max(np.abs(current16-self.reference16),axis=2)>=self.spec['pixel_threshold']).mean())
             illumination=float(np.abs(current.mean(axis=(0,1))-self.reference_mean).max())

@@ -92,8 +92,14 @@ def validate(cfg):
     only_keys(cfg["hardware"], "port calibration_file robot_id disable_torque_on_disconnect cameras", "hardware")
     only_keys(cfg["home"], "target binding tolerance hold_s unload_hold_s still_delta max_sample_gap_s capture_s capture_max_span arrival_tolerance move_speed move_timeout_s max_start_error max_step max_following_error", "home")
     only_keys(cfg["models"], "active_profile profiles", "models")
-    only_keys(cfg["runtime"], "broker_host broker_port cpu_threads fps cycle_timeout_s order_per_unit_s order_load_grace_s startup_timeout_s heartbeat_timeout_s shutdown_timeout_s", "runtime")
-    only_keys(cfg["recovery"], "retry_initial_s retry_max_s release_delay_s auto_home poll_s routes", "recovery")
+    only_keys(cfg["runtime"], "broker_host broker_port cpu_threads fps cycle_timeout_s order_per_unit_s order_load_grace_s startup_timeout_s heartbeat_timeout_s shutdown_timeout_s camera_auto_reconnect camera_reconnect_attempts camera_reconnect_interval_s", "runtime")
+    only_keys(cfg["recovery"], "retry_initial_s retry_max_s release_delay_s auto_home poll_s routes interrupted_order_action", "recovery")
+    if cfg['recovery'].get('interrupted_order_action','fail_and_idle') not in ('fail_and_idle','require_ack'):
+        raise ConfigError('Invalid recovery.interrupted_order_action')
+    if type(cfg['runtime'].get('camera_auto_reconnect',True)) is not bool:raise ConfigError('camera_auto_reconnect must be boolean')
+    attempts=cfg['runtime'].get('camera_reconnect_attempts',2)
+    if type(attempts) is not int or not 1<=attempts<=3:raise ConfigError('camera_reconnect_attempts must be 1..3')
+    number(cfg['runtime'].get('camera_reconnect_interval_s',1.),'camera_reconnect_interval_s',.2,5.)
     from .cycles import DEFAULTS as CYCLE_DEFAULTS
     only_keys(cfg["counting"], "leave_tolerance min_cycle_s stall_s progress_epsilon "+' '.join(CYCLE_DEFAULTS), "counting")
     hw = cfg["hardware"]

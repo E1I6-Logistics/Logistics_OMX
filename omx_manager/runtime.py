@@ -45,6 +45,39 @@ def acknowledge_recovery(cfg):
                 write_json(path, data)
             else: path.replace(destination)
 
+def settle_interrupted_pickup(cfg):
+    """Fail old orders without replay; retain IDs, progress and an audit copy.
+
+    Reaching a known pose is still enforced separately by preflight. This does
+    not assert that cargo was transferred or authorize a gripper release.
+    """
+    if cfg['role']!='pickup' or cfg['recovery'].get('interrupted_order_action','fail_and_idle')!='fail_and_idle':return False
+    directory=state_dir(cfg);path=directory/'inventory.json';journal=directory/'jobs.json'
+    jobs=json.loads(journal.read_text()) if journal.exists() else {}
+    if not isinstance(jobs,dict):raise OperatorRecoveryRequired('Invalid job journal; inspect locally')
+    inventory=json.loads(path.read_text()) if path.exists() else None
+    if inventory is not None:
+        if (not isinstance(inventory,dict) or inventory.get('capacity')!=8 or type(inventory.get('remaining')) is not int
+                or type(inventory.get('total_completed')) is not int or not 0<=inventory['remaining']<=8
+                or inventory['remaining']!=8-inventory['total_completed']):
+            raise OperatorRecoveryRequired('Invalid inventory state; inspect locally')
+    if any(not isinstance(row,dict) for row in jobs.values()):raise OperatorRecoveryRequired('Invalid job journal; inspect locally')
+    running=[key for key,row in jobs.items() if row.get('state')=='RUNNING']
+    if not running and not (inventory and inventory['remaining']):return False
+    at=time.time();archive=directory/'archive'/f'{time.time_ns()}_interrupted_pickup.json'
+    write_json(archive,dict(at=at,device=cfg['device_id'],inventory=inventory,jobs=jobs,
+                          physical_transfer_verified=False,job_replayed=False))
+    for key in running:
+        jobs[key].update(state='INTERRUPTED',success=False,message='Interrupted order failed on restart; no replay; cargo unverified',finished_at=at)
+    if running:write_json(journal,jobs)
+    # Do not infer remaining shelf stock. WAIT means no active order, as at boot.
+    if inventory:
+        path.unlink()
+        initialize_inventory(path)
+    write_json(directory/'interrupted_order.json',dict(at=at,job_ids=running,archive=str(archive),
+               action='FAILED_NO_REPLAY',physical_transfer_verified=False))
+    return True
+
 def build(cfg, config_path, python=sys.executable, session=None, calibration_item=None):
     directory = state_dir(cfg); session = session or uuid.uuid4().hex
     env = os.environ.copy()
@@ -70,6 +103,10 @@ def build(cfg, config_path, python=sys.executable, session=None, calibration_ite
         "--strategy.home_tolerance="+str(max(home["tolerance"].values())), "--strategy.home_leave_tolerance="+str(cfg["counting"]["leave_tolerance"]),
         "--strategy.home_hold_s="+str(home["hold_s"]), "--strategy.min_cycle_s="+str(cfg["counting"]["min_cycle_s"])]
     external_order = {"omx1": ("A", "B"), "omx2": ("C", "D"), "omx3": ("E",), "omx4": ("F",)}[cfg["device_id"]]
+    commands.extend(['--strategy.camera_auto_reconnect='+str(timing.get('camera_auto_reconnect',True)).lower(),
+                     '--strategy.camera_reconnect_attempts='+str(timing.get('camera_reconnect_attempts',2)),
+                     '--strategy.camera_reconnect_interval_s='+str(timing.get('camera_reconnect_interval_s',1.)),
+                     '--strategy.camera_status_path='+str(directory/'camera_status.json')])
     first=items[calibration_item or external_order[0]]
     commands.extend(["--policy.path="+str(path_value(first["path"])), "--task="+first["task"]])
     generated={}
@@ -137,6 +174,8 @@ class Supervisor:
         if verify_registration:
             check_files(cfg);require_commissioned(cfg)
         directory=state_dir(cfg)
+        if settle_interrupted_pickup(cfg):
+            self.message('[RECOVERY] Interrupted pickup archived as failed; no replay. Checking Home before accepting NEW orders')
         journal=directory/'jobs.json'
         if journal.exists() and any(row.get('state')=='RUNNING' for row in json.loads(journal.read_text()).values()):
             raise OperatorRecoveryRequired('Interrupted job; inspect cargo then request resume; no replay')

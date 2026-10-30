@@ -16,7 +16,9 @@ def initialize(cfg):
     if cfg['role']=='unload':
         unload=result.setdefault('unload',{})
         for key,value in DEFAULTS.items():unload.setdefault(key,copy.deepcopy(value))
-    for key,value in dict(auto_home=True,poll_s=5.,routes={}).items(): result['recovery'].setdefault(key,value)
+    for key,value in dict(auto_home=True,poll_s=5.,routes={},interrupted_order_action='fail_and_idle').items(): result['recovery'].setdefault(key,value)
+    for key,value in dict(camera_auto_reconnect=True,camera_reconnect_attempts=2,camera_reconnect_interval_s=1.).items():
+        result['runtime'].setdefault(key,value)
     return result
 
 
@@ -127,7 +129,7 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0,diag
             from .basket_registration import comparison_view
         else:from .rgb_roi import comparison_view
         if spec['registration_enabled']:
-            image,details=comparison_view(inspector.reference,inspector.latest,spec,inspector.reference_valid_mask,inspector.tracker.valid_mask)
+            image,details=comparison_view(inspector.reference,inspector.latest,spec,inspector.reference_valid_mask,inspector.latest_valid_mask)
         else:image,details=comparison_view(inspector.reference,inspector.latest,spec)
         return dict(result,diagnostic_image=image,diagnostic=details,
                     diagnostic_frame_at=time.time()-(time.perf_counter()-inspector.last_frame))
