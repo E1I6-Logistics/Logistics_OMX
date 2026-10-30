@@ -273,3 +273,26 @@ python3 scripts/repeat_manager_validation.py --runs 50
 - `metrics.json`: 최근 성능 스냅샷. 없어도 계측 비활성이면 정상.
 
 진단 파일 저장 실패는 가능한 한 제어와 분리하지만, 주문 기록·실제 모터 통신 오류는 정상 동작으로 숨기지 않습니다.
+
+
+## 10. observe에서 연결 오류가 발생했던 장비 업데이트
+
+`observe`에서 연결 직후 `DynamixelMotorsBus is not connected`가 발생하거나,
+연결 실패 뒤 `'NoneType' object has no attribute 'close'`가 나타나던 관리 도구 버그를 수정했습니다.
+관측 세션이 끝날 때까지 로봇 객체를 유지하고 열린 포트만 닫으며, 정리 실패가 최초 오류를 가리지 않도록 했습니다.
+이 수정은 실제 모터 오류나 잘못된 장치 경로를 정상으로 처리하지 않습니다.
+
+```bash
+# 기존 제어 프로그램/서비스를 종료한 다음 OMX 저장소에서 실행
+# 로봇에 단독 clone했다면 보통 ~/Logistics_OMX
+cd ~/Logistics_OMX
+git status
+git switch dev
+git pull --ff-only origin dev
+# 해당 팔 번호로 변경. 기존 state/config 파일을 다시 복사하거나 지우지 않습니다.
+./omx_control --config state/config/omx1.yaml observe
+```
+
+업데이트 후 OMX3에서 최초 연결 오류가 표시되면 `hardware.port`를
+실제 `/dev/serial/by-id/` 경로와 다시 비교하세요. 예전 close 오류만으로 최초 원인은 확정할 수 없습니다.
+`observe`는 카메라 영상 수신이나 모델 추론을 검증하지 않습니다.

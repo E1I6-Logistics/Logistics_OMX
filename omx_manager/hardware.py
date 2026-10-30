@@ -1,8 +1,17 @@
 """Follower-only bus access. NO leader, calibration write, mode write or torque enabling."""
 import fcntl
 import hashlib
+import logging
+import sys
 from pathlib import Path
 from .config import ROOT, JOINTS, path_value, check_files
+
+logger = logging.getLogger(__name__)
+
+def _close_port_if_open(bus):
+    # SDK closePort() dereferences ser even when openPort() never succeeded.
+    if bus.port_handler.is_open:
+        bus.port_handler.closePort()
 
 class Lock:
     def __init__(self, path): self.path = Path(path); self.fd = None
@@ -39,14 +48,18 @@ def cleanup_resources(engine=None, robot=None):
             def close_bus():
                 try:
                     if bus.is_connected: bus.disconnect(disable_torque=robot.config.disable_torque_on_disconnect)
-                finally: bus.port_handler.closePort()
+                finally: _close_port_if_open(bus)
             attempt("motor", close_bus)
         lease = getattr(robot, "_omx_port_lease", None)
         if lease is not None: attempt("port_lock", lambda: lease.__exit__(None, None, None))
     return failures
 
 class FollowerBus:
-    def __init__(self, cfg): self.cfg = cfg; self.bus = None; self.lease = None
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.bus = None
+        self.robot = None
+        self.lease = None
     def __enter__(self):
         check_files(self.cfg, models=False)
         hw = self.cfg["hardware"]
@@ -57,13 +70,15 @@ class FollowerBus:
             from lerobot.robots.omx_follower.config_omx_follower import OmxFollowerConfig
             cal = path_value(hw["calibration_file"])
             robot = OmxFollower(OmxFollowerConfig(port=str(path_value(hw["port"])), id=cal.stem, calibration_dir=cal.parent, cameras={}))
+            # Keep the owner alive: Robot.__del__ disconnects its motor bus.
+            self.robot = robot
             self.bus = robot.bus
             self.bus.connect()
             if not self.bus.is_calibrated: raise RuntimeError("Calibration differs from motors; automatic rewriting is forbidden")
             self.health()
             return self
         except BaseException:
-            self.__exit__(None, None, None)
+            self.__exit__(*sys.exc_info())
             raise
     def health(self):
         for j in JOINTS:
@@ -100,9 +115,26 @@ class FollowerBus:
         for j in JOINTS:
             if self.bus.read("Torque_Enable", j) != 1: raise RuntimeError(f"Torque OFF: {j}; tool will not enable it automatically")
         self.bus.sync_write("Goal_Position", values)
-    def __exit__(self, *_):
+    def __exit__(self, exc_type, exc_value, traceback):
+        failures = []
         try:
-            if self.bus is not None: self.bus.port_handler.closePort()
+            if self.bus is not None:
+                _close_port_if_open(self.bus)
+        except Exception as exc:
+            failures.append(exc)
         finally:
-            if self.lease: self.lease.__exit__(None, None, None)
-            self.bus = None; self.lease = None
+            try:
+                if self.lease:
+                    self.lease.__exit__(exc_type, exc_value, traceback)
+            except Exception as exc:
+                failures.append(exc)
+            finally:
+                self.bus = None
+                self.lease = None
+                # Release the robot only after closing the port, without changing torque.
+                self.robot = None
+        if failures:
+            if exc_type is None:
+                raise failures[0]
+            for failure in failures:
+                logger.warning("OMX observation cleanup: %s", failure)
