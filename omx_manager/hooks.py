@@ -52,9 +52,22 @@ def initialize_home(robot, stopped=lambda: False):
 class RolloutHome:
     def __init__(self,cfg,now,hold=None):
         self.cfg=cfg; self.detector=HomeDetector(cfg,now,hold=hold); self.next_report=0
-    def reset(self,now): self.detector.reset(now)
+        self.item=next(iter(cfg['models']['profiles'][cfg['models']['active_profile']]['items']))
+        self.reset(now)
+    def reset(self,now):
+        from .workflow import StageTracker, require_stages
+        self.detector.reset(now)
+        self.tracker=StageTracker(require_stages(self.cfg,self.item),self.cfg['home']['max_sample_gap_s'])
+    def select_item(self,item,now):
+        # Pickup IPC uses A/B internally for both OMX1 and OMX2.
+        self.item=({'A':'C','B':'D'}.get(item,item) if self.cfg['device_id']=='omx2' else item)
+        self.reset(now)
+    def invalidate(self,now):
+        self.detector.invalidate(now)
+        self.tracker.reset()
     def update(self,observation,now):
-        done=self.detector.update(observation,now)
+        eligible=self.tracker.update(observation,now)
+        done=self.detector.update(observation,now,eligible=eligible)
         if done or now>=self.next_report:
             self.next_report=now+1
             rows={j:dict(row) for j,row in self.detector.rows.items()}
@@ -67,15 +80,64 @@ class RolloutHome:
                             "ok": abs(q[j] - self.detector.target[j]) <= self.cfg["home"]["tolerance"][j]}
                         for j in q}
             try:
-                write_json(ROOT/"state"/"manager"/self.cfg["device_id"]/"joint_errors.json",{"monotonic":now,"pid":os.getpid(),"joints":rows,"stalled":self.detector.stalled,
+                state=self.detector.last_completion if done else dict(departed=self.detector.departed,in_home_window=self.detector.in_home_window,
+                        still=self.detector.still,hold_since=self.detector.since,sample_gap_s=self.detector.last_gap_s,gap_reset=self.detector.gap_reset)
+                row={"monotonic":now,"at":time.time(),"pid":os.getpid(),"session":os.environ.get('OMX_SESSION'),"joints":rows,"stalled":self.detector.stalled,
                         "completed":done,"departed":self.detector.departed,"in_home_window":self.detector.in_home_window,
                         "still":self.detector.still,"hold_since":self.detector.since,
-                        "sample_gap_s":self.detector.last_gap_s,"gap_reset":self.detector.gap_reset},durable=False)
+                        "sample_gap_s":self.detector.last_gap_s,"gap_reset":self.detector.gap_reset,
+                        "item":self.item,"stage_index":self.tracker.index,"stage_total":len(self.tracker.stages),
+                        "physical_transfer_verified":False,**state}
+                write_json(ROOT/"state"/"manager"/self.cfg["device_id"]/"joint_errors.json",row,durable=False)
+                if done: write_json(ROOT/'state'/'manager'/self.cfg['device_id']/'last_cycle.json',row,durable=False)
             except OSError as exc:
                 if now>=getattr(self,"next_io_warning",0):
                     logger.warning("Joint diagnostics unavailable (control unchanged): %s",exc)
                     self.next_io_warning=now+10
+        if done: self.tracker.reset()
         return done
+
+
+def recovery_adapter(robot):
+    """Fresh joint feedback only. Never enable torque or rewrite motor modes."""
+    class Adapter:
+        first=True
+        def read(self):
+            heartbeat(ready=False)
+            if self.first: robot._omx_last_health=-1e9
+            robot._check_motor_health(require_torque=True)
+            if self.first:
+                for joint in robot.bus.motors:
+                    expected=5 if joint=='gripper' else 4
+                    if robot.bus.read('Operating_Mode',joint)!=expected:
+                        raise RuntimeError('Motor mode changed; no automatic recovery')
+                self.first=False
+            return robot.get_joint_observation()
+        def send(self,values):
+            if any(robot.bus.read('Torque_Enable',j)!=1 for j in values):
+                raise RuntimeError('Torque OFF; no automatic recovery')
+            robot.send_action({j+'.pos':v for j,v in values.items()})
+    return Adapter()
+
+
+def recover_after_fault(robot, stopped=lambda:False):
+    """At most one bounded recovery attempt; the failed job is never replayed."""
+    from .return_path import return_home
+    cfg=getattr(robot,'_omx_manager_snapshot',None) or managed_config()
+    if cfg is None or stopped(): return False
+    path=ROOT/'state'/'manager'/cfg['device_id']/'recovery_motion.json'
+    try:
+        require_home(cfg)
+        if not cfg['recovery'].get('auto_home',True): raise RuntimeError('Automatic Home recovery disabled')
+        result=return_home(recovery_adapter(robot),cfg,clock=time.monotonic,sleep=time.sleep,stopped=stopped,report=home_reporter(cfg),preserve_gripper=True)
+        full_home=abs(result['gripper']-cfg['home']['target']['gripper'])<=cfg['home']['arrival_tolerance']
+        write_json(path,dict(at=time.time(),phase='HOME_RECOVERED' if full_home else 'ARM_HOME_RECOVERED',pid=os.getpid(),job_replayed=False,gripper_preserved=True))
+        logger.warning('[RECOVERY] Arm returned; gripper preserved; full_home=%s; failed job remains failed',full_home)
+        return True
+    except Exception as exc:
+        write_json(path,dict(at=time.time(),phase='RECOVERY_WAIT',pid=os.getpid(),reason=str(exc),job_replayed=False))
+        logger.error('[RECOVERY] RECOVERY_WAIT: %s',exc)
+        return False
 
 _last_heartbeat=0.
 def heartbeat(ready=True):

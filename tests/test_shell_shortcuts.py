@@ -210,7 +210,9 @@ def test_bad_manual_order_never_publishes(monkeypatch,item,quantity):
 def test_unload_quantity_and_missing_cli_are_explicit(monkeypatch):
     run=Mock();monkeypatch.setattr(O.subprocess,'run',run)
     cfg=C.load(ROOT/'params/omx4.yaml')
-    with pytest.raises(ValueError,match='수량 1'):O.send_order(cfg,'F',2)
+    monkeypatch.setattr(O.shutil,'which',lambda _:'/fake/mosquitto_pub')
+    assert O.send_order(cfg,'F',2)['items']=={'F':2}
+    run.assert_called_once();run.reset_mock()
     monkeypatch.setattr(O.shutil,'which',lambda _:None)
     with pytest.raises(ValueError,match='mosquitto_pub'):O.send_order(cfg,'F',1)
     run.assert_not_called()

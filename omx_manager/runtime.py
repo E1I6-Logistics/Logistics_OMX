@@ -32,7 +32,7 @@ def initialize_inventory(path, capacity=8):
 
 def acknowledge_recovery(cfg):
     directory = state_dir(cfg)
-    for name in ("inventory.json", "jobs.json", "workstation_command.json", "workstation_status.json"):
+    for name in ("inventory.json", "jobs.json", "workstation_command.json", "workstation_status.json", "unload_progress.json"):
         path = directory / name
         if path.exists():
             destination = directory / "archive" / (str(time.time_ns()) + "_" + name)
@@ -53,7 +53,7 @@ def build(cfg, config_path, python=sys.executable, session=None):
         OMX_INVENTORY_STATE_PATH=str(directory / "inventory.json"), OMX_ABORT_FILE=str(directory / "abort"),
         OMX_JOB_JOURNAL=str(directory / "jobs.json"), OMX_BROKER_PORT=str(cfg["runtime"]["broker_port"]),
         OMX_PICKUP_PER_UNIT_S=str(cfg["runtime"]["order_per_unit_s"]), OMX_PICKUP_LOAD_GRACE_S=str(cfg["runtime"]["order_load_grace_s"]),
-        OMX_ACT_PREFETCH="0")
+        OMX_ACT_PREFETCH="0",OMX_SESSION=session)
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         env[name] = str(cfg["runtime"]["cpu_threads"])
     hw=cfg["hardware"]; home=cfg["home"]; timing=cfg["runtime"]
@@ -76,8 +76,10 @@ def build(cfg, config_path, python=sys.executable, session=None):
             "--strategy.order_models_file="+str(directory/"order_models.json"), "--strategy.inventory_state_path="+str(directory/"inventory.json"),
             "--strategy.pickup_cycle_timeout_s="+str(timing["cycle_timeout_s"]), "--strategy.pickup_home_stall_s=0"])
     else:
-        env.update(OMX_WORKSTATION_MODE="true", OMX_WORKSTATION_SESSION=session,
+        env.update(OMX_WORKSTATION_MODE="true", OMX_WORKSTATION_SESSION=session,OMX_MANAGED_UNLOAD='1',
             OMX_WORKSTATION_STATUS_FILE=str(directory/"workstation_status.json"), OMX_WORKSTATION_CONTROL_FILE=str(directory/"workstation_command.json"))
+        from .basket import options as unload_options
+        env['OMX_UNLOAD_TIMEOUT_S']=str(unload_options(cfg)['job_timeout_s']+timing['startup_timeout_s'])
         generated["workstation_status.json"]={"session":session,"phase":"BOOTING","pid":None}
         # Never consume a stale command from a previous launcher instance.
         generated["workstation_command.json"]={"session":session,"command":"WAIT"}
@@ -115,14 +117,111 @@ class Supervisor:
         if self.capture: self.capture.emit("manager",line)
         else: print(line,flush=True)
     def stop(self, *_): self.stopped.set()
+    def preflight(self,cfg,allow_motion=True,verify_registration=True,operator_confirmed=False):
+        """Motor-only checks before loading Torch/cameras; no order replay."""
+        from .commissioning import require_commissioned
+        from .hardware import FollowerBus
+        from .home import errors
+        from .return_path import return_home
+        from .hooks import home_reporter
+        if verify_registration:
+            check_files(cfg);require_commissioned(cfg)
+        directory=state_dir(cfg)
+        journal=directory/'jobs.json'
+        if journal.exists() and any(row.get('state')=='RUNNING' for row in json.loads(journal.read_text()).values()):
+            raise OperatorRecoveryRequired('Interrupted job; inspect cargo then request resume; no replay')
+        if cfg['role']=='pickup': initialize_inventory(directory/'inventory.json')
+        with FollowerBus(cfg) as device:
+            q=device.read()
+            for joint in JOINTS:
+                if device.bus.read('Operating_Mode',joint)!=(5 if joint=='gripper' else 4):
+                    raise OperatorRecoveryRequired('Motor mode mismatch; no automatic rewrite')
+                if device.bus.read('Torque_Enable',joint)!=1:
+                    raise OperatorRecoveryRequired('Torque OFF: support arm and use local arm command; no automatic enable')
+            if max(errors(q,cfg['home']['target']).values())<=cfg['home']['arrival_tolerance']: return
+            if not allow_motion or not cfg['recovery'].get('auto_home',True):
+                raise OperatorRecoveryRequired('Position arm at registered Home or explicitly request another return-path check')
+            result=return_home(device,cfg,clock=time.monotonic,sleep=time.sleep,stopped=self.stopped.is_set,report=home_reporter(cfg),preserve_gripper=not operator_confirmed)
+            if abs(result['gripper']-cfg['home']['target']['gripper'])>cfg['home']['arrival_tolerance']:
+                raise OperatorRecoveryRequired('Arm Home recovered with gripper held; inspect cargo then request resume')
+    def wait_for_recovery(self,cfg,error):
+        """Keep MQTT/diagnostics alive, never reload the model in this state."""
+        from .config import digest
+        directory=state_dir(cfg);directory.mkdir(parents=True,exist_ok=True)
+        started=time.time();reason=str(error);client=None;signature=digest(self.path);registered=False;registration_checked=False
+        # Configuration/position changes can be detected without reloading a model.
+        # Generic runtime/USB faults require an explicit retry unless Home recovery succeeded.
+        from .config import ConfigError
+        allow_auto=isinstance(error,(ConfigError,OperatorRecoveryRequired))
+        try:
+            motion=json.loads((directory/'recovery_motion.json').read_text())
+            allow_auto=allow_auto or (motion.get('phase')=='HOME_RECOVERED' and motion.get('at',0)>=getattr(self,'last_run_started',started))
+        except (OSError,ValueError): pass
+        try:
+            _,mqtt,env,_=build(cfg,self.path)
+            command=[mqtt[0],'-m','omx_manager.recovery_wait','--config',str(self.path.resolve())]
+            def start_client():
+                try:
+                    proc=subprocess.Popen(command,env=env,cwd=ROOT,start_new_session=True,
+                        **(dict(stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1) if self.capture else {}))
+                    if self.capture: self.capture.attach(proc,'recovery-mqtt')
+                    return proc
+                except OSError as failure:
+                    self.message('[RECOVERY] MQTT helper unavailable: '+str(failure))
+                    return None
+            client=start_client()
+            self.message('[RECOVERY] RECOVERY_WAIT: '+reason+'; model not loaded; MQTT rejects new jobs')
+            while not self.stopped.is_set():
+                try:
+                    write_json(directory/'recovery_wait.json',dict(phase='RECOVERY_WAIT',reason=reason,at=time.time(),
+                               pid=os.getpid(),model_loaded=False,mqtt_alive=client is not None and client.poll() is None),durable=False)
+                except OSError as failure: self.message('[RECOVERY] Status storage unavailable: '+str(failure))
+                if self.stopped.wait(cfg['recovery'].get('poll_s',5.)): return
+                if client is None or client.poll() is not None: client=start_client()
+                request=directory/'resume_request.json'
+                resume=False
+                try:
+                    if request.exists():
+                        data=json.loads(request.read_text());request.unlink(missing_ok=True)
+                        resume=(isinstance(data,dict) and isinstance(data.get('at'),(int,float)) and data['at']>=started and data.get('config')==str(self.path.resolve()))
+                    current=digest(self.path)
+                    if current!=signature: candidate=load(self.path)
+                except (OSError,ValueError,TypeError) as failure:
+                    reason='Recovery configuration/request invalid: '+str(failure);continue
+                changed=current!=signature
+                if changed:
+                    cfg=candidate;signature=current;registered=False;registration_checked=False
+                if resume:
+                    try: acknowledge_recovery(cfg)
+                    except (OSError,ValueError,TypeError) as failure:
+                        reason='Cannot reconcile journal: '+str(failure);continue
+                    registered=False;registration_checked=False
+                try:
+                    if not registration_checked:
+                        registration_checked=True
+                        from .commissioning import require_commissioned
+                        check_files(cfg);require_commissioned(cfg);registered=True
+                    if not registered: continue
+                    if not (allow_auto or resume or changed): continue
+                    self.preflight(cfg,allow_motion=resume,verify_registration=False,operator_confirmed=resume)
+                    write_json(directory/'recovery_wait.json',dict(phase='RECHECKED',at=time.time(),pid=os.getpid(),model_loaded=False))
+                    self.message('[RECOVERY] Home and registration rechecked; starting a fresh idle session, no job replay')
+                    return
+                except Exception as exc:
+                    new_reason=str(exc)
+                    if new_reason!=reason: self.message('[RECOVERY] RECOVERY_WAIT: '+new_reason)
+                    reason=new_reason
+        finally:
+            if client is not None: stop_process(client,cfg['runtime']['shutdown_timeout_s'])
     def run_once(self,cfg):
         check_files(cfg); require_home(cfg)
+        self.last_run_started=time.time()
         directory=state_dir(cfg); directory.mkdir(parents=True,exist_ok=True)
         journal=directory/"jobs.json"
         if journal.exists() and any(row.get("state")=="RUNNING" for row in json.loads(journal.read_text()).values()):
             raise OperatorRecoveryRequired("Interrupted physical job; reconcile before restart. Journal preserved")
         if cfg["role"]=="pickup": initialize_inventory(directory/"inventory.json")
-        for name in ("abort","heartbeat.json"):
+        for name in ("abort","heartbeat.json","joint_errors.json","metrics.json"):
             (directory/name).unlink(missing_ok=True)
         rollout,mqtt,env,generated=build(cfg,self.path)
         env.pop("OMX_METRICS_PATH", None)
@@ -180,12 +279,14 @@ class Supervisor:
                 while not self.stopped.is_set():
                     try:
                         cfg=load(self.path)
+                        self.preflight(cfg)
                         self.run_once(cfg)
                         delay=cfg["recovery"]["retry_initial_s"]
                     except Exception as exc:
                         self.message(f"[RECOVERY] {type(exc).__name__}: {exc}; retry in {delay}s")
                         try: write_json(state_dir(cfg)/"recovery.json",{"at":time.time(),"error":str(exc),"retry_s":delay})
                         except OSError as failure:self.message("[WARNING] Could not save recovery record: "+str(failure))
+                        self.wait_for_recovery(cfg,exc)
                     if self.stopped.wait(delay): break
                     delay=min(delay*2,cfg["recovery"]["retry_max_s"])
             finally:

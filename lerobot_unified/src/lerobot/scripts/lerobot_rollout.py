@@ -261,6 +261,17 @@ def rollout(cfg: RolloutConfig):
             strategy.run(ctx)
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+    except Exception:
+        # A failed job stays failed. Attempt bounded Home recovery once, while
+        # motor feedback is still connected, before releasing process resources.
+        if not shutdown_event.is_set():
+            from omx_manager.hooks import recover_after_fault
+            try:
+                strategy._engine.pause()
+                recover_after_fault(ctx.hardware.robot_wrapper.inner,stopped=shutdown_event.is_set)
+            except Exception:
+                logger.exception('Recovery unavailable; preserving original rollout error')
+        raise
     finally:
         strategy.teardown(ctx)
         if cfg.display_data:

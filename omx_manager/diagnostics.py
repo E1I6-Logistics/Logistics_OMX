@@ -116,6 +116,11 @@ class Sampler:
             if finite(heartbeat_stamp):
                 result['heartbeat_age_s']=max(0.,now-heartbeat_stamp)
                 if now-heartbeat_stamp>self.cfg['runtime']['heartbeat_timeout_s']:phase='HEARTBEAT_STALE'
+        waiting=read_json(directory/'recovery_wait.json')
+        if not process and waiting.get('phase')=='RECOVERY_WAIT' and finite(waiting.get('at')) and 0<=time.time()-waiting['at']<=max(15,self.cfg['recovery'].get('poll_s',5)*3):
+            phase='RECOVERY_WAIT';result['recovery_reason']=waiting.get('reason')
+        if self.cfg['role']=='unload' and process and workstation.get('pid')==process['pid']:
+            result['unload']={k:workstation.get(k) for k in ('attempts','completed_cycles','estimated_transfers','expected_count','basket_empty_verified')}
         result['phase']=phase
         if now>=self.next_throttle:
             self.next_throttle=now+10
@@ -135,6 +140,9 @@ def render(data):
         lines.append(f"  loop={number(m['loop_hz'],'Hz')} target={number(m['target_hz'],'Hz')} model_send={number(m['action_send_hz'],'Hz')} ACT_chunk={number(m['act_chunk_ms'],'ms')} worst={number(m['act_chunk_worst_ms'],'ms')} samples={m['act_chunk_samples']}")
         for name,c in m['cameras'].items():lines.append(f"  camera {name}: capture={number(c['capture_fps'],'fps')} published={number(c['published_fps'],'fps')} configured={number(c.get('configured_fps'),'fps')} age={number(c['frame_age_ms'],'ms')}")
     else:lines.append('  Detailed metrics unavailable: '+data.get('metrics_status','UNAVAILABLE')+'. Start run with --diagnostics; allow two snapshots.')
+    if data.get('recovery_reason'):lines.append('  RECOVERY_WAIT: '+str(data['recovery_reason']))
+    if data.get('unload'):
+        u=data['unload'];lines.append(f"  unload attempts={u.get('attempts')} cycles={u.get('completed_cycles')} estimated_transfers={u.get('estimated_transfers')} expected={u.get('expected_count')} empty={u.get('basket_empty_verified')}")
     if data['pi_throttled']:lines.append('  '+data['pi_throttled'])
     return '\n'.join(lines)
 

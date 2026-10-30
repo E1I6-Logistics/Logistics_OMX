@@ -290,10 +290,14 @@ def test_rotating_log_follow_continues_from_new_file(tmp_path,monkeypatch,capsys
 def test_diagnostic_write_failure_does_not_break_counting(monkeypatch):
     from omx_manager import hooks
     cfg=C.load(ROOT/'params/omx1.yaml');cfg['home']['target']={j:0. for j in C.JOINTS};cfg['counting']['min_cycle_s']=0
+    from omx_manager.workflow import registration_binding
+    cfg['workflow']={'items':{'A':dict(binding=registration_binding(cfg),stages=[
+        dict(name='pick',target={j:20. for j in C.JOINTS},tolerance=3.,samples=2),
+        dict(name='place',target={j:40. for j in C.JOINTS},tolerance=3.,samples=2)])}}
     monkeypatch.setattr(hooks,'write_json',Mock(side_effect=OSError('disk full')))
     detector=hooks.RolloutHome(cfg,0)
-    assert not detector.update({j:20. for j in C.JOINTS},0)
-    assert sum(detector.update({j:0. for j in C.JOINTS},i*.05) for i in range(1,30))==1
+    for i,value in enumerate((20.,20.,40.,40.)):assert not detector.update({j:value for j in C.JOINTS},i*.05)
+    assert sum(detector.update({j:0. for j in C.JOINTS},.2+i*.05) for i in range(1,30))==1
 
 @pytest.mark.parametrize('device',['omx1','omx2','omx3','omx4'])
 def test_seeded_noisy_home_cycles_have_one_count_per_departure(device):

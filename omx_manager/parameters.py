@@ -11,6 +11,33 @@ DIAGNOSTIC_DEFAULTS = {
 SERVICE_DEFAULTS = {"restart_s":5.,"stop_timeout_s":45.,"enable_on_boot":False}
 
 COMMENTS = {
+    "workflow":"품목별 실제 작업 단계: 홈 이탈만으로 카운트하지 않고 등록 자세를 순서대로 관측",
+    "stages":"실제 집기·놓기 등 작업 순서의 관절 자세 목록: 최소 두 개, 직접 관측하여 등록",
+    "name":"작업 단계 또는 복귀 경로 이름",
+    "samples":"해당 작업 자세를 연속으로 확인할 관측 수: 기본 2, 긴 관측 공백은 초기화",
+    "unload":"OMX3/4 반복 하차·빈 바구니 영상 판정: 물품 개수는 영상 변화로 추정하며 확정값이 아님",
+    "camera":"빈 바구니를 관측할 고정 상단 카메라 입력 이름",
+    "roi":"바구니 내부 영상 영역 [왼쪽 x, 위쪽 y, 가로, 세로]: 팔·컨베이어·외부 배경 제외",
+    "reference":"현장에서 빈 바구니 확인 후 저장한 기준 NPZ 영상: 자동 생성",
+    "reference_binding":"기준 영상의 홈·장치·카메라 연결 해시: 자동 생성",
+    "pixel_threshold":"기준 영상과 픽셀 색상 차이를 변화로 볼 최소 값(0~255)",
+    "empty_ratio":"변화 픽셀 비율이 이 값 이하면 빈 바구니 후보",
+    "occupied_ratio":"변화 픽셀 비율이 이 값 이상이면 물건 있음 후보: 두 기준 사이는 판정 보류",
+    "illumination_limit":"기준 대비 전체 평균 색상 변화 허용값: 조명·노출이 크게 바뀌면 판정 보류",
+    "stability_delta":"연속 검사 영상의 평균 픽셀 변화 허용값: 움직임·흔들림 중 판정 보류",
+    "sample_interval_s":"홈에서 바구니를 검사할 간격(초): 모델 동작 중 영상 추가 처리 없음",
+    "stable_samples":"빈 상태 또는 물건 있음을 연속으로 확인할 프레임 수",
+    "inspect_timeout_s":"홈에서 영상 판정을 기다리는 최대 시간(초): 불명확하면 성공 처리 안 함",
+    "max_attempts":"하차 주문 한 건에서 집기를 시도할 최대 횟수",
+    "max_no_change":"집기 전후 바구니 변화가 없는 연속 실패 허용 횟수",
+    "job_timeout_s":"여러 번 집기를 포함한 하차 주문 전체 제한 시간(초)",
+    "require_quantity_match":"빈 바구니라도 추정 이동 횟수가 주문 수량과 다르면 불일치로 중단",
+    "auto_home":"오류 후 건강한 모터·허용 홈 접근 영역 또는 시험된 경로에서만 자동 복귀 시도",
+    "poll_s":"복구 대기 중 상태 점검 간격(초): 모델을 다시 로딩하지 않음",
+    "routes":"현장에서 직접 등록하고 전체 이동 시험을 통과한 복귀 경로 목록",
+    "points":"현재 지점에서 홈 방향 순서의 여섯 관절 경유 자세: 마지막은 등록 홈",
+    "radius":"등록 선분 주변 복귀 허용 폭(정규화 단위): 모르는 자세에서는 복귀 거절",
+    "approved":"전체 경로 실물 시험 성공 후 저장되는 연결 해시: 수동 true 설정 금지",
     "schema_version":"설정 파일 형식 버전: 현재 1 사용",
     "device_id":"이 팔의 장비 번호: omx1~omx4",
     "role":"작업 역할: pickup=피킹, unload=하차",
@@ -34,8 +61,8 @@ COMMENTS = {
     "target":"등록한 6개 관절 초기 자세: null이면 미등록, capture로 저장",
     "binding":"모델·보정·카메라 연결 해시: 도구가 저장하므로 수동 수정 금지",
     "tolerance":"사이클 홈 복귀 판정의 관절별 허용 오차(정규화 단위)",
-    "hold_s":"피킹 홈 복귀 후 연속 정지 확인 시간(초)",
-    "unload_hold_s":"하차 홈 복귀 후 연속 정지 확인 시간(초)",
+    "hold_s":"등록 작업 단계 통과 후 홈 복귀 연속 정지 확인 시간(초): 피킹·반복 하차 공통",
+    "unload_hold_s":"이전 단일 하차 경로의 정지 시간(초): 새 반복 하차는 hold_s와 영상 검사 사용",
     "still_delta":"연속 관측 간 정지로 인정할 최대 관절 변화(정규화 단위)",
     "max_sample_gap_s":"연속 관측으로 인정할 최대 공백(초): 넘으면 정지 시간 재측정",
     "capture_s":"홈 등록을 위해 관절을 관측하는 시간(초)",
@@ -62,7 +89,7 @@ COMMENTS = {
     "broker_host":"FMS와 공유하는 MQTT 브로커 주소: Pi에서 접근 가능한 IP",
     "broker_port":"MQTT 브로커 포트 번호",
     "cpu_threads":"PyTorch·수치 연산 CPU 스레드 수: Pi에서는 1~4 범위",
-    "cycle_timeout_s":"피킹 한 사이클 또는 하차 한 작업의 제한 시간(초)",
+    "cycle_timeout_s":"피킹 또는 하차 한 동작 사이클 제한 시간(초): 여러 번 하차 전체는 unload.job_timeout_s",
     "order_per_unit_s":"피킹 주문 감시에서 물품 1개당 허용 시간(초)",
     "order_load_grace_s":"품목 주문 시작·모델 로딩을 위한 추가 여유 시간(초)",
     "startup_timeout_s":"모델·장치 준비 완료를 기다리는 최대 시간(초)",
@@ -91,8 +118,12 @@ JOINT_NAMES={"shoulder_pan":"어깨 좌우", "shoulder_lift":"어깨 상하", "e
 
 def comment(path):
     key=path[-1]
+    if key=='items' and 'workflow' in path:return '외부 품목 이름별 작업 단계: OMX1 A/B 반대 모델 매핑은 그대로 유지'
+    if key=='binding' and 'workflow' in path:return '작업 단계 등록의 홈·모델·보정 연결 해시: 자동 생성'
+    if key=='target' and 'workflow' in path:return '이 작업 단계에서 관측해야 할 여섯 관절 자세: 모델 재학습과 별개'
+    if key=='tolerance' and 'workflow' in path:return '이 작업 단계의 자세 허용 오차(정규화 단위): 이웃 단계·홈 영역과 겹치지 않게 설정'
     if key in JOINT_NAMES:
-        meaning="홈 목표" if 'target' in path else "홈 복귀 허용 오차"
+        meaning="작업 단계 목표" if 'workflow' in path else "복귀 경유점" if 'points' in path else "홈 목표" if 'target' in path else "홈 복귀 허용 오차"
         return JOINT_NAMES[key]+" 관절의 "+meaning+"(정규화 단위, 각도 아님)"
     if key=='fps':return "카메라 하드웨어 요청 FPS: 실제 수신 FPS는 monitor에서 확인" if 'cameras' in path else "정책 제어 루프의 목표 Hz: 실제 달성 주기는 monitor에서 확인"
     if key=='runtime':return "운용 실행·통신·시간 제한 설정" if len(path)==1 else "모델 실행 백엔드: 현재 lerobot_pytorch만 지원"
@@ -107,7 +138,7 @@ def annotated_yaml(cfg):
             '# SET_ 항목은 현장 장치로 지정하고, 모델이 학습한 초기 자세에서 홈을 등록하세요.']
     stack=[]
     for line in body.splitlines():
-        match=re.match(r'^( *)([A-Za-z_][A-Za-z0-9_]*):',line)
+        match=re.match(r'^( *)(?:- )?([A-Za-z_][A-Za-z0-9_]*):',line)
         if match:
             indent=len(match[1]);key=match[2]
             while stack and stack[-1][0]>=indent:stack.pop()

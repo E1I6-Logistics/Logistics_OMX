@@ -351,6 +351,10 @@ def send_next_action(
     # The guard is repeated immediately before send_action because inference can block.
     abort_path = os.environ.get("OMX_ABORT_FILE", "")
     def abort_if_requested():
+        shutdown=getattr(getattr(ctx,'runtime',None),'shutdown_event',None)
+        if shutdown is not None and shutdown.is_set():
+            interpolator.reset();engine.reset()
+            raise InterruptedError('Operator shutdown; no motor actions after inference')
         if abort_path and Path(abort_path).exists():
             interpolator.reset()
             engine.reset()

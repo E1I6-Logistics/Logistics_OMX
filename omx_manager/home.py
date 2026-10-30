@@ -40,7 +40,7 @@ class HomeDetector:
         self.stalled = False
         self.last_gap_s = None; self.gap_reset = True; self.still = False
 
-    def update(self, observation, now):
+    def update(self, observation, now, eligible=True):
         try: q = joints(observation)
         except (ValueError, TypeError):
             self.invalidate(now)
@@ -60,7 +60,7 @@ class HomeDetector:
         inside = all(row["ok"] for row in self.rows.values())
         still = self.previous is not None and max(abs(q[j] - self.previous[j]) for j in JOINTS) <= self.home["still_delta"]
         self.still = still
-        if inside and still and self.departed:
+        if inside and still and self.departed and eligible:
             if self.since is None: self.since = now
         else: self.since = None
         self.previous = q
@@ -73,7 +73,11 @@ class HomeDetector:
         else:
             self.near = None; self.best = None; self.stalled = False
         if self.since is not None and now - self.since >= self.hold and now - self.started >= self.counting["min_cycle_s"]:
+            completed = {"departed": self.departed, "still": self.still,
+                         "hold_since": self.since, "sample_gap_s": self.last_gap_s,
+                         "gap_reset": self.gap_reset, "in_home_window": self.in_home_window}
             self.reset(now)
+            self.last_completion = completed
             return True
         return False
 
@@ -84,7 +88,7 @@ def stable_pose(samples, max_span):
         if max(q[j] for q in qs) - min(q[j] for q in qs) > max_span: raise ConfigError(f"Pose is moving: {j}; capture rejected")
     return {j: sum(q[j] for q in qs) / len(qs) for j in JOINTS}
 
-def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None):
+def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None, guard=None):
     """Ramp the commanded goal; bound speed, feedback lag and the approach area.
 
     A goal relative to each new measurement can stay inside the servo deadband
@@ -130,6 +134,8 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None):
 
     try:
         emit("STARTING", start, force=True)
+        if stopped(): raise InterruptedError("Stopped; no Home movement")
+        if guard: guard(q)
         if max(errors(q, target).values()) > h["max_start_error"]:
             raise ConfigError("Outside approved Home approach area; position arm locally first; " + details())
         while True:
@@ -145,6 +151,7 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None):
             if delta_t < 0 or delta_t > h["max_sample_gap_s"]:
                 raise TimeoutError("Home feedback stalled; no next action; " + details())
             err = errors(q, target)
+            if guard: guard(q)
             if max(err.values()) > h["max_start_error"]:
                 raise ConfigError("Feedback left approved Home approach area; " + details())
             if max(abs(goal[joint] - q[joint]) for joint in JOINTS) > following_limit + 1e-9:
@@ -158,11 +165,15 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None):
             else: stable_since = None
             step = min(h["max_step"], h["move_speed"] * delta_t)
             command = {}
+            span = max(abs(target[j] - goal[j]) for j in JOINTS)
             for joint in JOINTS:
-                candidate = goal[joint] + max(-step, min(step, target[joint] - goal[joint]))
+                delta = target[joint] - goal[joint]
+                # Tested route segments advance all joints at one common fraction.
+                candidate = goal[joint] + (delta * min(1., step / span) if guard and span else max(-step, min(step, delta)))
                 # Wait for a lagging joint before advancing its reference again.
                 command[joint] = candidate if abs(candidate - q[joint]) <= following_limit else goal[joint]
             if stopped(): raise InterruptedError("Stopped before send")
+            if guard: guard(command)
             device.send(command)
             goal = command
             emit("MOVING", now)

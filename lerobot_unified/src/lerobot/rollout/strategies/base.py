@@ -157,7 +157,7 @@ class BaseStrategy(RolloutStrategy):
         from omx_manager.hooks import managed_config, RolloutHome, heartbeat
         manager_cfg = getattr(ctx.hardware.robot_wrapper.inner, "_omx_manager_snapshot", None) or managed_config()
         self._manager_home = RolloutHome(manager_cfg, time.perf_counter(),
-            hold=self.config.idle_complete_hold_s if self.config.workstation_wait_enabled else None) if manager_cfg else None
+            hold=manager_cfg['home']['hold_s'] if self.config.workstation_wait_enabled else None) if manager_cfg else None
         ctx.hardware.robot_wrapper.inner._omx_runtime_ready = True
         heartbeat()
         from lerobot.utils.runtime_metrics import start_metrics
@@ -602,11 +602,6 @@ class BaseStrategy(RolloutStrategy):
                         idle_home_since = None
                 else:
                     idle_home_since = None
-                # Once a return candidate is observed, monitor fresh joints without
-                # generating another ACT chunk while fresh stillness samples accumulate.
-                if getattr(self, "_manager_home", None) and self._manager_home.detector.in_home_window:
-                    timer.wait()
-                    continue
                 with timer.section("process_obs"):
                     processed = self._process_observation_and_notify(ctx.processors, obs)
                 if self._handle_warmup(cfg.use_torch_compile, timer):
@@ -629,6 +624,9 @@ class BaseStrategy(RolloutStrategy):
     def run(self, ctx: RolloutContext) -> None:
         """Run the autonomous control loop until shutdown or duration expires."""
         if self.config.workstation_wait_enabled:
+            if getattr(self,'_manager_home',None) and hasattr(self._manager_home,'cfg'):
+                from omx_manager.workstation import run
+                return run(self,ctx,send_next_action,CycleTimer)
             return self._run_persistent_workstation(ctx)
         engine = self._engine
         cfg = ctx.runtime.cfg
@@ -717,7 +715,9 @@ class BaseStrategy(RolloutStrategy):
                     obs, camera_recovered = self._get_observation_with_camera_recovery(robot, engine)
                 if camera_recovered:
                     timer.restart()
-                    if getattr(self, "_manager_home", None): getattr(self, "_manager_home", None).detector.invalidate(time.perf_counter())
+                    if getattr(self, "_manager_home", None):
+                        if hasattr(self._manager_home,'invalidate'):self._manager_home.invalidate(time.perf_counter())
+                        else:self._manager_home.detector.invalidate(time.perf_counter())
 
                 # OMX3/4 only: use the existing joint observation, no added camera/model work.
                 # Never report an initially stationary robot as a completed unloading job.
@@ -774,6 +774,8 @@ class BaseStrategy(RolloutStrategy):
                                 try:
                                     state = json.loads(self._inventory_path.read_text())
                                     self._order_router.select(str(state.get("order_item", "")), ctx)
+                                    if getattr(self,'_manager_home',None) and hasattr(self._manager_home,'select_item'):
+                                        self._manager_home.select_item(str(state.get('order_item','')),time.perf_counter())
                                 except Exception:
                                     logger.exception("Model selection failed; staying idle. Check model and order.")
                                     timer.wait()
@@ -911,10 +913,6 @@ class BaseStrategy(RolloutStrategy):
                         home_since = None
                         home_near_since = None
                         engine.resume()
-                        continue
-
-                    if getattr(self, "_manager_home", None) and self._manager_home.detector.in_home_window:
-                        timer.wait()
                         continue
 
                     if (

@@ -88,12 +88,12 @@ def validate(cfg):
     if cfg.get("role") != expected: raise ConfigError("role does not match device_id")
     for section in ("hardware", "home", "models", "runtime", "recovery", "counting"):
         if not isinstance(cfg.get(section), dict): raise ConfigError(f"Missing section: {section}")
-    only_keys(cfg, "schema_version device_id role hardware home models runtime recovery counting diagnostics service", "top-level")
+    only_keys(cfg, "schema_version device_id role hardware home models runtime recovery counting diagnostics service workflow unload", "top-level")
     only_keys(cfg["hardware"], "port calibration_file robot_id disable_torque_on_disconnect cameras", "hardware")
     only_keys(cfg["home"], "target binding tolerance hold_s unload_hold_s still_delta max_sample_gap_s capture_s capture_max_span arrival_tolerance move_speed move_timeout_s max_start_error max_step max_following_error", "home")
     only_keys(cfg["models"], "active_profile profiles", "models")
     only_keys(cfg["runtime"], "broker_host broker_port cpu_threads fps cycle_timeout_s order_per_unit_s order_load_grace_s startup_timeout_s heartbeat_timeout_s shutdown_timeout_s", "runtime")
-    only_keys(cfg["recovery"], "retry_initial_s retry_max_s release_delay_s", "recovery")
+    only_keys(cfg["recovery"], "retry_initial_s retry_max_s release_delay_s auto_home poll_s routes", "recovery")
     only_keys(cfg["counting"], "leave_tolerance min_cycle_s stall_s progress_epsilon", "counting")
     hw = cfg["hardware"]
     for key in ("port", "calibration_file", "robot_id"): path_value(hw.get(key))
@@ -157,6 +157,12 @@ def validate(cfg):
     number(service["stop_timeout_s"],"service.stop_timeout_s",10,7200)
     if type(service["enable_on_boot"]) is not bool:raise ConfigError("service.enable_on_boot must be true/false")
     number(cfg["recovery"].get("release_delay_s", 10), "recovery.release_delay_s", 3, 60)
+    from .workflow import validate_workflow
+    from .basket import validate_unload
+    from .return_path import validate_routes
+    validate_workflow(cfg)
+    validate_unload(cfg)
+    validate_routes(cfg)
     return cfg
 
 

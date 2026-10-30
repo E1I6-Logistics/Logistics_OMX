@@ -319,11 +319,17 @@ def execute_unload(job_id, items):
         raise RuntimeError("Not a workstation")
     if not workstation_ready():
         raise RuntimeError("Workstation not READY; refusing job")
+    managed=os.environ.get('OMX_MANAGED_UNLOAD')=='1'
+    extra={}
+    if managed:
+        from omx_manager.workstation import expected_quantity
+        extra=dict(expected_count=expected_quantity(items),items=items)
     atomic_json(workstation_command, {"session": workstation_session,
-                                     "command": "START", "job_id": str(job_id), "requested_at": time.time()})
+                                     "command": "START", "job_id": str(job_id), "requested_at": time.time(),**extra})
     timeout = float(os.environ.get("OMX_UNLOAD_TIMEOUT_S", "900"))
     deadline = time.monotonic() + timeout
     saw_running = False
+    last_progress=None
     while time.monotonic() < deadline:
         status = workstation_state()
         if status.get("session") != workstation_session:
@@ -334,11 +340,18 @@ def execute_unload(job_id, items):
         if phase == "ERROR":
             raise RuntimeError(f"Workstation fault: {status.get('message', '')}")
         if status.get("job_id") == job_id:
+            if managed and status.get('estimated_transfers')!=last_progress:
+                last_progress=status.get('estimated_transfers',0)
+                publish(f'{robot_id}/progress',dict(job_id=job_id,current=last_progress,
+                        total=extra['expected_count'] or 0,total_known=extra['expected_count'] is not None,count_is_estimate=True,attempts=status.get('attempts',0),
+                        completed_cycles=status.get('completed_cycles',0)))
             if phase == "RUNNING":
                 saw_running = True
             if phase == "DONE":
-                if status.get("reason") != "home_stillness_after_departure":
+                if status.get("reason") != ('basket_empty_confirmed' if managed else 'home_stillness_after_departure'):
                     raise RuntimeError("Unexpected workstation completion reason")
+                if managed and status.get('basket_empty_verified') is not True:
+                    raise RuntimeError('Unload completion lacks empty-basket confirmation')
                 # Release completion event; next order must wait until READY again.
                 atomic_json(workstation_command, {"session": workstation_session,
                                                  "command": "CLEAR", "job_id": str(job_id),
@@ -400,7 +413,8 @@ def run_job(job_id, orders):
                     print("[SAFETY] Failed to signal rollout abort", flush=True)
 
     finally:
-        done_message = ("Home stillness detected after movement; physical unloading unverified"
+        done_message = (("Basket empty confirmed; transfer count estimated, physical destination unverified" if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
+                         else "Home stillness detected after movement; physical unloading unverified")
                         if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
         try:
             journal.finish(job_id, success, done_message if success else result_message)
@@ -422,7 +436,8 @@ def run_job(job_id, orders):
         if success:
             print(f"[ORDER] Job 완료: {job_id}", flush=True)
 
-        done_message = ("Home stillness detected after movement; physical unloading unverified"
+        done_message = (("Basket empty confirmed; transfer count estimated, physical destination unverified" if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
+                         else "Home stillness detected after movement; physical unloading unverified")
                         if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
         send_result(job_id, success, done_message if success else result_message)
 
@@ -522,8 +537,12 @@ def on_command(data):
 
     try:
 
-        # OMX3은 품목/수량에 관계없이 command 1건당 한 번 실행한다.
-        orders = ("TRIGGER",) if robot_id in WORKSTATION_IDS else make_orders(items)
+        if robot_id in WORKSTATION_IDS and os.environ.get('OMX_MANAGED_UNLOAD')=='1':
+            from omx_manager.workstation import expected_quantity
+            expected_quantity(items)
+            orders=items.copy()
+        else:
+            orders = ("TRIGGER",) if robot_id in WORKSTATION_IDS else make_orders(items)
 
     except Exception as exc:
 

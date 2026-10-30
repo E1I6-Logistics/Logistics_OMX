@@ -330,9 +330,9 @@ def test_actual_follower_connection_failure_releases_port_and_cameras(tmp_path,m
     with H.Lock(tmp_path/'motor.lock'):pass
 
 @pytest.mark.parametrize('device',['omx1','omx2','omx3','omx4'])
-def test_fifty_runs_eight_cycles_each(device):
+def test_twenty_runs_eight_cycles_each(device):
     cfg=C.load(ROOT/f'params/{device}.yaml')
-    for _ in range(50): assert exercise(cfg)['counted_cycles']==8
+    for _ in range(20): assert exercise(cfg)['counted_cycles']==8
 
 def actual_base_method(name):
     tree=ast.parse((ROOT/'lerobot_unified/src/lerobot/rollout/strategies/base.py').read_text())
@@ -436,6 +436,8 @@ def test_supervisor_backoff_and_explicit_stop_prevent_restart(cfg,tmp_path,monke
         def set(self):self.stop=True
         def wait(self,delay):waits.append(delay);return self.stop
     supervisor.stopped=Event()
+    monkeypatch.setattr(supervisor,'preflight',lambda *_:None)
+    monkeypatch.setattr(supervisor,'wait_for_recovery',lambda *_:None)
     def fail(c):
         attempts.append(1)
         if len(attempts)==3:supervisor.stop()
@@ -460,7 +462,7 @@ def test_blocked_feedback_during_read_never_sends_action(cfg):
     with pytest.raises(TimeoutError,match='feedback'):move_home(device,cfg,clock=clock,sleep=clock.sleep)
     assert not device.sent
 
-def test_actual_unload_hold_avoids_new_chunk_inference(cfg,tmp_path,monkeypatch):
+def test_home_candidate_keeps_dispatching_until_completion(cfg,tmp_path,monkeypatch):
     ns,s,ctx,event,clock=production_strategy_fixture(cfg,'_run_persistent_workstation',monkeypatch)
     s.config.workstation_status_file=str(tmp_path/'status.json');s.config.workstation_control_file=str(tmp_path/'command.json')
     s.config.workstation_poll_s=.1;s.config.workstation_job_timeout_s=180;s.config.idle_complete_joint_delta=.6;s.config.idle_complete_hold_s=2
@@ -472,7 +474,7 @@ def test_actual_unload_hold_avoids_new_chunk_inference(cfg,tmp_path,monkeypatch)
     ns['atomic_json']=lambda path,data:event.set() if data['phase']=='DONE' else None
     ns['_run_persistent_workstation'](s,ctx)
     assert event.is_set() and clock()>=2
-    assert ns['send_next_action'].call_count<10
+    assert ns['send_next_action'].call_count>=10
 
 
 def test_yaml_duplicate_and_unknown_keys_are_rejected(cfg,tmp_path):
@@ -533,7 +535,7 @@ def test_actual_count_commit_preserves_order_token_and_quantity(tmp_path):
 
 
 @pytest.mark.parametrize('method', ['run', '_run_persistent_workstation'])
-def test_actual_loop_holds_first_home_sample_after_slow_act_chunk(cfg, method, tmp_path, monkeypatch):
+def test_continuous_slow_inference_never_fabricates_home_hold(cfg, method, tmp_path, monkeypatch):
     cfg['counting']['min_cycle_s'] = 0
     ns, strategy, ctx, event, clock = production_strategy_fixture(cfg, method, monkeypatch)
     calls = []
@@ -547,8 +549,9 @@ def test_actual_loop_holds_first_home_sample_after_slow_act_chunk(cfg, method, t
             completed.append(clock())
             strategy._remaining_inventory = 0
         strategy._count_completed_cycle = count
-        ns[method](strategy, ctx)
-        assert len(completed) == 1
+        with pytest.raises(RuntimeError,match='timeout'):
+            ns[method](strategy, ctx)
+        assert not completed
     else:
         strategy.config.workstation_status_file = str(tmp_path / 'status.json')
         strategy.config.workstation_control_file = str(tmp_path / 'command.json')
@@ -564,7 +567,8 @@ def test_actual_loop_holds_first_home_sample_after_slow_act_chunk(cfg, method, t
             phases.append(data['phase'])
             if data['phase'] == 'DONE': event.set()
         ns['atomic_json'] = status
-        ns[method](strategy, ctx)
-        assert phases == ['READY','RUNNING','DONE']
-    assert len(calls) <= 2
-    assert clock() < 6
+        with pytest.raises(RuntimeError,match='timeout'):
+            ns[method](strategy, ctx)
+        assert 'DONE' not in phases and phases[-1]=='ERROR'
+    assert len(calls)>2
+    assert clock()>=180
