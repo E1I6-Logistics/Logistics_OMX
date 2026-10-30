@@ -171,8 +171,8 @@ class OmxFollower(Robot):
             print(f"'{motor}' motor id set to {self.bus.motors[motor].id}")
 
     @check_if_not_connected
-    def get_observation(self) -> RobotObservation:
-        # Read arm position
+    def get_joint_observation(self) -> RobotObservation:
+        # Home approach needs fresh joint feedback, without copying camera images.
         start = time.perf_counter()
         self._check_motor_health()
         raw = self.bus.sync_read("Present_Position", normalize=False)
@@ -184,6 +184,12 @@ class OmxFollower(Robot):
         obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
+
+        return obs_dict
+
+    @check_if_not_connected
+    def get_observation(self) -> RobotObservation:
+        obs_dict = self.get_joint_observation()
 
         # Capture images from cameras
         for cam_key, cam in self.cameras.items():

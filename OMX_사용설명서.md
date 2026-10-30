@@ -258,10 +258,10 @@ PyTorch 모델을 실제로 추론하지 않으며 가짜 프로세스·파일·
 
 ```bash
 bash scripts/verify_manager.sh
-python3 scripts/repeat_manager_validation.py --runs 50
+python3 scripts/repeat_manager_validation.py --runs 20
 ```
 
-반복 검증은 서로 다른 시드와 독립 Python 프로세스로 수행합니다.
+반복 검증은 기본 20회이며 서로 다른 시드와 독립 Python 프로세스로 수행합니다. 추가 반복은 별도 요청이 있을 때 수행합니다.
 결과는 `reports/repeated_validation.json`, 각 회차 로그는 `reports/repeated_validation/`에 저장합니다.
 실물 성능 수치나 모델 정확도를 검증한 결과로 해석하지 마세요.
 
@@ -296,3 +296,82 @@ git pull --ff-only origin dev
 업데이트 후 OMX3에서 최초 연결 오류가 표시되면 `hardware.port`를
 실제 `/dev/serial/by-id/` 경로와 다시 비교하세요. 예전 close 오류만으로 최초 원인은 확정할 수 없습니다.
 `observe`는 카메라 영상 수신이나 모델 추론을 검증하지 않습니다.
+
+## 11. 다음 주문에서 홈 정렬이 시간초과되는 경우
+
+홈 정렬은 카운트 판정과 다릅니다. 기본 `home.tolerance`의 관절별 7.0은 작업 종료 판정이고,
+`home.arrival_tolerance:0.8`은 다음 모델 실행 전 고정 초기 자세의 도착 기준입니다.
+모터가 작은 목표 차이에 반응하지 않는 경우, 기존의 실측 위치 기준 미세 목표는 계속 같은 근처에 머물 수 있었습니다.
+현재 코드는 이전에 보낸 목표를 기준으로 제한 속도로 전진시키며, 실측 위치와의 차이가
+`home.max_following_error`를 넘는 명령은 보내지 않습니다. 관측이 실제로 이 제한을 넘거나 접근 영역을 벗어나면 정지합니다.
+기존 속도·최대 스텝·최종 도착 오차·20초 제한·모터 보정은 자동 완화하지 않습니다.
+기존 현장 YAML에 새 항목이 없으면 추종 오차 제한은 3.0을 사용합니다. 위치 단위는 도가 아닌 정규화 값입니다.
+홈 정렬에는 관절만 읽고 카메라 영상 복사는 하지 않습니다.
+
+오류가 발생하면 `state/manager/omxN/home_motion.json`에 단계, 실제 관절값, 목표, 최종 도착 오차,
+카운트 허용값, 보낸 목표와 추종 오차가 남습니다. 작은 최신 스냅샷을 최대 1초마다 교체하며
+STARTING/ARRIVED/FAILED/STOPPED 로그만 중요 화면에 표시합니다. 오류 메시지에도 실패 관절이 나옵니다.
+진단 파일 쓰기 실패가 이동·정리 처리를 막지 않습니다.
+
+현장 업데이트/재검증 순서:
+
+```bash
+# 각 Pi에서 기존 실행/서비스를 먼저 종료하고 OMX 저장소로 이동
+cd ~/Logistics_OMX
+git switch dev
+git pull --ff-only origin dev
+# 해당 장비 번호로 변경
+OMX_TEST_ID=omx1
+OMX_TEST_CFG="state/config/${OMX_TEST_ID}.yaml"
+./omx_control --config "$OMX_TEST_CFG" check
+# 물품과 미완료 주문을 확인·정리한 뒤 중단 작업 기록 보관/해제
+./omx_control --config "$OMX_TEST_CFG" acknowledge-recovery --confirm-motion
+# 홈 접근 영역과 작업 공간을 확인한 뒤 실제 제한 이동 시험
+./omx_control --config "$OMX_TEST_CFG" home --confirm-motion
+cat "state/manager/${OMX_TEST_ID}/home_motion.json"
+```
+
+`capture`로 현재 자세를 무조건 덮어쓰면 학습 초기 자세와 달라질 수 있습니다. 기존 등록 홈은 보존하세요.
+`home`가 실패하면 `home_motion.json`의 관절별 오차를 먼저 확인합니다. 시간/속도/접근 영역을 무작정 늘리지 마세요.
+`set`에서 `home.arrival_tolerance`, `home.move_timeout_s`, `home.max_step`,
+`home.max_following_error`, `home.max_sample_gap_s`도 변경할 수 있습니다.
+
+카운트가 안 된 경우에는 `joint_errors.json`을 확인합니다. `ok:false`인 관절이 하나라도 있으면 완료가 아닙니다.
+최근 관측 공백/정지/홈 이탈/연속 정지 시작 시각도 기록합니다. 모델 추론 중 긴 공백 뒤 홈 영역에 진입하면
+다음 ACT 청크 생성을 잠시 보류하고 새 관절 관측으로 연속 정지를 확인합니다. 관측 공백 자체를 정지 시간으로 세지 않습니다.
+
+현장 OMX1 사례: 손목 굽힘 오차 7.863이 허용값 7.0을 넘어 카운트가 거절되었습니다.
+실제 복귀 자세가 올바른 작업 종료 자세인지 확인한 경우에만 해당 관절 허용값을 좁은 범위에서 조정합니다.
+예를 들어 9.0은 그 관측값을 포함하지만, 물품 이송 성공을 검증해 주지는 않습니다. 다른 팔에 일괄 적용하지 않습니다.
+
+```bash
+# OMX1에서 복귀 자세를 확인한 뒤에만 적용하는 시험값
+./omx_control --config state/config/omx1.yaml set --key home.tolerance.wrist_flex --value 9.0
+```
+
+`Control loop is running slower (0.5 Hz)`는 느린 한 주기의 역수일 수 있으며 전체 구간 평균이 아닙니다.
+ACT의 청크 생성 지연과 평균 동작 전송률은 별도로 `monitor`에서 봅니다.
+예를 들어 추론 32회/동작 전송 3200개는 청크당 100개 실행이며,
+추론 합계 68.911초라면 청크당 평균 약 2.153초입니다. 이것만으로 모든 제어 주기가 2초라고 판단하지 않습니다.
+
+## 12. FMS 없이 CLI로 실물 주문 시험
+
+FMS 애플리케이션과 AMR 없이도 MQTT 브로커만 접근 가능하면 됩니다.
+물품·바구니·컨베이어를 학습 때 위치에 준비하고 해당 OMX가 대기 중일 때 별도 터미널에서 한 명령씩 보냅니다.
+실제 팔이 움직입니다. `mosquitto_pub`가 없다면 `mosquitto-clients` 패키지가 필요합니다.
+
+```bash
+# OMX1 A 1개. B 시험은 A를 B로 변경
+mosquitto_pub -h 192.168.0.16 -p 1883 -t omx1/command -q 1 -m "{\"job_id\":\"cli-$(date +%s%N)\",\"items\":{\"A\":1}}"
+# OMX2 C 1개. D 시험은 C를 D로 변경
+mosquitto_pub -h 192.168.0.16 -p 1883 -t omx2/command -q 1 -m "{\"job_id\":\"cli-$(date +%s%N)\",\"items\":{\"C\":1}}"
+# OMX3/4는 물품 1개 보장이 아닌 하차 작업 시작
+mosquitto_pub -h 192.168.0.16 -p 1883 -t omx3/command -q 1 -m "{\"job_id\":\"cli-$(date +%s%N)\",\"items\":{\"E\":1}}"
+mosquitto_pub -h 192.168.0.16 -p 1883 -t omx4/command -q 1 -m "{\"job_id\":\"cli-$(date +%s%N)\",\"items\":{\"F\":1}}"
+# 다른 터미널에서 OMX1의 접수/진행/결과 확인. 다른 팔은 번호 변경
+mosquitto_sub -h 192.168.0.16 -p 1883 -v -t omx1/ack -t omx1/progress -t omx1/result
+```
+
+브로커 주소/포트는 각 현장 YAML과 일치시킵니다. 새 실행마다 새 작업 ID를 생성하며 retain 옵션은 사용하지 않습니다.
+접수 후 완료 결과를 기다린 뒤 다음 주문을 보냅니다. 같은 작업 ID 재전송은 재동작을 의미하지 않습니다.
+1개 주문 완료 뒤 새로운 ID로 1개 주문을 5회 이상 반복해 다음 작업 전 홈 정렬과 대기를 확인합니다.

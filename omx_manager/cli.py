@@ -20,7 +20,7 @@ def table(cfg,q):
 
 def edit_value(cfg,key,text):
     import yaml
-    allowed={"models.active_profile","runtime.cpu_threads","runtime.fps","home.hold_s","home.unload_hold_s","home.still_delta", "home.max_start_error", "home.move_speed", "counting.min_cycle_s", "counting.stall_s", "counting.leave_tolerance"}
+    allowed={"models.active_profile","runtime.cpu_threads","runtime.fps","home.hold_s","home.unload_hold_s","home.still_delta", "home.max_start_error", "home.move_speed", "counting.min_cycle_s", "counting.stall_s", "counting.leave_tolerance", "home.arrival_tolerance", "home.move_timeout_s", "home.max_step", "home.max_following_error", "home.max_sample_gap_s"}
     allowed.update("home.tolerance."+j for j in JOINTS)
     allowed.update("diagnostics."+name for name in diagnostic_options(cfg))
     allowed.update("service."+name for name in service_options(cfg))
@@ -111,7 +111,8 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
             elif command=="arm":
                 device.arm();print("Current pose goal installed; torque enabled. Verify locally before Home move")
             elif command=="home":
-                q=move_home(device,cfg,clock=time.monotonic,sleep=time.sleep);table(cfg,q)
+                from .hooks import home_reporter
+                q=move_home(device,cfg,clock=time.monotonic,sleep=time.sleep,report=home_reporter(cfg));table(cfg,q)
             else: raise ValueError("Unknown command")
 
 def main(argv=None):

@@ -530,3 +530,41 @@ def test_actual_count_commit_preserves_order_token_and_quantity(tmp_path):
     ns['_save_inventory'](strategy)
     data=json.loads(path.read_text())
     assert data['order_completed']==1 and data['remaining']==1 and data['order_started_at_epoch']==42
+
+
+@pytest.mark.parametrize('method', ['run', '_run_persistent_workstation'])
+def test_actual_loop_holds_first_home_sample_after_slow_act_chunk(cfg, method, tmp_path, monkeypatch):
+    cfg['counting']['min_cycle_s'] = 0
+    ns, strategy, ctx, event, clock = production_strategy_fixture(cfg, method, monkeypatch)
+    calls = []
+    def slow_chunk(*args):
+        calls.append(clock())
+        clock.sleep(2.)
+    ns['send_next_action'] = slow_chunk
+    if method == 'run':
+        completed = []
+        def count():
+            completed.append(clock())
+            strategy._remaining_inventory = 0
+        strategy._count_completed_cycle = count
+        ns[method](strategy, ctx)
+        assert len(completed) == 1
+    else:
+        strategy.config.workstation_status_file = str(tmp_path / 'status.json')
+        strategy.config.workstation_control_file = str(tmp_path / 'command.json')
+        strategy.config.workstation_poll_s = .1
+        strategy.config.workstation_job_timeout_s = 180
+        strategy.config.idle_complete_joint_delta = .6
+        strategy.config.idle_complete_hold_s = .5
+        monkeypatch.setenv('OMX_WORKSTATION_SESSION', 'test-session')
+        ns['read_json'] = lambda _: {'session':'test-session','job_id':'job','command':'START'}
+        ns['new_status'] = lambda session,phase,job_id,**kwargs: dict(session=session,phase=phase,job_id=job_id,**kwargs)
+        phases = []
+        def status(path, data):
+            phases.append(data['phase'])
+            if data['phase'] == 'DONE': event.set()
+        ns['atomic_json'] = status
+        ns[method](strategy, ctx)
+        assert phases == ['READY','RUNNING','DONE']
+    assert len(calls) <= 2
+    assert clock() < 6

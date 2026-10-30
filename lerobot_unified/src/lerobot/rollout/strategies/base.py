@@ -603,8 +603,8 @@ class BaseStrategy(RolloutStrategy):
                 else:
                     idle_home_since = None
                 # Once a return candidate is observed, monitor fresh joints without
-                # generating another ACT chunk during the confirmed-still hold.
-                if getattr(self, "_manager_home", None) and self._manager_home.detector.since is not None:
+                # generating another ACT chunk while fresh stillness samples accumulate.
+                if getattr(self, "_manager_home", None) and self._manager_home.detector.in_home_window:
                     timer.wait()
                     continue
                 with timer.section("process_obs"):
@@ -913,7 +913,7 @@ class BaseStrategy(RolloutStrategy):
                         engine.resume()
                         continue
 
-                    if getattr(self, "_manager_home", None) and self._manager_home.detector.since is not None:
+                    if getattr(self, "_manager_home", None) and self._manager_home.detector.in_home_window:
                         timer.wait()
                         continue
 
