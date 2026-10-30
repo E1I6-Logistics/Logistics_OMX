@@ -24,6 +24,8 @@ def edit_value(cfg,key,text):
     allowed.update("home.tolerance."+j for j in JOINTS)
     allowed.update("diagnostics."+name for name in diagnostic_options(cfg))
     allowed.update("service."+name for name in service_options(cfg))
+    from .view_options import options as view_options
+    allowed.update("view."+name for name in view_options(cfg))
     from .basket import DEFAULTS
     allowed.update('unload.'+name for name in DEFAULTS if name not in ('reference','reference_binding'))
     allowed.update(('recovery.auto_home','recovery.poll_s'))
@@ -39,6 +41,7 @@ def edit_value(cfg,key,text):
         result=initialize(result)
     if key.startswith("diagnostics."):result.setdefault("diagnostics",diagnostic_options(cfg))
     if key.startswith("service."):result.setdefault("service",service_options(cfg))
+    if key.startswith("view."):result.setdefault("view",view_options(cfg))
     nodes=key.split("."); section=result
     for part in nodes[:-1]: section=section[part]
     section[nodes[-1]]=yaml.safe_load(text)

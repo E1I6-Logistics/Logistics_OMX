@@ -40,6 +40,9 @@ def cleanup_resources(engine=None, robot=None):
     if robot is not None:
         close_metrics = getattr(robot, "_omx_metrics_close", None)
         if callable(close_metrics): attempt("diagnostics", close_metrics)
+    if robot is not None:
+        preview = getattr(robot, "_omx_view", None)
+        if preview is not None: attempt("viewer", preview.close)
     if engine is not None: attempt("inference", engine.stop)
     if robot is not None:
         for name, camera in getattr(robot, "cameras", {}).items(): attempt("camera." + name, camera.disconnect)

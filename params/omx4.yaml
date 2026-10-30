@@ -307,3 +307,22 @@ unload:
   inspection_min_luma: 15.0
   # 저노출 ROI의 RGB 모두 5 이하인 픽셀 비율 한도: 초과 시 UNKNOWN
   inspection_max_dark_ratio: 0.3
+
+# 노트북용 읽기 전용 카메라 웹 뷰어: omx_view 명령으로 시작
+view:
+  # auto=top 카메라 우선, 없으면 front. wrist를 자동 선택하지 않음
+  camera: auto
+  # 웹 서버가 받을 Pi 주소: 0.0.0.0=모든 인터페이스
+  bind: 0.0.0.0
+  # 노트북 브라우저에서 접속할 포트
+  port: 8080
+  # 영상 열람을 허용할 Windows 노트북 IPv4
+  allow_ip: 192.168.0.19
+  # 보기 전용 초당 전송 상한(0.2~2): 모델 주기와 별개
+  fps: 1.0
+  # 보기용 최대 가로 크기: 모델 입력 영상은 그대로 유지
+  max_width: 640
+  # JPEG 화질(30~90): 보기 전용 압축
+  jpeg_quality: 70
+  # 실시간 표시를 허용할 프레임 최대 나이(초)
+  max_age_s: 2.0

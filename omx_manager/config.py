@@ -88,7 +88,7 @@ def validate(cfg):
     if cfg.get("role") != expected: raise ConfigError("role does not match device_id")
     for section in ("hardware", "home", "models", "runtime", "recovery", "counting"):
         if not isinstance(cfg.get(section), dict): raise ConfigError(f"Missing section: {section}")
-    only_keys(cfg, "schema_version device_id role hardware home models runtime recovery counting diagnostics service workflow unload", "top-level")
+    only_keys(cfg, "schema_version device_id role hardware home models runtime recovery counting diagnostics service workflow unload view", "top-level")
     only_keys(cfg["hardware"], "port calibration_file robot_id disable_torque_on_disconnect cameras", "hardware")
     only_keys(cfg["home"], "target binding tolerance hold_s unload_hold_s still_delta max_sample_gap_s capture_s capture_max_span arrival_tolerance move_speed move_timeout_s max_start_error max_step max_following_error", "home")
     only_keys(cfg["models"], "active_profile profiles", "models")
@@ -163,6 +163,8 @@ def validate(cfg):
     from .return_path import validate_routes
     validate_workflow(cfg)
     validate_unload(cfg)
+    from .view_options import validate as validate_view
+    validate_view(cfg)
     validate_routes(cfg)
     from .cycles import validate_cycles
     validate_cycles(cfg)

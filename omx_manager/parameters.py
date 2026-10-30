@@ -11,6 +11,13 @@ DIAGNOSTIC_DEFAULTS = {
 SERVICE_DEFAULTS = {"restart_s":5.,"stop_timeout_s":45.,"enable_on_boot":False}
 
 COMMENTS = {
+    "view":"노트북 브라우저용 읽기 전용 뷰어: omx_view 실행 시에만 네트워크 서버 시작",
+    "bind":"뷰어가 받을 Pi IPv4 주소: 0.0.0.0=Pi의 모든 네트워크 인터페이스",
+    "port":"뷰어 웹 포트: 노트북에서 http://Pi주소:포트/ 접속",
+    "allow_ip":"영상 열람을 허용할 노트북 IPv4: DHCP로 바뀌면 수정",
+    "max_width":"보기용 JPEG 최대 가로 픽셀: 모델 입력 영상 크기는 변경하지 않음",
+    "jpeg_quality":"보기용 JPEG 품질(30~90): 낮추면 전송량 감소",
+    "max_age_s":"이 시간보다 오래된 영상은 실시간으로 표시하지 않음(초)",
     "mode":"카운터 방식: cycle=모델 복귀 영역 기반(권장), ordered_stages=이전 수동 단계 방식",
     "departure_hold_s":"주요 관절이 복귀 영역 밖에 연속으로 머물러야 할 시간(초): 순간 흔들림 제외",
     "min_actions":"한 사이클에서 필요한 최소 모델 명령 전송 횟수: 정지/홈 보정 명령은 제외",
@@ -163,6 +170,8 @@ def comment(path):
     if key in JOINT_NAMES:
         meaning="작업 단계 목표" if 'workflow' in path else "복귀 경유점" if 'points' in path else "홈 목표" if 'target' in path else "홈 복귀 허용 오차"
         return JOINT_NAMES[key]+" 관절의 "+meaning+"(정규화 단위, 각도 아님)"
+    if path[0]=='view' and key=='fps':return '보기 전용 초당 전송 상한(0.2~2): 모델 제어 주기와 별개'
+    if path[0]=='view' and key=='camera':return '보기 전용 입력 이름: auto=top 우선, 없으면 front; 모델 입력 이름은 변경하지 않음'
     if key=='fps':return "카메라 하드웨어 요청 FPS: 실제 수신 FPS는 monitor에서 확인" if 'cameras' in path else "정책 제어 루프의 목표 Hz: 실제 달성 주기는 monitor에서 확인"
     if key=='runtime':return "운용 실행·통신·시간 제한 설정" if len(path)==1 else "모델 실행 백엔드: 현재 lerobot_pytorch만 지원"
     if len(path)>=3 and path[-2]=='cameras':return "카메라 입력 키 '"+key+"': 모델 config 이름과 일치해야 함"

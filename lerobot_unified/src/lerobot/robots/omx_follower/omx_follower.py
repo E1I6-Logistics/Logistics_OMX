@@ -116,6 +116,8 @@ class OmxFollower(Robot):
         except BaseException:
             cleanup_resources(robot=self)
             raise
+        from omx_manager.viewer import attach_robot
+        attach_robot(self)
         logger.info(f"{self} connected.")
 
     @property

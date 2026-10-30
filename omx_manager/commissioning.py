@@ -117,11 +117,13 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0):
     inspector=None if capture else BasketInspector(cfg)
     if capture=='low_snapshot' and not spec['low_exposure_enabled']:
         raise ConfigError('Configure omx_basket low VALUE before low-snapshot')
-    camera=camera_for(cfg)
+    camera=camera_for(cfg);preview=None
     try:
         opened=time.perf_counter()
         print(f"[BASKET] 카메라 연결/준비 중 (설정 warmup={cfg['hardware']['cameras'][spec['camera']].get('warmup_s',0)}초).",flush=True)
         camera.connect();connection_s=time.perf_counter()-opened
+        from .viewer import attach
+        preview=attach(cfg,camera)
         print(f'[BASKET] 카메라 준비 완료: {connection_s:.2f}초',flush=True)
         if capture=='snapshot':
             frame=camera.read_latest().copy();check_pose();return frame
@@ -137,6 +139,7 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0):
             result.update(session.timing,camera_state='NORMAL_RESTORED');return result
         return _basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,{})
     finally:
+        if preview:preview.close()
         if camera.is_connected:camera.disconnect()
 
 

@@ -13,7 +13,7 @@ else
 fi
 export OMX_ROBOT_ID OMX_CONFIG_PATH OMX_PYTHON
 # 이전 alias와 재고 직접 초기화 함수를 제거하고 현재 YAML 관리 명령을 사용합니다.
-for _omx_name in omx_start omx_home omx_arm omx_release omx_observe omx_capture omx_check omx_calibrate omx_logs omx_monitor omx_status omx_recover omx_reset omx_order omx_service omx_info omx_help omx_cd omx_setup omx_workflow omx_stage omx_route omx_route_test omx_return_home omx_basket omx_resume omx_unload omx_tune omx_cycle_calibrate; do
+for _omx_name in omx_start omx_home omx_arm omx_release omx_observe omx_capture omx_check omx_calibrate omx_logs omx_monitor omx_status omx_recover omx_reset omx_order omx_service omx_info omx_help omx_cd omx_setup omx_workflow omx_stage omx_route omx_route_test omx_return_home omx_basket omx_resume omx_unload omx_tune omx_cycle_calibrate omx_view; do
   unalias "$_omx_name" 2>/dev/null || true
 done
 unset -f omx_reset 2>/dev/null || true
@@ -107,6 +107,9 @@ omx_service() {
     *) _omx_ctl service --action "$action" "$@";;
   esac
 }
+omx_view() {
+  OMX_PYTHON="$OMX_PYTHON" "$_OMX_SHELL_ROOT/omx_view" --config "$OMX_CONFIG_PATH" "$@"
+}
 omx_cd() { cd -- "$_OMX_SHELL_ROOT"; }
 omx_info() {
   printf 'OMX: %s\nYAML: %s\nPython: %s\nRepo: %s\n' "$OMX_ROBOT_ID" "$OMX_CONFIG_PATH" "$OMX_PYTHON" "$_OMX_SHELL_ROOT"
@@ -134,6 +137,8 @@ omx_stage F pick            이전 수동 단계 등록 (cycle 모드에서는 �
 omx_route fold              현재 자세를 fold 복귀 경로의 다음 지점으로 등록
 omx_route_test fold         홈에서 첫 경유점까지 역방향 이동 후 복귀 시험·승인
 omx_return_home             홈 접근 또는 시험된 경로를 이용한 실제 복귀
+omx_view                    노트북 브라우저용 보기 서버 (기존 카메라 공유, 읽기 전용)
+omx_view --camera-only      모델 정지 상태에서 고정 카메라만 열기 (모터 미접속)
 omx_basket snapshot         홈에서 상단 영상 좌표 격자 PNG 저장
 omx_basket capture          빈 바구니 직접 확인 후 기준 저장
 omx_basket check            빈 바구니/물건 있음/불명확 판정 시험
