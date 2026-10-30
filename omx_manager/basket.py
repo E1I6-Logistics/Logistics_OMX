@@ -134,6 +134,7 @@ class BasketInspector:
         self.since=None
         self.reason='WAIT_FRAME';self.processing_ms=0.;self.frame_age_ms=None
         self.evidence={}
+        self.frame_delta_mean=None;self.confirmation_reset='FIRST_FRAME';self.confirmation_hold_s=0.;self.observation_gap_s=None
 
     def update(self, image, now, frame_timestamp):
         import numpy as np
@@ -142,6 +143,7 @@ class BasketInspector:
         self.frame_age_ms=None if frame_timestamp is None else (now-frame_timestamp)*1000
         if frame_timestamp is None or not 0<=now-frame_timestamp<=self.spec['max_frame_age_s']:
             self.samples=0;self.since=None;self.verdict=None;self.reason='STALE_FRAME'
+            self.frame_delta_mean=None;self.confirmation_reset='STALE_FRAME';self.confirmation_hold_s=0.
             return self.result
         if self.last_frame is not None and frame_timestamp<=self.last_frame:
             self.reason='WAIT_NEW_FRAME'
@@ -149,7 +151,9 @@ class BasketInspector:
         if self.last_sample is not None and now-self.last_sample+1e-9 < self.spec["sample_interval_s"]:
             self.reason='WAIT_INTERVAL'
             return "UNKNOWN"
-        if self.last_sample is not None and not 0 < now-self.last_sample <= 2*self.spec["sample_interval_s"]+.1:
+        self.observation_gap_s=None if self.last_sample is None else now-self.last_sample
+        gap_reset=self.last_sample is not None and not 0 < now-self.last_sample <= 2*self.spec['sample_interval_s']+.1
+        if gap_reset:
             self.samples=0;self.since=None
         begun=time.perf_counter()
         if self.tracker:
@@ -158,6 +162,7 @@ class BasketInspector:
             except ViewError as exc:
                 self.samples=0;self.since=None;self.verdict=None;self.previous=None;self.latest=None;self.ratio=None
                 self.last_sample=now;self.last_frame=frame_timestamp;self.reason=str(exc)
+                self.frame_delta_mean=None;self.confirmation_reset=str(exc);self.confirmation_hold_s=0.
                 self.evidence=dict(quality_flags=[str(exc)],registration='REJECTED',features_computed=False)
                 self.processing_ms=(time.perf_counter()-begun)*1000
                 return 'UNKNOWN'
@@ -177,12 +182,23 @@ class BasketInspector:
             verdict = ('EMPTY' if self.ratio<=self.spec['empty_ratio'] else 'OCCUPIED' if self.ratio>=self.spec['occupied_ratio'] else 'UNKNOWN')
             if illumination>self.spec['illumination_limit']:verdict='UNKNOWN'
         difference=None if self.previous is None else np.abs(current16-self.previous)
-        stable = difference is not None and float(difference[self.comparator.mask].mean() if self.comparator else difference.mean()) <= self.spec["stability_delta"]
+        values=None if difference is None else difference[self.comparator.mask] if self.comparator else difference
+        self.frame_delta_mean=None if values is None or values.size==0 else float(values.mean())
+        image_stable=self.frame_delta_mean is not None and self.frame_delta_mean<=self.spec['stability_delta']
+        stable=image_stable
         if self.tracker:stable=stable and self.tracker.last_info['pose_stable']
+        if verdict=='UNKNOWN':self.confirmation_reset='EVIDENCE_UNKNOWN'
+        elif self.previous is None:self.confirmation_reset='FIRST_FRAME'
+        elif gap_reset:self.confirmation_reset='SAMPLE_GAP'
+        elif not image_stable:self.confirmation_reset='FRAME_CHANGE'
+        elif self.tracker and not self.tracker.last_info['pose_stable']:self.confirmation_reset='POSE_MOVEMENT'
+        elif verdict!=self.verdict:self.confirmation_reset='CANDIDATE_CHANGED'
+        else:self.confirmation_reset='CONTINUING'
         continuing=stable and verdict==self.verdict and verdict!='UNKNOWN'
         self.samples=self.samples+1 if continuing else 1 if verdict!='UNKNOWN' else 0
         self.since=self.since if continuing and self.since is not None else now if verdict!='UNKNOWN' else None
         self.previous=current16; self.verdict=verdict
+        self.confirmation_hold_s=0. if self.since is None else now-self.since
         held=self.since is not None and now-self.since+1e-9>=self.spec['confirmation_s']
         self.result=verdict if self.samples>=self.spec['stable_samples'] and held else 'UNKNOWN'
         self.reason='CONFIRMED' if self.result!='UNKNOWN' else 'STABILIZING' if verdict!='UNKNOWN' else 'LIGHTING_OR_UNCERTAIN'
@@ -194,6 +210,9 @@ class BasketInspector:
         return dict(verdict=self.result,candidate=self.verdict or 'UNKNOWN',reason=self.reason,
                     changed_ratio=self.ratio,stable_samples=self.samples,frame_age_ms=self.frame_age_ms,
                     processing_ms=self.processing_ms,at=now,exact_item_count=None,
+                    frame_delta_mean=self.frame_delta_mean,stability_delta=self.spec['stability_delta'],
+                    confirmation_reset=self.confirmation_reset,confirmation_hold_s=self.confirmation_hold_s,
+                    observation_gap_s=self.observation_gap_s,
                     **{k:v for k,v in self.evidence.items() if k not in ('verdict','changed_ratio')})
 
     def transfer_changed(self,before,after):
