@@ -11,6 +11,7 @@ DIAGNOSTIC_DEFAULTS = {
 SERVICE_DEFAULTS = {"restart_s":5.,"stop_timeout_s":45.,"enable_on_boot":False}
 
 COMMENTS = {
+    'registration_wall_color_limit':'전체 시야에서 독립된 테두리 3면 이상의 RGB 변화가 일치할 때만 허용할 조명 보정 한도(기본 12, 최대 16): 합의 실패 시 기존 내부 기준 사용',
     'camera_auto_reconnect':'영상 읽기 실패 시 모델 명령을 멈추고 같은 USB 카메라 재연결 시도: 토크·모터 모드는 변경하지 않음',
     'camera_reconnect_attempts':'카메라 자동 재연결 최대 횟수(1~3): 실패 시 복구 대기, 미완료 주문 자동 재실행 없음',
     'camera_reconnect_interval_s':'카메라 재연결 시도 사이 대기 시간(초)',

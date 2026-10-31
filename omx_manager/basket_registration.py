@@ -9,7 +9,7 @@ DEFAULTS=dict(registration_enabled=False,registration_search_pad=60,
               registration_scale_tolerance=.25,registration_inner_margin=6,
               registration_pixel_threshold=8.,registration_weak_threshold=6.,
               registration_component_pixels=32,registration_weak_pixels=32,
-              registration_color_limit=6.,registration_still_px=3.,registration_allow_partial=False,
+              registration_color_limit=6.,registration_wall_color_limit=12.,registration_still_px=3.,registration_allow_partial=False,
               registration_visible_confirmed=False,registration_min_visible_ratio=.65,registration_max_extrapolation=.35,registration_partial_component_pixels=64,registration_partial_color_limit=20.)
 
 class ViewError(ConfigError):pass
@@ -28,6 +28,7 @@ def validate(spec):
                       ('registration_scale_tolerance',.05,.4),('registration_pixel_threshold',4,20),
                       ('registration_weak_threshold',2,12),('registration_color_limit',1,12),('registration_still_px',.5,5),('registration_min_visible_ratio',.5,.95),('registration_max_extrapolation',.05,.5),('registration_partial_color_limit',1,32)):
         number(spec[key],key,lo,hi)
+    number(spec['registration_wall_color_limit'],'registration_wall_color_limit',1,16)
     if spec['registration_weak_threshold']>spec['registration_pixel_threshold']:raise ConfigError('Weak threshold must not exceed strong threshold')
     if spec['registration_enabled'] and (not spec['low_exposure_enabled'] or spec['vision_method']!='low_template'):
         raise ConfigError('Tray registration requires inspection-only low_template')
@@ -84,22 +85,52 @@ def top_partial_quad(hull,origin,spec):
     """
     import cv2
     import numpy as np
-    q=cv2.approxPolyDP(hull,.015*cv2.arcLength(hull,True),True)[:,0].astype(np.float32)+origin
-    if len(q)!=5:raise ViewError('PARTIAL_GEOMETRY_UNCERTAIN')
-    top=np.flatnonzero(q[:,1]<=max(12.,spec['roi'][3]*.08))
-    if len(top)!=2:raise ViewError('PARTIAL_GEOMETRY_UNCERTAIN')
-    pairs=[]
-    for index in top:
-        neighbor=next((j for j in ((int(index)-1)%5,(int(index)+1)%5) if j not in top),None)
-        if neighbor is None:raise ViewError('PARTIAL_GEOMETRY_UNCERTAIN')
-        pairs.append((q[index],q[neighbor]))
-    a,b=pairs[0];c,d=pairs[1];u=b-a;v=d-c
-    matrix=np.column_stack((u,-v));det=float(np.linalg.det(matrix))
-    if abs(det)<20:raise ViewError('PARTIAL_GEOMETRY_UNCERTAIN')
-    intersection=a+np.linalg.solve(matrix,c-a)[0]*u
-    if not np.isfinite(intersection).all() or intersection[1]>12:raise ViewError('PARTIAL_GEOMETRY_UNCERTAIN')
-    if -intersection[1]>spec['registration_max_extrapolation']*max(spec['roi'][2:]):raise ViewError('PARTIAL_EXTRAPOLATION_LIMIT')
-    return ordered(np.vstack(([q[j] for j in range(5) if j not in top],intersection)))
+    # A near-top REAL corner can be below the old 12..18px "cut" band.
+    # Use actual hull contacts with the sensor boundary to choose the TWO
+    # cut endpoints; a third, real corner near the top is not another cut.
+    points=hull[:,0].astype(np.float32)+origin
+    contacts=points[points[:,1]<=3.5]
+    endpoints=None
+    if len(contacts)>=2 and np.ptp(contacts[:,0])>4:
+        endpoints=contacts[[np.argmin(contacts[:,0]),np.argmax(contacts[:,0])]]
+    last_reason='PARTIAL_GEOMETRY_UNCERTAIN';perimeter=cv2.arcLength(hull,True);measured_fallback=None
+    for epsilon in (.015,.01,.005,.003,.02,.025,.03):
+        q=cv2.approxPolyDP(hull,epsilon*perimeter,True)[:,0].astype(np.float32)+origin
+        top=np.flatnonzero(q[:,1]<=3.5)
+        if len(q)==4 and len(top)==1 and endpoints is None:
+            # Barely touching the boundary: all four observed corners suffice.
+            measured=ordered(q)
+            try:describe(measured)
+            except ViewError:continue
+            if epsilon<=.005 and cv2.contourArea(measured)>=.995*cv2.contourArea(hull):
+                measured_fallback=measured
+            continue
+        if len(q)!=5 or endpoints is None:continue
+        near=np.flatnonzero(q[:,1]<=max(12.,spec['roi'][3]*.08))
+        if len(near)<2:continue
+        pairs=[(float(np.linalg.norm(q[i]-endpoints[0])+np.linalg.norm(q[j]-endpoints[1])),i,j)
+               for i in near for j in near if i!=j and (int(i)-int(j))%5 in (1,4)]
+        if not pairs:continue
+        _,left,right=min(pairs);top=np.array([left,right])
+        pairs=[]
+        for index in top:
+            neighbor=next((j for j in ((int(index)-1)%5,(int(index)+1)%5) if j not in top),None)
+            if neighbor is None:break
+            pairs.append((q[index],q[neighbor]))
+        if len(pairs)!=2:continue
+        a,b=pairs[0];c,d=pairs[1];u=b-a;v=d-c
+        matrix=np.column_stack((u,-v));det=float(np.linalg.det(matrix))
+        if abs(det)<20:continue
+        intersection=a+np.linalg.solve(matrix,c-a)[0]*u
+        if not np.isfinite(intersection).all() or intersection[1]>3.5:continue
+        if -intersection[1]>spec['registration_max_extrapolation']*max(spec['roi'][2:]):
+            last_reason='PARTIAL_EXTRAPOLATION_LIMIT';continue
+        result=ordered(np.vstack(([q[j] for j in range(5) if j not in top],intersection)))
+        try:describe(result)
+        except ViewError:continue
+        return result
+    if measured_fallback is not None and last_reason!='PARTIAL_EXTRAPOLATION_LIMIT':return measured_fallback
+    raise ViewError(last_reason)
 
 
 class Tracker:
@@ -121,7 +152,7 @@ class Tracker:
         if threshold<4:raise ViewError('BASKET_CONTRAST_TOO_LOW')
         binary=(gray>=min(254,threshold*spec['registration_threshold_factor'])).astype(np.uint8)*255
         contours=cv2.findContours(binary,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
-        candidates=[];clipped=False
+        candidates=[];clipped=False;partial_rejections=[]
         target=np.array(self.reference['quad'],np.float32).mean(0) if self.reference else np.array([x+w/2,y+h/2])
         for contour in contours:
             area=cv2.contourArea(contour)
@@ -140,7 +171,10 @@ class Tracker:
             if not hull_area or area/hull_area<.7:continue
             if partial:
                 try:q=top_partial_quad(hull,np.array([x0,y0]),spec)
-                except ViewError:continue
+                except ViewError as exc:
+                    center=points.mean(0)
+                    partial_rejections.append((float(np.linalg.norm(center-target)),str(exc)))
+                    continue
             else:
                 approx=cv2.approxPolyDP(hull,.02*cv2.arcLength(hull,True),True)
                 if len(approx)!=4 or not cv2.isContourConvex(approx):continue
@@ -157,7 +191,24 @@ class Tracker:
                 if angle>spec['registration_max_rotation_deg']:continue
             candidates.append((distance,q,info,partial))
         candidates.sort(key=lambda row:row[0])
-        if not candidates:raise ViewError('BASKET_CLIPPED' if clipped else 'BASKET_POSE_NOT_FOUND')
+        if not candidates:
+            if spec['registration_allow_partial'] and self.reference and not getattr(self,'_threshold_retry',False):
+                # Cargo changes Otsu's histogram. Retry a bounded set of brighter
+                # analysis thresholds against the SAME saved pose/area limits.
+                # No camera controls or source/model frames are changed.
+                for delta in (.1,.2,-.1):
+                    factor=spec['registration_threshold_factor']+delta
+                    if not 1.05<=factor<=1.8:continue
+                    retry=Tracker(dict(spec,registration_threshold_factor=factor),self.reference)
+                    retry._threshold_retry=True;retry.pose_anchor=self.pose_anchor
+                    try:result=retry.extract(image)
+                    except ViewError:continue
+                    self.last_profile=retry.last_profile;self.last_info=retry.last_info
+                    self.valid_mask=retry.valid_mask;self.pose_anchor=retry.pose_anchor
+                    self.last_info['registration_threshold_used']=factor
+                    return result
+            if partial_rejections:raise ViewError(min(partial_rejections)[1])
+            raise ViewError('BASKET_CLIPPED' if clipped else 'BASKET_POSE_NOT_FOUND')
         if len(candidates)>1 and candidates[1][0]-candidates[0][0]<15:raise ViewError('MULTIPLE_BASKET_CANDIDATES')
         _,q,info,partial=candidates[0]
         destination=np.array([[0,0],[127,0],[127,127],[0,127]],np.float32)
@@ -190,6 +241,38 @@ class Comparator:
         self.reference_mean=reference[self.mask].mean(0)
         self.reference_clipped=float((reference.min(2)[self.mask]>=250).mean())
         self.reference_dark=float((reference.max(2)[self.mask]<=5).mean())
+        self.lighting_anchors=[]
+        if not spec['registration_allow_partial']:
+            yy,xx=np.indices(self.mask.shape)
+            visible=np.ones(self.mask.shape,bool) if reference_mask is None else reference_mask.astype(bool)
+            usable=visible&(reference.min(2)>5)&(reference.max(2)<245)
+            # Fixed, narrow WALL strips; do not use the cargo-bearing floor to
+            # decide whether a box/shadow is a global illumination change.
+            for region in ((yy>=2)&(yy<=5)&(xx>=16)&(xx<112),
+                           (yy>=122)&(yy<=125)&(xx>=16)&(xx<112),
+                           (xx>=2)&(xx<=5)&(yy>=16)&(yy<112),
+                           (xx>=122)&(xx<=125)&(yy>=16)&(yy<112)):
+                self.lighting_anchors.append(region&usable)
+
+    def illumination_offset(self,signed,mask,valid_mask):
+        import numpy as np
+        interior=np.median(signed[mask],axis=0)
+        offsets=[]
+        for region in self.lighting_anchors:
+            selected=region if valid_mask is None else region&valid_mask
+            if selected.sum()>=64:offsets.append(np.median(signed[selected],axis=0))
+        offset=interior;source='interior';sides=0
+        if len(offsets)>=3:
+            values=np.array(offsets);center=np.median(values,axis=0)
+            matching=np.abs(values-center).max(1)<=3.
+            if matching.sum()>=3:
+                rim=np.median(values[matching],axis=0);sides=int(matching.sum())
+                # Preserve the successful existing estimator normally. Use the
+                # independent wall measurement only to disambiguate a rejected
+                # floor offset, within the separate bounded wall limit.
+                if abs(interior).max()>self.spec['registration_color_limit'] and abs(rim).max()<=self.spec['registration_wall_color_limit']:
+                    offset=rim;source='rim_consensus'
+        return offset,dict(interior_color_offset=interior.tolist(),lighting_offset_source=source,lighting_anchor_sides=sides)
     def compare(self,image,valid_mask=None):
         import cv2
         import numpy as np
@@ -199,7 +282,7 @@ class Comparator:
         signed=image.astype(np.int16)-self.reference
         if float(mask.sum()/self.reference_mask.sum())<s['registration_min_visible_ratio']:
             return dict(verdict='UNKNOWN',evidence_reason='INSUFFICIENT_COMMON_VIEW',changed_ratio=None,quality_flags=['INSUFFICIENT_COMMON_VIEW'],features_computed=False)
-        offset=np.median(signed[mask],axis=0)
+        offset,lighting=self.illumination_offset(signed,mask,valid_mask)
         clipped=max(self.reference_clipped,float((image.min(2)[mask]>=250).mean()))
         dark=max(self.reference_dark,float((image.max(2)[mask]<=5).mean()))
         flags=[]
@@ -208,10 +291,12 @@ class Comparator:
         elif not s['full_view_confirmed']:flags.append('FULL_VIEW_NOT_CONFIRMED')
         if clipped>s['max_clipped_ratio']:flags.append('ROI_OVEREXPOSED')
         if dark>s['inspection_max_dark_ratio'] or min(float(self.reference_mean.mean()),float(image[mask].mean()))<s['inspection_min_luma']:flags.append('ROI_UNDEREXPOSED')
-        if float(abs(offset).max())>(s['registration_partial_color_limit'] if s['registration_allow_partial'] else s['registration_color_limit']):flags.append('LIGHTING_SHIFT')
+        limit=(s['registration_partial_color_limit'] if s['registration_allow_partial'] else
+               s['registration_wall_color_limit'] if lighting['lighting_offset_source']=='rim_consensus' else s['registration_color_limit'])
+        if float(abs(offset).max())>limit:flags.append('LIGHTING_SHIFT')
         result=dict(changed_ratio=0.,quality_flags=flags,clipped_ratio=clipped,illumination_delta=float(abs(offset).max()),
                     comparison='registered_low_template',view_scope='visible_only' if s['registration_allow_partial'] else 'full',
-                    full_basket_verified=False,color_offset=offset.tolist(),features_computed=not bool(flags))
+                    full_basket_verified=False,color_offset=offset.tolist(),features_computed=not bool(flags),**lighting)
         if flags:return dict(result,verdict='UNKNOWN',evidence_reason=flags[0])
         raw=np.abs(signed-offset).max(2)
         strong=((raw>=s['registration_pixel_threshold'])&mask).astype(np.uint8)
@@ -232,7 +317,8 @@ def comparison_view(reference,current,spec,reference_mask=None,current_mask=None
     import cv2
     import numpy as np
     comparator=Comparator(reference,spec,reference_mask)
-    evidence=comparator.compare(current,current_mask);offset=np.median((current.astype(np.int16)-reference)[comparator.mask],axis=0)
+    evidence=comparator.compare(current,current_mask)
+    offset=np.asarray(evidence.get('color_offset',[0,0,0]))
     delta=np.abs(current.astype(np.int16)-reference-offset).max(2)
     heat=cv2.cvtColor(np.clip(delta*12,0,255).astype(np.uint8),cv2.COLOR_GRAY2BGR)
     heat[(delta>=spec['registration_pixel_threshold'])&comparator.mask]=(0,0,255)

@@ -164,6 +164,15 @@ def test_foreign_laptop_is_denied_before_demand_write(rig):
     h.do_GET();assert h.reply.call_args.args[0]==403
     assert not list(tmp.glob('*.request'))
 
+def test_failure_snapshot_is_whitelisted_and_symlinks_still_rejected(http):
+    server,get,_,tmp=http
+    server.asset_dir.mkdir(parents=True)
+    path=server.asset_dir/'basket_failure.png';path.write_bytes(b'\x89PNG\r\n\x1a\nfailure')
+    assert get('/saved/failure.png')[0]==200
+    assert json.loads(get('/status.json')[2])['assets']['failure']['name']=='basket_failure.png'
+    path.unlink();secret=tmp/'private';secret.write_text('private');path.symlink_to(secret)
+    assert get('/saved/failure.png')[0]==404
+
 
 def test_viewer_failure_does_not_affect_robot(rig,monkeypatch):
     cfg,cam,_,_=rig

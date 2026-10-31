@@ -137,6 +137,7 @@ class BasketInspector:
         self.reason='WAIT_FRAME';self.processing_ms=0.;self.frame_age_ms=None
         self.evidence={}
         self.temporal_frames=[];self.temporal_masks=[];self.latest_valid_mask=None
+        self.last_source_frame=None;self.last_source_stamp=None
         self.frame_delta_mean=None;self.confirmation_reset='FIRST_FRAME';self.confirmation_hold_s=0.;self.observation_gap_s=None
 
     def update(self, image, now, frame_timestamp):
@@ -155,6 +156,8 @@ class BasketInspector:
         if self.last_sample is not None and now-self.last_sample+1e-9 < self.spec["sample_interval_s"]:
             self.reason='WAIT_INTERVAL'
             return "UNKNOWN"
+        # Keep one existing frame reference, not another camera or image queue.
+        self.last_source_frame=image;self.last_source_stamp=frame_timestamp
         self.observation_gap_s=None if self.last_sample is None else now-self.last_sample
         gap_reset=self.last_sample is not None and not 0 < now-self.last_sample <= 2*self.spec['sample_interval_s']+.1
         if gap_reset:
@@ -194,7 +197,7 @@ class BasketInspector:
             if self.tracker:self.evidence.update(self.tracker.last_info)
             verdict=self.evidence['verdict'];self.ratio=self.evidence['changed_ratio']
             self.evidence.update(temporal_samples=len(self.temporal_frames),temporal_required=frames)
-            if len(self.temporal_frames)<frames:
+            if len(self.temporal_frames)<frames and verdict!='UNKNOWN':
                 verdict='UNKNOWN';self.evidence['evidence_reason']='TEMPORAL_WARMUP'
         else:
             self.ratio=float((np.max(np.abs(current16-self.reference16),axis=2)>=self.spec['pixel_threshold']).mean())

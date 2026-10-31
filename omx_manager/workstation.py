@@ -118,6 +118,24 @@ def run(strategy,ctx,send_action,make_timer):
                         # Keep the loaded model paused; fail only this job.
                         failure=dict(last_basket_snapshot or {},failure_at=time.time(),message=str(exc),
                                      camera_state='NORMAL_RESTORED',restore_verified=True,job_id=job,session=session)
+                        frame=getattr(inspector,'last_source_frame',None)
+                        stamp=getattr(inspector,'last_source_stamp',None)
+                        if frame is not None and stamp is not None:
+                            try:
+                                import cv2
+                                from .viewer import write_bytes
+                                view=cv2.cvtColor(frame,cv2.COLOR_RGB2BGR)
+                                roi=options.get('roi')
+                                if roi:
+                                    x,y,w,h=roi;cv2.rectangle(view,(x,y),(x+w,y+h),(0,180,255),1)
+                                cv2.putText(view,str(failure.get('reason','UNKNOWN')),(12,24),cv2.FONT_HERSHEY_SIMPLEX,.55,(0,180,255),1)
+                                ok,png=cv2.imencode('.png',view)
+                                if not ok:raise OSError('Cannot encode inspection failure image')
+                                image_path=status_path.with_name('basket_failure.png')
+                                write_bytes(image_path,png.tobytes())
+                                failure.update(image_path=str(image_path),image_at=time.time()-(time.perf_counter()-stamp))
+                            except Exception as image_error:
+                                logger.warning('[BASKET] Failure image unavailable: %s',image_error)
                         write_json(status_path.with_name('basket_failure.json'),failure)
                         logger.warning('[BASKET] Inspection job failed; cameras/model remain loaded: %s',exc)
                         status('INSPECTION_FAILED',message=str(exc),basket_empty_verified=False,

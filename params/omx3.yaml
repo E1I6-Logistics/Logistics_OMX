@@ -348,6 +348,8 @@ unload:
   registration_weak_pixels: 32
   # 보정할 수 있는 중앙 RGB 밝기 차이 한도: 넘으면 UNKNOWN
   registration_color_limit: 6.0
+  # 전체 시야의 테두리 3면 이상 밝기 변화가 일치할 때만 허용할 RGB 조명 보정 한도(최대 16)
+  registration_wall_color_limit: 12.0
   # 확정 대기 중 바구니 모서리에 허용할 원본 영상 움직임(픽셀)
   registration_still_px: 3.0
   # 부분 시야 검사 허용: true이면 보이는 영역만 판단하며 전체 비움으로 보고하지 않음

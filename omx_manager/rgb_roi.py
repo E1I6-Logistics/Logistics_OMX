@@ -37,7 +37,11 @@ def signature(spec):
     material=dict(version=2,size=SIZE,roi=spec['roi'],polygon=spec['roi_polygon'])
     if spec.get('registration_enabled'):
         from .basket_registration import DEFAULTS
-        material.update(version=3,registration={k:spec[k] for k in DEFAULTS})
+        registration={k:spec[k] for k in DEFAULTS}
+        # Preserve installed references with the default independent-wall
+        # estimator; custom bounds remain part of the reference signature.
+        if registration['registration_wall_color_limit']==12.:registration.pop('registration_wall_color_limit')
+        material.update(version=3,registration=registration)
     return hashlib.sha256(json.dumps(material,sort_keys=True).encode()).hexdigest()
 
 

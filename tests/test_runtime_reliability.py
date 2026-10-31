@@ -158,7 +158,7 @@ def test_uncertain_job_keeps_controller_loaded_and_next_new_job_can_finish(tmp_p
  monkeypatch.setitem(sys.modules,'lerobot.rollout.workstation_ipc',ipc)
  cfg=C.load(ROOT/'params/omx4.yaml');cfg['home']['target']={j:0. for j in C.JOINTS}
  options=dict(basket.DEFAULTS,low_exposure_enabled=True,job_timeout_s=60.)
- inspector=NS(spec=options,reset=Mock())
+ inspector=NS(spec=options,reset=Mock(),last_source_frame=np.full((48,64,3),100,np.uint8),last_source_stamp=0.)
  monkeypatch.setattr(W,'BasketInspector',lambda _:inspector)
  monkeypatch.setattr(W,'initialize_home',lambda *a,**kw:None)
  monkeypatch.setattr(W,'heartbeat',lambda:None)
@@ -198,6 +198,8 @@ def test_uncertain_job_keeps_controller_loaded_and_next_new_job_can_finish(tmp_p
  failure=json.loads((tmp_path/'basket_failure.json').read_text())
  assert failure['job_id']=='failed-job' and failure['restore_verified'] is True
  assert failure['reason']=='REGISTERED_FAINT_CHANGE'
+ assert Path(failure['image_path']).is_file()
+ assert failure['image_at']<=failure['failure_at']
 
 
 def test_mqtt_worker_fails_uncertain_job_then_releases_for_new_order(tmp_path):
