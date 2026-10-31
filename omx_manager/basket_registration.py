@@ -9,7 +9,9 @@ DEFAULTS=dict(registration_enabled=False,registration_search_pad=60,
               registration_scale_tolerance=.25,registration_inner_margin=6,
               registration_pixel_threshold=8.,registration_weak_threshold=6.,
               registration_component_pixels=32,registration_weak_pixels=32,
-              registration_color_limit=6.,registration_wall_color_limit=12.,registration_still_px=3.,registration_allow_partial=False,
+              registration_color_limit=6.,registration_wall_color_limit=12.,registration_partial_chroma_fallback=True,
+              registration_chroma_threshold=8.,registration_chroma_component_pixels=64,
+              registration_still_px=3.,registration_allow_partial=False,
               registration_visible_confirmed=False,registration_min_visible_ratio=.65,registration_max_extrapolation=.35,registration_partial_component_pixels=64,registration_partial_color_limit=20.)
 
 class ViewError(ConfigError):pass
@@ -17,11 +19,11 @@ class ViewError(ConfigError):pass
 
 def validate(spec):
     if type(spec['registration_enabled']) is not bool:raise ConfigError('registration_enabled must be boolean')
-    for name in ('registration_allow_partial','registration_visible_confirmed'):
+    for name in ('registration_allow_partial','registration_visible_confirmed','registration_partial_chroma_fallback'):
         if type(spec[name]) is not bool:raise ConfigError(name+' must be boolean')
     if spec['registration_allow_partial'] and not spec['registration_enabled']:raise ConfigError('Partial view requires registration')
     for key,lo,hi in (('registration_search_pad',0,150),('registration_inner_margin',2,8),
-                      ('registration_component_pixels',8,128),('registration_weak_pixels',8,128),('registration_partial_component_pixels',16,192)):
+                      ('registration_component_pixels',8,128),('registration_weak_pixels',8,128),('registration_partial_component_pixels',16,192),('registration_chroma_component_pixels',16,256)):
         if type(spec[key]) is not int or not lo<=spec[key]<=hi:raise ConfigError('Invalid '+key)
     for key,lo,hi in (('registration_threshold_factor',1.05,1.8),('registration_min_area_ratio',.03,.4),
                       ('registration_max_shift_px',5,120),('registration_max_rotation_deg',1,25),
@@ -29,6 +31,7 @@ def validate(spec):
                       ('registration_weak_threshold',2,12),('registration_color_limit',1,12),('registration_still_px',.5,5),('registration_min_visible_ratio',.5,.95),('registration_max_extrapolation',.05,.5),('registration_partial_color_limit',1,32)):
         number(spec[key],key,lo,hi)
     number(spec['registration_wall_color_limit'],'registration_wall_color_limit',1,16)
+    number(spec['registration_chroma_threshold'],'registration_chroma_threshold',4,24)
     if spec['registration_weak_threshold']>spec['registration_pixel_threshold']:raise ConfigError('Weak threshold must not exceed strong threshold')
     if spec['registration_enabled'] and (not spec['low_exposure_enabled'] or spec['vision_method']!='low_template'):
         raise ConfigError('Tray registration requires inspection-only low_template')
@@ -274,6 +277,33 @@ class Comparator:
                 if abs(interior).max()>self.spec['registration_color_limit'] and abs(rim).max()<=self.spec['registration_wall_color_limit']:
                     offset=rim;source='rim_consensus'
         return offset,dict(interior_color_offset=interior.tolist(),lighting_offset_source=source,lighting_anchor_sides=sides)
+
+    def chromatic_change(self,image,mask,rgb_offset=None):
+        """Brightness-normalized color evidence; never an EMPTY authorization."""
+        import cv2
+        import numpy as np
+        if not hasattr(self,'reference_chroma'):
+            ref=self.reference.astype(np.float32)
+            self.reference_chroma=ref/np.maximum(ref.sum(2,keepdims=True),1)*255
+            self.reference_chroma_usable=ref.mean(2)>=self.spec['inspection_min_luma']
+        current=image.astype(np.float32)
+        usable=mask&self.reference_chroma_usable&(current.mean(2)>=self.spec['inspection_min_luma'])
+        signed=current/np.maximum(current.sum(2,keepdims=True),1)*255-self.reference_chroma
+        offset=np.median(signed[usable],axis=0) if usable.any() else np.zeros(3,np.float32)
+        delta=np.abs(signed-offset).max(2)
+        rgb_signed=image.astype(np.int16)-self.reference
+        if rgb_offset is None:rgb_offset=np.median(rgb_signed[mask],axis=0)
+        supported=np.abs(rgb_signed-rgb_offset).max(2)>=self.spec['registration_pixel_threshold']
+        # Chromaticity changes mathematically with additive RGB shifts on a
+        # shaded empty floor. Require local RGB evidence beyond that same
+        # global shift as well; normalization artifacts cannot authorize motion.
+        delta=np.where(supported,delta,0)
+        active=((delta>=self.spec['registration_chroma_threshold'])&usable).astype(np.uint8)
+        coherent=cv2.erode(active,np.ones((3,3),np.uint8))
+        n,_,stats,_=cv2.connectedComponentsWithStats(coherent,connectivity=8)
+        largest=int(stats[1:,cv2.CC_STAT_AREA].max()) if n>1 else 0
+        return dict(chroma_component_pixels=largest,chroma_color_offset=offset.tolist(),
+                    chroma_changed_ratio=float(active[mask].mean())),delta
     def compare(self,image,valid_mask=None):
         import cv2
         import numpy as np
@@ -298,7 +328,17 @@ class Comparator:
         result=dict(changed_ratio=0.,quality_flags=flags,clipped_ratio=clipped,illumination_delta=float(abs(offset).max()),
                     comparison='registered_low_template',view_scope='visible_only' if s['registration_allow_partial'] else 'full',
                     full_basket_verified=False,color_offset=offset.tolist(),features_computed=not bool(flags),**lighting)
-        if flags:return dict(result,verdict='UNKNOWN',evidence_reason=flags[0])
+        if flags:
+            # Geometry/visibility/exposure still gate this path. A clear colored
+            # object may prove OCCUPIED under shadow, but it never proves EMPTY.
+            if flags==['LIGHTING_SHIFT'] and s['registration_allow_partial'] and s['registration_partial_chroma_fallback']:
+                color,_=self.chromatic_change(image,mask,offset)
+                if color['chroma_component_pixels']>=s['registration_chroma_component_pixels']:
+                    return dict(result,**color,verdict='OCCUPIED',evidence_reason='REGISTERED_COLORED_OBJECT',
+                                quality_flags=[],quality_warnings=['LIGHTING_SHIFT'],features_computed=True,
+                                difference_basis='normalized_color',changed_ratio=color['chroma_changed_ratio'])
+                return dict(result,**color,verdict='UNKNOWN',evidence_reason='LIGHTING_SHIFT')
+            return dict(result,verdict='UNKNOWN',evidence_reason=flags[0])
         raw=np.abs(signed-offset).max(2)
         strong=((raw>=s['registration_pixel_threshold'])&mask).astype(np.uint8)
         weak=((raw>=s['registration_weak_threshold'])&mask).astype(np.uint8)
@@ -321,11 +361,15 @@ def comparison_view(reference,current,spec,reference_mask=None,current_mask=None
     evidence=comparator.compare(current,current_mask)
     offset=np.asarray(evidence.get('color_offset',[0,0,0]))
     delta=np.abs(current.astype(np.int16)-reference-offset).max(2)
+    threshold=spec['registration_pixel_threshold'];title='REGISTERED DIFFERENCE'
+    if evidence.get('difference_basis')=='normalized_color':
+        _,delta=comparator.chromatic_change(current,comparator.mask,offset)
+        threshold=spec['registration_chroma_threshold'];title='COLOR DIFFERENCE'
     heat=cv2.cvtColor(np.clip(delta*12,0,255).astype(np.uint8),cv2.COLOR_GRAY2BGR)
-    heat[(delta>=spec['registration_pixel_threshold'])&comparator.mask]=(0,0,255)
+    heat[(delta>=threshold)&comparator.mask]=(0,0,255)
     panels=[cv2.cvtColor(reference,cv2.COLOR_RGB2BGR),cv2.cvtColor(current,cv2.COLOR_RGB2BGR),heat]
     canvas=np.zeros((288,768,3),np.uint8)
-    for i,(panel,title) in enumerate(zip(panels,('REGISTERED REFERENCE','REGISTERED CURRENT','REGISTERED DIFFERENCE'))):
+    for i,(panel,title) in enumerate(zip(panels,('REGISTERED REFERENCE','REGISTERED CURRENT',title))):
         canvas[32:,i*256:(i+1)*256]=cv2.resize(panel,(256,256),interpolation=cv2.INTER_NEAREST)
         cv2.putText(canvas,title,(i*256+4,21),cv2.FONT_HERSHEY_SIMPLEX,.4,(255,255,255),1)
     return canvas,evidence

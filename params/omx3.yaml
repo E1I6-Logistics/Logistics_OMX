@@ -365,6 +365,12 @@ unload:
   registration_partial_component_pixels: 64
   # 부분 시야의 중앙 RGB 밝기 차이 보정 한도: 넘으면 UNKNOWN
   registration_partial_color_limit: 20.0
+  # 조명 차이가 큰 부분 시야에서 색상 비율 변화로 물건 있음만 추가 확인(EMPTY 우회 없음)
+  registration_partial_chroma_fallback: true
+  # 밝기를 정규화한 RGB 색상 차이 문턱(0~255 기준)
+  registration_chroma_threshold: 8.0
+  # 물건 있음을 확인할 최소 색상 연결 면적(128 정렬 영상 픽셀)
+  registration_chroma_component_pixels: 64
 
 # 노트북용 읽기 전용 카메라 웹 뷰어: omx_view 명령으로 시작
 view:

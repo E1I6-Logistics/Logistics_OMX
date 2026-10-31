@@ -11,6 +11,9 @@ DIAGNOSTIC_DEFAULTS = {
 SERVICE_DEFAULTS = {"restart_s":5.,"stop_timeout_s":45.,"enable_on_boot":False}
 
 COMMENTS = {
+    'registration_partial_chroma_fallback':'부분 시야에서 조명 차이만으로 막힐 때 밝기를 정규화한 색상 변화로 물건 있음만 추가 확인: EMPTY로 우회하지 않음',
+    'registration_chroma_threshold':'부분 시야 색상 보조 판정의 차이 문턱(정규화 RGB 0~255): 조명 밝기와 전역 색조 차이는 별도 보정',
+    'registration_chroma_component_pixels':'부분 시야에서 색상으로 물건 있음을 확인할 최소 연결 면적(128 정렬 영상 픽셀)',
     'registration_wall_color_limit':'전체 시야에서 독립된 테두리 3면 이상의 RGB 변화가 일치할 때만 허용할 조명 보정 한도(기본 12, 최대 16): 합의 실패 시 기존 내부 기준 사용',
     'camera_auto_reconnect':'영상 읽기 실패 시 모델 명령을 멈추고 같은 USB 카메라 재연결 시도: 토크·모터 모드는 변경하지 않음',
     'camera_reconnect_attempts':'카메라 자동 재연결 최대 횟수(1~3): 실패 시 복구 대기, 미완료 주문 자동 재실행 없음',
