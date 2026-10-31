@@ -239,19 +239,22 @@ def rollout(cfg: RolloutConfig):
         # propagate through the parent event.
         shutdown_event = LinkedEvent(shutdown_event)
 
-    logger.info("Building rollout context...")
-    ctx = build_rollout_context(cfg, shutdown_event)
-
-    strategy = create_strategy(cfg.strategy)
-    logger.info("Rollout strategy: %s", cfg.strategy.type)
-    logger.info(
-        "Robot: %s | FPS: %.0f | Duration: %s",
-        cfg.robot.type if cfg.robot else "?",
-        cfg.fps,
-        f"{cfg.duration}s" if cfg.duration > 0 else "infinite",
-    )
-
+    from omx_manager.rollout_lifecycle import finish
+    import sys
+    ctx = strategy = None
     try:
+        logger.info("Building rollout context...")
+        ctx = build_rollout_context(cfg, shutdown_event)
+
+        strategy = create_strategy(cfg.strategy)
+        logger.info("Rollout strategy: %s", cfg.strategy.type)
+        logger.info(
+            "Robot: %s | FPS: %.0f | Duration: %s",
+            cfg.robot.type if cfg.robot else "?",
+            cfg.fps,
+            f"{cfg.duration}s" if cfg.duration > 0 else "infinite",
+        )
+
         strategy.setup(ctx)
         if cfg.interactive:
             logger.info("Rollout setup complete — starting interactive session (robot idle until /start)")
@@ -261,10 +264,23 @@ def rollout(cfg: RolloutConfig):
             strategy.run(ctx)
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
+    except Exception:
+        # A failed job stays failed. Attempt bounded Home recovery once, while
+        # motor feedback is still connected, before releasing process resources.
+        if ctx is not None and strategy is not None and not shutdown_event.is_set():
+            from omx_manager.hooks import recover_after_fault
+            try:
+                strategy._engine.pause()
+                recover_after_fault(ctx.hardware.robot_wrapper.inner,stopped=shutdown_event.is_set)
+            except Exception:
+                logger.exception('Recovery unavailable; preserving original rollout error')
+        raise
     finally:
-        strategy.teardown(ctx)
-        if cfg.display_data:
-            shutdown_visualization(cfg.display_mode)
+        try:
+            finish(ctx, strategy, original_error=sys.exc_info()[0] is not None)
+        finally:
+            if cfg.display_data:
+                shutdown_visualization(cfg.display_mode)
 
     logger.info("Rollout finished")
 

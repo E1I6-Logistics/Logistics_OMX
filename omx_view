@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON="${OMX_PYTHON:-${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}/bin/python}"
+if [[ ! -x "$PYTHON" ]]; then PYTHON=python3; fi
+export PYTHONPATH="$ROOT:$ROOT/lerobot_unified/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$PYTHON" -m omx_manager.viewer "$@"

@@ -17,6 +17,7 @@ Provides the RealSenseCamera class for capturing frames from Intel RealSense cam
 """
 
 import logging
+from lerobot.utils.runtime_metrics import camera_event
 import sys
 import time
 from threading import Event, Lock, Thread
@@ -198,6 +199,8 @@ class RealSenseCamera(Camera):
             ConnectionError: If the camera is found but fails to start the pipeline or no RealSense devices are detected at all.
             RuntimeError: If the pipeline starts but fails to apply requested settings.
         """
+        from omx_manager.reader_lifecycle import require_stopped
+        require_stopped(self)
         rs_pipeline = rs.pipeline()
         rs_config = rs.config()
         self._configure_rs_pipeline_config(rs_config)
@@ -271,6 +274,8 @@ class RealSenseCamera(Camera):
             RuntimeError: If the pipeline starts but fails to apply requested settings.
         """
 
+        from omx_manager.reader_lifecycle import require_stopped
+        require_stopped(self)
         if not warmup:
             self._open_pipeline()
             logger.info(f"{self} connected.")
@@ -279,6 +284,7 @@ class RealSenseCamera(Camera):
         last_error: Exception | None = None
 
         for attempt in range(1, self._MAX_CONNECT_ATTEMPTS + 1):
+            require_stopped(self)
             if attempt == self._MAX_CONNECT_ATTEMPTS:
                 self._hardware_reset()
 
@@ -683,6 +689,7 @@ class RealSenseCamera(Camera):
         while not stop_event.is_set():
             try:
                 frame = self._read_from_hardware()
+                camera_event(self, "captured")
 
                 if self.use_rgb:
                     color_frame_raw = frame.get_color_frame()
@@ -707,7 +714,8 @@ class RealSenseCamera(Camera):
                     if self.use_depth:
                         self.latest_depth_frame = processed_depth_frame
                     self.latest_timestamp = capture_time
-                self.new_frame_event.set()
+                    self.new_frame_event.set()
+                camera_event(self, "published")
                 failure_count = 0
 
             except DeviceNotConnectedError:
@@ -722,6 +730,8 @@ class RealSenseCamera(Camera):
     def _start_read_thread(self) -> None:
         """Starts or restarts the background read thread if it's not running."""
         self._stop_read_thread()
+        from omx_manager.reader_lifecycle import require_stopped
+        require_stopped(self)
 
         self.stop_event = Event()
         self.thread = Thread(target=self._read_loop, args=(), name=f"{self}_read_loop")
@@ -738,8 +748,8 @@ class RealSenseCamera(Camera):
             if self.thread.is_alive():  # pragma: no cover
                 logger.warning(f"{self} read thread did not terminate within timeout.")
 
-        self.thread = None
-        self.stop_event = None
+        from omx_manager.reader_lifecycle import retain_until_stopped
+        retain_until_stopped(self)
 
         with self.frame_lock:
             self.latest_color_frame = None
@@ -767,6 +777,9 @@ class RealSenseCamera(Camera):
                     read_thread.join(timeout=2.0)
                     if read_thread.is_alive():  # pragma: no cover
                         logger.warning(f"{self} read thread remained alive after stopping the pipeline.")
+
+                from omx_manager.reader_lifecycle import require_stopped
+                require_stopped(self)
 
     def _async_read(self, timeout_ms: float, read_depth: bool = False) -> NDArray[Any]:
         """Shared helper for :meth:`async_read`/:meth:`async_read_depth`: return the latest buffered frame."""
@@ -818,6 +831,9 @@ class RealSenseCamera(Camera):
         return self._async_read(timeout_ms=timeout_ms)
 
     def _read_latest(self, max_age_ms: int, read_depth: bool = False) -> NDArray[Any]:
+        return self._latest_snapshot(max_age_ms,read_depth)[0]
+
+    def _latest_snapshot(self, max_age_ms: int, read_depth: bool = False):
         """Shared helper for :meth:`read_latest`/:meth:`read_latest_depth`: peek the latest buffered frame."""
         if self.thread is None or not self.thread.is_alive():
             raise RuntimeError(f"{self} read thread is not running.")
@@ -835,7 +851,12 @@ class RealSenseCamera(Camera):
                 f"{self} latest frame is too old: {age_ms:.1f} ms (max allowed: {max_age_ms} ms)."
             )
 
-        return frame
+        return frame,timestamp
+
+    @check_if_not_connected
+    def read_latest_with_timestamp(self,max_age_ms: int = 500):
+        if not self.use_rgb:raise RuntimeError('Color camera disabled')
+        return self._latest_snapshot(max_age_ms)
 
     @check_if_not_connected
     def read_latest(self, max_age_ms: int = 500) -> NDArray[Any]:

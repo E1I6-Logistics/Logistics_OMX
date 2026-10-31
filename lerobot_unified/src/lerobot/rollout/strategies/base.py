@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import math
 import logging
 import os
 import time
@@ -27,6 +28,7 @@ import cv2
 import numpy as np
 
 from lerobot.utils.cycle_timer import CycleTimer
+from lerobot.rollout.workstation_ipc import atomic_json, new_status, read_json
 
 from ..context import RolloutContext
 from ..order_models import OrderModelRouter
@@ -85,6 +87,13 @@ class BaseStrategy(RolloutStrategy):
                 raise ValueError("strategy.basket_success_min_blob_area must be > 0")
             if self.config.basket_success_settle_s < 0:
                 raise ValueError("strategy.basket_success_settle_s must be >= 0")
+        if self.config.workstation_wait_enabled:
+            if self.config.auto_restart_on_home or not self.config.idle_complete_enabled:
+                raise ValueError("Persistent workstation mode requires idle completion and disables auto restart")
+            if not self.config.workstation_control_file or not self.config.workstation_status_file:
+                raise ValueError("Persistent workstation command/status paths are mandatory")
+            if self.config.workstation_poll_s <= 0:
+                raise ValueError("workstation_poll_s must be positive")
         if self.config.idle_complete_enabled:
             if self.config.auto_restart_on_home:
                 raise ValueError("idle_complete_enabled and auto_restart_on_home cannot both be enabled")
@@ -122,9 +131,12 @@ class BaseStrategy(RolloutStrategy):
         if self.config.auto_restart_on_home:
             self._total_completed = self._load_inventory()
             if self._order_router is not None:
-                # Explicit new orders are required after every process restart.
-                self._total_completed = self.config.inventory_capacity
-                self._save_inventory()
+                if os.environ.get("OMX_MANAGER_CONFIG"):
+                    if self._remaining_inventory:
+                        raise RuntimeError("Unfinished inventory preserved; operator recovery required")
+                else:
+                    self._total_completed = self.config.inventory_capacity
+                    self._save_inventory()
             elif self.config.inventory_reset_on_start:
                 self._total_completed = 0
                 self._save_inventory()
@@ -142,6 +154,16 @@ class BaseStrategy(RolloutStrategy):
                     self._remaining_inventory,
                     self._inventory_path,
                 )
+        from omx_manager.hooks import managed_config, RolloutHome, heartbeat
+        manager_cfg = getattr(ctx.hardware.robot_wrapper.inner, "_omx_manager_snapshot", None) or managed_config()
+        self._manager_home = RolloutHome(manager_cfg, time.perf_counter(),
+            hold=manager_cfg['home']['hold_s'] if self.config.workstation_wait_enabled else None) if manager_cfg and os.environ.get('OMX_CYCLE_CALIBRATION')!='1' else None
+        ctx.hardware.robot_wrapper.inner._omx_cycle_counter=self._manager_home
+        ctx.hardware.robot_wrapper.inner._omx_runtime_ready = True
+        heartbeat()
+        from lerobot.utils.runtime_metrics import start_metrics
+        start_metrics(ctx.hardware.robot_wrapper.inner, ctx.runtime.shutdown_event, ctx.runtime.cfg.fps,
+                      policy=getattr(ctx.policy,"policy",None),policy_path=getattr(getattr(ctx.runtime.cfg,"policy",None),"path",None))
         logger.info("Base strategy ready")
 
     @property
@@ -198,9 +220,8 @@ class BaseStrategy(RolloutStrategy):
                 state["order_started_at"] = order_started_at
             if isinstance(order_started_at_epoch, (int, float)):
                 state["order_started_at_epoch"] = order_started_at_epoch
-        temporary = self._inventory_path.with_suffix(self._inventory_path.suffix + ".tmp")
-        temporary.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, self._inventory_path)
+        from omx_manager.config import write_json
+        write_json(self._inventory_path, state)
 
     def _count_completed_cycle(self) -> None:
         self._session_completed += 1
@@ -435,15 +456,183 @@ class BaseStrategy(RolloutStrategy):
         errors: list[float] = []
         for key, target in home.items():
             if key not in observation:
-                continue
+                return None
             try:
-                errors.append(abs(float(observation[key]) - float(target)))
+                error = abs(float(observation[key]) - float(target))
+                if not math.isfinite(error):
+                    return None
+                errors.append(error)
             except (TypeError, ValueError):
-                logger.debug("Ignoring non-scalar home-position value for %s", key)
+                return None
         return max(errors) if errors else None
+
+    def _run_persistent_workstation(self, ctx: RolloutContext) -> None:
+        """One E/F model and hardware connection across multiple MQTT jobs.
+
+        The command protocol is intentionally not an arbitrary action API.  Only
+        START(job_id) while READY and CLEAR(job_id) while DONE are accepted.
+        All policy operations stay on the one control thread; idle never sends an action.
+        """
+        engine = self._engine
+        robot = ctx.hardware.robot_wrapper
+        interpolator = self._interpolator
+        cfg = ctx.runtime.cfg
+        session = os.environ.get("OMX_WORKSTATION_SESSION", "")
+        if not session:
+            raise RuntimeError("OMX_WORKSTATION_SESSION missing; refuse motion")
+        status_path = Path(self.config.workstation_status_file).expanduser()
+        command_path = Path(self.config.workstation_control_file).expanduser()
+        home_position = ctx.hardware.initial_position or {}
+        if not home_position:
+            raise RuntimeError("Workstation cannot initialize without a home joint reference")
+        timer = CycleTimer(cfg.fps, interpolator.multiplier,
+                           records_data=False, report=ctx.runtime.cadence_report)
+        active_job = None
+        active_job_started_at = None
+        phase = "STARTING"
+
+        def write_status(phase_name: str, job_id: str | None = None, **kwargs) -> None:
+            atomic_json(status_path, new_status(session, phase_name, job_id, **kwargs))
+
+        try:
+            # Verify first camera + motor observation before advertising READY.
+            self._get_observation_with_camera_recovery(robot, engine)
+            self.reset_control_state()
+            write_status("READY")
+            phase = "READY"
+            logger.info("[WORKSTATION] READY: model and cameras stay loaded; no actions sent")
+            idle_previous = None
+            idle_home_since = None
+            idle_moved_at = None
+            departed = False
+            while not ctx.runtime.shutdown_event.is_set():
+                from omx_manager.hooks import heartbeat
+                heartbeat()
+                cmd = read_json(command_path)
+                same_session = cmd.get("session") == session
+                job_id = cmd.get("job_id")
+                operation = cmd.get("command")
+                if phase == "READY":
+                    if same_session and operation == "START" and isinstance(job_id, str) and job_id:
+                        # Every model episode begins at the registered static Home.
+                        if getattr(self, "_manager_home", None):
+                            from omx_manager.hooks import initialize_home
+                            initialize_home(getattr(robot, "inner", robot), stopped=ctx.runtime.shutdown_event.is_set)
+                        self.reset_control_state()
+                        timer.restart()
+                        engine.resume()
+                        active_job = job_id
+                        active_job_started_at = time.perf_counter()
+                        if getattr(self, "_manager_home", None): getattr(self, "_manager_home", None).reset(active_job_started_at)
+                        idle_previous = None
+                        idle_home_since = None
+                        idle_moved_at = None
+                        departed = False
+                        phase = "RUNNING"
+                        write_status("RUNNING", active_job)
+                        logger.info("[WORKSTATION] START job=%s", active_job)
+                    else:
+                        time.sleep(self.config.workstation_poll_s)
+                        continue
+                elif phase == "DONE":
+                    if same_session and operation == "CLEAR" and job_id == active_job:
+                        self.reset_control_state()
+                        phase = "READY"
+                        active_job = None
+                        write_status("READY")
+                        logger.info("[WORKSTATION] READY for next job")
+                    else:
+                        time.sleep(self.config.workstation_poll_s)
+                    continue
+
+                # RUNNING: stop generating actions if the job has no valid completion.
+                if (active_job_started_at is not None
+                        and self.config.workstation_job_timeout_s > 0
+                        and time.perf_counter() - active_job_started_at > self.config.workstation_job_timeout_s):
+                    engine.pause()
+                    phase = "ERROR"
+                    write_status("ERROR", active_job, message="Workstation job timeout: Home return not detected")
+                    logger.error("[SAFETY] Workstation timeout job=%s; manual intervention required", active_job)
+                    raise RuntimeError("OMX workstation job timeout")
+
+                # RUNNING: no new job is accepted until DONE/CLEAR.
+                timer.tick(new_cycle=interpolator.needs_new_action())
+                with timer.section("observe"):
+                    obs, recovered = self._get_observation_with_camera_recovery(robot, engine)
+                if recovered:
+                    timer.restart()
+                    idle_previous = None
+                    idle_home_since = None
+                    idle_moved_at = None
+                    departed = False
+                now = time.perf_counter()
+                joints = {}
+                for key in home_position:
+                    try:
+                        joints[key] = float(obs[key])
+                    except (KeyError, TypeError, ValueError):
+                        pass
+                if len(joints) == len(home_position):
+                    error = self._max_home_error(obs, home_position)
+                    if error is not None and error >= self.config.home_leave_tolerance:
+                        departed = True
+                    if idle_previous is None:
+                        idle_moved_at = now
+                    else:
+                        delta = max(abs(joints[key] - idle_previous[key]) for key in joints)
+                        if delta >= self.config.idle_complete_joint_delta:
+                            idle_moved_at = now
+                    idle_previous = joints
+                    managed_done = getattr(self, "_manager_home", None).update(obs, now) if getattr(self, "_manager_home", None) else False
+                    if managed_done if getattr(self, "_manager_home", None) else (departed and error is not None and error <= self.config.home_tolerance):
+                        if idle_home_since is None:
+                            idle_home_since = now
+                        if managed_done if getattr(self, "_manager_home", None) else (idle_moved_at is not None and
+                                now - max(idle_home_since, idle_moved_at) >= self.config.idle_complete_hold_s):
+                            # Never send a policy action after announcing completion.
+                            self.reset_control_state()
+                            timer.log_episode_summary(label=f"workstation {active_job}")
+                            timer.log_run_summary()  # Flush observe/infer/send timing at each job boundary.
+                            phase = "DONE"
+                            write_status("DONE", active_job, reason="home_stillness_after_departure",
+                                         hold_s=self.config.idle_complete_hold_s,
+                                         physical_unloading_verified=False)
+                            logger.warning("[WORKSTATION] DONE job=%s: Home stillness only; physical transfer unverified",
+                                           active_job)
+                            continue
+                    else:
+                        idle_home_since = None
+                else:
+                    idle_home_since = None
+                with timer.section("process_obs"):
+                    processed = self._process_observation_and_notify(ctx.processors, obs)
+                if self._handle_warmup(cfg.use_torch_compile, timer):
+                    continue
+                action = send_next_action(processed, obs, ctx, interpolator, timer)
+                with timer.section("telemetry"):
+                    self._log_telemetry(processed, action, ctx.runtime)
+                with timer.section("query"):
+                    engine.pump_query(processed)
+                timer.wait()
+        except Exception as exc:
+            logger.exception("[WORKSTATION] Fatal error; no further jobs accepted")
+            write_status("ERROR", active_job, message=str(exc))
+            raise
+        finally:
+            if phase != "DONE":
+                logger.info("[WORKSTATION] Rollout terminating; check robot safety")
+            timer.log_run_summary()
 
     def run(self, ctx: RolloutContext) -> None:
         """Run the autonomous control loop until shutdown or duration expires."""
+        if os.environ.get('OMX_CYCLE_CALIBRATION')=='1':
+            from omx_manager.cycle_calibration import run_rollout
+            return run_rollout(self,ctx,send_next_action,CycleTimer)
+        if self.config.workstation_wait_enabled:
+            if getattr(self,'_manager_home',None) and hasattr(self._manager_home,'cfg'):
+                from omx_manager.workstation import run
+                return run(self,ctx,send_next_action,CycleTimer)
+            return self._run_persistent_workstation(ctx)
         engine = self._engine
         cfg = ctx.runtime.cfg
         robot = ctx.hardware.robot_wrapper
@@ -457,9 +646,16 @@ class BaseStrategy(RolloutStrategy):
         )
 
         start_time = time.perf_counter()
+        # Optional per-window performance profiling; no change to motion commands.
+        perf_interval_s = float(os.environ.get("OMX_PERF_REPORT_INTERVAL_S", "0"))
+        if perf_interval_s < 0:
+            raise ValueError("OMX_PERF_REPORT_INTERVAL_S must be >= 0")
+        perf_next_report = start_time + perf_interval_s if perf_interval_s else float("inf")
         cycle_started_at = start_time
         return_detector_armed = False
         home_since: float | None = None
+        home_near_since: float | None = None
+        last_home_diag_at = 0.0
         home_position = ctx.hardware.initial_position or {}
         idle_enabled = self.config.idle_complete_enabled
         if idle_enabled and not home_position:
@@ -499,16 +695,34 @@ class BaseStrategy(RolloutStrategy):
 
         try:
             while not ctx.runtime.shutdown_event.is_set():
+                from omx_manager.hooks import heartbeat
+                heartbeat()
+                abort_path = os.environ.get("OMX_ABORT_FILE", "")
+                if abort_path and Path(abort_path).exists():
+                    interpolator.reset()
+                    engine.reset()
+                    raise RuntimeError("OMX abort flag set; control loop terminated")
                 timer.tick(new_cycle=interpolator.needs_new_action())
 
                 if cfg.duration > 0 and (time.perf_counter() - start_time) >= cfg.duration:
                     logger.info("Duration limit reached (%.0fs)", cfg.duration)
                     break
 
+                if (auto_restart and not waiting_for_inventory
+                        and self._remaining_inventory > 0
+                        and self.config.pickup_cycle_timeout_s > 0
+                        and time.perf_counter() - cycle_started_at > self.config.pickup_cycle_timeout_s):
+                    logger.error("[SAFETY] Pickup timed out after %.1fs; stopping policy without counting success", self.config.pickup_cycle_timeout_s)
+                    engine.pause()
+                    raise RuntimeError("OMX pickup timeout: no valid Home return; intervention required")
+
                 with timer.section("observe"):
                     obs, camera_recovered = self._get_observation_with_camera_recovery(robot, engine)
                 if camera_recovered:
                     timer.restart()
+                    if getattr(self, "_manager_home", None):
+                        if hasattr(self._manager_home,'invalidate'):self._manager_home.invalidate(time.perf_counter())
+                        else:self._manager_home.detector.invalidate(time.perf_counter())
 
                 # OMX3/4 only: use the existing joint observation, no added camera/model work.
                 # Never report an initially stationary robot as a completed unloading job.
@@ -553,6 +767,10 @@ class BaseStrategy(RolloutStrategy):
                         reloaded_total = self._load_inventory()
                         if reloaded_total < self.config.inventory_capacity:
                             if self._order_router is not None:
+                                if getattr(self, "_manager_home", None):
+                                    from omx_manager.hooks import initialize_home
+                                    initialize_home(getattr(robot, "inner", robot), stopped=ctx.runtime.shutdown_event.is_set)
+                                    obs, camera_recovered = self._get_observation_with_camera_recovery(robot, engine)
                                 home_error = self._max_home_error(obs, home_position)
                                 if home_error is None or home_error > self.config.home_tolerance:
                                     logger.warning("Order pending: robot must be at the initial pose")
@@ -561,6 +779,8 @@ class BaseStrategy(RolloutStrategy):
                                 try:
                                     state = json.loads(self._inventory_path.read_text())
                                     self._order_router.select(str(state.get("order_item", "")), ctx)
+                                    if getattr(self,'_manager_home',None) and hasattr(self._manager_home,'select_item'):
+                                        self._manager_home.select_item(str(state.get('order_item','')),time.perf_counter())
                                 except Exception:
                                     logger.exception("Model selection failed; staying idle. Check model and order.")
                                     timer.wait()
@@ -579,12 +799,14 @@ class BaseStrategy(RolloutStrategy):
                             self._cached_obs_processed = None
                             timer.restart()
                             cycle_started_at = now
+                            if getattr(self, "_manager_home", None): getattr(self, "_manager_home", None).reset(now)
                             basket_mask_retries = 0
                             next_basket_mask_retry = now + self.config.stuck_basket_mask_timeout_s
                             basket_mask_active_until = 0.0
                             basket_reference = None
                             return_detector_armed = False
                             home_since = None
+                            home_near_since = None
                             waiting_for_inventory = False
                             engine.resume()
                             logger.info(
@@ -605,81 +827,45 @@ class BaseStrategy(RolloutStrategy):
                             )
                         basket_reference = basket_image.copy()
                         logger.info("Captured basket reference frame for success detection")
+                    cycle_complete = False
                     home_error = self._max_home_error(obs, home_position)
-                    if home_error is not None:
-                        if not return_detector_armed:
-                            if (
-                                now - cycle_started_at >= self.config.min_cycle_s
-                                and home_error >= self.config.home_leave_tolerance
-                            ):
-                                return_detector_armed = True
-                                logger.info("Cycle return detector armed (home error %.2f)", home_error)
-                        elif home_error <= self.config.home_tolerance:
-                            if home_since is None:
-                                home_since = now
-                            elif now - home_since >= max(
-                                self.config.home_hold_s,
-                                self.config.basket_success_settle_s if self.config.basket_success_enabled else 0.0,
-                            ):
-                                if self.config.basket_success_enabled:
-                                    basket_image = obs.get(self.config.stuck_basket_mask_camera)
-                                    if not isinstance(basket_image, np.ndarray) or basket_reference is None:
-                                        raise RuntimeError("Basket success detector has no valid reference/current frame")
-                                    success, changed_ratio, largest_blob = self._evaluate_basket_change(
-                                        basket_reference, basket_image
-                                    )
-                                    verdict = "성공" if success else "실패"
-                                    logger.info(
-                                        "Basket transfer verdict=%s changed_ratio=%.4f largest_blob=%.1f",
-                                        verdict,
-                                        changed_ratio,
-                                        largest_blob,
-                                    )
-                                    self._save_camera_status(
-                                        status="basket_success" if success else "basket_failure",
-                                        camera=self.config.stuck_basket_mask_camera,
-                                        message=(
-                                            f"바구니 이동 {verdict} - 변화율 {changed_ratio * 100:.2f}%, "
-                                            f"최대 변화영역 {largest_blob:.0f}px"
-                                        ),
-                                    )
-                                    basket_reference = basket_image.copy()
-                                    if not success:
-                                        engine.reset()
-                                        interpolator.reset()
-                                        self._cached_obs_processed = None
-                                        timer.restart()
-                                        cycle_started_at = now
-                                        basket_mask_retries = 0
-                                        next_basket_mask_retry = now + self.config.stuck_basket_mask_timeout_s
-                                        basket_mask_active_until = 0.0
-                                        return_detector_armed = False
-                                        home_since = None
-                                        engine.resume()
-                                        logger.warning("Basket transfer failed; retrying the same order item")
-                                        continue
-                                self._count_completed_cycle()
-                                if self._remaining_inventory == 0:
-                                    logger.warning(
-                                        "Inventory empty: %d/%d completed. OMX stopping at home.",
-                                        self._total_completed,
-                                        self.config.inventory_capacity,
-                                    )
-                                    if self.config.keep_alive_when_inventory_empty:
-                                        engine.reset()
-                                        interpolator.reset()
-                                        self._cached_obs_processed = None
-                                        return_detector_armed = False
-                                        home_since = None
-                                        waiting_for_inventory = True
-                                        next_inventory_poll = now + self.config.inventory_poll_interval_s
-                                        logger.info(
-                                            "Waiting for a new inventory/order update; connections remain active"
-                                        )
-                                        continue
-                                    break
-
-                                logger.info("Resetting policy for the next item")
+                    if getattr(self, "_manager_home", None):
+                        cycle_complete = getattr(self, "_manager_home", None).update(obs, now)
+                        return_detector_armed = getattr(self, "_manager_home", None).detector.departed
+                    else:
+                        if home_error is None:
+                            raise RuntimeError("Missing/nonfinite Home observation")
+                        if not return_detector_armed and home_error >= self.config.home_leave_tolerance:
+                            return_detector_armed = True
+                        if return_detector_armed and home_error <= self.config.home_tolerance:
+                            if home_since is None: home_since = now
+                            cycle_complete = now - home_since >= self.config.home_hold_s and now - cycle_started_at >= self.config.min_cycle_s
+                        else: home_since = None
+                    if cycle_complete:
+                        if self.config.basket_success_enabled:
+                            basket_image = obs.get(self.config.stuck_basket_mask_camera)
+                            if not isinstance(basket_image, np.ndarray) or basket_reference is None:
+                                raise RuntimeError("Basket success detector has no valid reference/current frame")
+                            success, changed_ratio, largest_blob = self._evaluate_basket_change(
+                                basket_reference, basket_image
+                            )
+                            verdict = "성공" if success else "실패"
+                            logger.info(
+                                "Basket transfer verdict=%s changed_ratio=%.4f largest_blob=%.1f",
+                                verdict,
+                                changed_ratio,
+                                largest_blob,
+                            )
+                            self._save_camera_status(
+                                status="basket_success" if success else "basket_failure",
+                                camera=self.config.stuck_basket_mask_camera,
+                                message=(
+                                    f"바구니 이동 {verdict} - 변화율 {changed_ratio * 100:.2f}%, "
+                                    f"최대 변화영역 {largest_blob:.0f}px"
+                                ),
+                            )
+                            basket_reference = basket_image.copy()
+                            if not success:
                                 engine.reset()
                                 interpolator.reset()
                                 self._cached_obs_processed = None
@@ -690,10 +876,50 @@ class BaseStrategy(RolloutStrategy):
                                 basket_mask_active_until = 0.0
                                 return_detector_armed = False
                                 home_since = None
+                                home_near_since = None
                                 engine.resume()
+                                logger.warning("Basket transfer failed; retrying the same order item")
                                 continue
-                        else:
-                            home_since = None
+                        self._count_completed_cycle()
+                        if self._remaining_inventory == 0:
+                            logger.warning(
+                                "Inventory empty: %d/%d completed. OMX stopping at home.",
+                                self._total_completed,
+                                self.config.inventory_capacity,
+                            )
+                            if self.config.keep_alive_when_inventory_empty:
+                                engine.reset()
+                                interpolator.reset()
+                                self._cached_obs_processed = None
+                                return_detector_armed = False
+                                home_since = None
+                                home_near_since = None
+                                waiting_for_inventory = True
+                                next_inventory_poll = now + self.config.inventory_poll_interval_s
+                                logger.info(
+                                    "Waiting for a new inventory/order update; connections remain active"
+                                )
+                                continue
+                            break
+
+                        if getattr(self, "_manager_home", None):
+                            from omx_manager.hooks import initialize_home
+                            initialize_home(getattr(robot, "inner", robot), stopped=ctx.runtime.shutdown_event.is_set)
+                            self._manager_home.reset(time.perf_counter())
+                        logger.info("Resetting policy for the next item")
+                        engine.reset()
+                        interpolator.reset()
+                        self._cached_obs_processed = None
+                        timer.restart()
+                        cycle_started_at = now
+                        basket_mask_retries = 0
+                        next_basket_mask_retry = now + self.config.stuck_basket_mask_timeout_s
+                        basket_mask_active_until = 0.0
+                        return_detector_armed = False
+                        home_since = None
+                        home_near_since = None
+                        engine.resume()
+                        continue
 
                     if (
                         self.config.stuck_basket_mask_enabled
@@ -750,6 +976,9 @@ class BaseStrategy(RolloutStrategy):
                     engine.pump_query(obs_processed)
 
                 timer.wait()
+                if time.perf_counter() >= perf_next_report:
+                    timer.log_episode_summary("OMX performance window")
+                    perf_next_report = time.perf_counter() + perf_interval_s
         finally:
             if idle_enabled and idle_completion:
                 marker = os.environ.get("E_IDLE_COMPLETION_FILE", "")

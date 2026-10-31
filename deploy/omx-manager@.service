@@ -1,0 +1,18 @@
+# Generated OMX manager service; rendered by omx_control service --action install.
+[Unit]
+Description=OMX follower manager %i (Pi 5 4GB)
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=@OMX_ROOT@
+ExecStart=@OMX_COMMAND@
+Restart=always
+RestartSec=@RESTART_S@
+KillMode=control-group
+OOMPolicy=stop
+TimeoutStopSec=@STOP_TIMEOUT_S@
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
+from lerobot.rollout.workstation_ipc import atomic_json, read_json, valid_ready
 
 
 # =============================================================
@@ -28,7 +29,7 @@ args = parser.parse_args()
 
 robot_id = args.robot_id
 broker_ip = args.broker_ip
-broker_port = 1883
+broker_port = int(os.environ.get("OMX_BROKER_PORT", "1883"))
 
 PICKUP_ITEMS = {"omx1": ("A", "B"), "omx2": ("C", "D")}
 WORKSTATION_IDS = ("omx3", "omx4")
@@ -70,7 +71,34 @@ job_lock = threading.Lock()
 current_job_id = None
 current_state = "IDLE"
 current_orders = None
+from omx_manager.journal import JobJournal
+journal = JobJournal(os.environ.get("OMX_JOB_JOURNAL", str(state_path.parent / "jobs.json")))
 omx3_process = None
+workstation_session = os.environ.get("OMX_WORKSTATION_SESSION", "")
+workstation_status = Path(os.environ.get("OMX_WORKSTATION_STATUS_FILE", "/nonexistent/workstation_status.json"))
+workstation_command = Path(os.environ.get("OMX_WORKSTATION_CONTROL_FILE", "/nonexistent/workstation_command.json"))
+
+
+def workstation_state():
+    return read_json(workstation_status)
+
+
+def _workstation_process_alive(status):
+    pid = status.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def workstation_ready():
+    if not workstation_session:
+        return False
+    status = workstation_state()
+    return valid_ready(status, workstation_session) and _workstation_process_alive(status)
 
 
 # =============================================================
@@ -104,7 +132,12 @@ def send_progress(job_id, current, total):
 
 # 결과를 전송한다.
 def send_result(job_id, success, message=""):
-    publish(f"{robot_id}/result", {"job_id": job_id, "success": success, "message": message})
+    payload={"job_id":job_id,"success":success,"message":message}
+    if os.environ.get('OMX_UNLOAD_MODE')=='cycles':
+        payload.update(inspection_scope='disabled',basket_empty_verified=False,visible_region_empty_verified=False,physical_unloading_verified=False,count_kind='motion_cycles')
+    elif os.environ.get('OMX_MANAGED_UNLOAD')=='1' and os.environ.get('OMX_UNLOAD_VIEW_SCOPE')=='visible_only':
+        payload.update(inspection_scope='visible_only',basket_empty_verified=False,visible_region_empty_verified=bool(success))
+    publish(f"{robot_id}/result",payload)
 
 
 # =============================================================
@@ -187,6 +220,11 @@ def execute_orders(job_id, orders):
 
     print("[ORDER] 주문 순서: " + " -> ".join(f"{item} {qty}개" for item, qty in orders), flush=True)
 
+    # Monitoring timeout only; do not confuse this with motor stop.
+    per_item_timeout = float(os.environ.get("OMX_PICKUP_ORDER_TIMEOUT_S", "240"))
+    if not 0 < per_item_timeout <= 3600:
+        raise ValueError("OMX_PICKUP_ORDER_TIMEOUT_S must be within (0,3600]")
+
     for index, (item, qty) in enumerate(orders, 1):
 
         # omx2의 물리 모델은 로컬 A/B 명령을 각각 C/D 품목에 사용한다.
@@ -207,6 +245,9 @@ def execute_orders(job_id, orders):
 
         token = accepted["order_started_at_epoch"]
 
+        per_unit = float(os.environ.get("OMX_PICKUP_PER_UNIT_S", str(per_item_timeout)))
+        grace = float(os.environ.get("OMX_PICKUP_LOAD_GRACE_S", "60"))
+        deadline = time.monotonic() + per_unit * qty + grace
         last_progress = None
 
         # -----------------------------------------------------
@@ -214,6 +255,24 @@ def execute_orders(job_id, orders):
         # -----------------------------------------------------
 
         while True:
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"Pickup order timeout: {item} {qty}, {per_item_timeout:.0f}s; motor stop NOT guaranteed")
+
+            # Launcher may stop the rollout while MQTT is still alive.  Fail closed
+            # if an explicitly supplied pid is no longer running.
+            rollout_pid_text = os.environ.get("OMX_ROLLOUT_PID", "")
+            if not rollout_pid_text:
+                raise RuntimeError("Pickup rollout PID missing; refusing unmonitored order")
+            if rollout_pid_text:
+                try:
+                    rollout_pid = int(rollout_pid_text)
+                    if rollout_pid <= 0:
+                        raise ValueError("invalid pid")
+                    os.kill(rollout_pid, 0)
+                except ProcessLookupError as exc:
+                    raise RuntimeError("Pickup rollout process exited") from exc
+                except (ValueError, PermissionError) as exc:
+                    raise RuntimeError("Pickup rollout pid invalid/inaccessible") from exc
 
             state = json.loads(state_path.read_text())
 
@@ -259,71 +318,87 @@ def execute_orders(job_id, orders):
     print("[ORDER] 전체 주문 완료 | " f"총 소요시간: " f"{elapsed(time.monotonic() - started)}", flush=True)
 
 
-# OMX3: MQTT 작업 요청 1건당 E 모델 프로그램을 한 번 실행한다.
+# OMX3/4: policy, motors and cameras stay connected. No subprocess per command.
 def execute_unload(job_id, items):
-    if robot_id not in ("omx3", "omx4"):
-        raise RuntimeError(f"{robot_id} 하차 동작은 구현되지 않았습니다.")
-
-    policy_setting = (os.environ.get("OMX4_POLICY_PATH", "outputs/train/warehouse_item_f_129_merged_wrist_only_act_300k/checkpoints/250000/pretrained_model") if robot_id == "omx4" else omx3_policy)
-    port_setting = (os.environ.get("OMX4_FOLLOWER_PORT") if robot_id == "omx4" else omx3_port)
-    if not policy_setting:
-        raise RuntimeError(f"{robot_id} 모델 경로가 설정되지 않았습니다")
-    if not port_setting:
-        candidates = [p for p in Path("/dev/serial/by-id").glob("usb-ROBOTIS_OpenRB-150_*") if p.exists()]
-        if len(candidates) != 1:
-            raise RuntimeError(f"{robot_id} OpenRB-150 자동 검색 실패: {len(candidates)}개")
-        port_setting = str(candidates[0])
-    policy_path = Path(policy_setting).expanduser()
-    if not policy_path.is_absolute():
-        policy_path = directory / policy_path
-    if not (policy_path / "config.json").is_file():
-        raise FileNotFoundError(f"하차 정책 파일 없음: {policy_path / 'config.json'}")
-    unload_script = omx4_script if robot_id == "omx4" else omx3_script
-    if not unload_script.is_file():
-        raise FileNotFoundError(f"하차 실행 파일 없음: {unload_script}")
-    if not Path(port_setting).exists():
-        raise FileNotFoundError(f"{robot_id} 컨트롤러 연결 확인 필요: {port_setting}")
-
-    env = os.environ.copy()
-    with tempfile.TemporaryDirectory(prefix=f"{robot_id}_job_") as tmpdir:
-        marker = Path(tmpdir) / "complete.json"
-        return _run_unload_rollout(job_id, policy_path, port_setting, env, marker)
-
-
-def _run_unload_rollout(job_id, policy_path, port_setting, env, marker):
-    env.update({
-        "E_IDLE_COMPLETE_ENABLED": "true",
-        "E_IDLE_COMPLETION_FILE": str(marker),
-        "E_DISPLAY_DATA": "false",
-        "E_FOLLOWER_PORT": port_setting,
-        "E_POLICY_PATH": str(policy_path),
-    })
-    # OMX4 F uses wrist-only now; future top+wrist enabled by OMX4_CAMERA_MODE.
-    # Its calibration/robot.id must remain omx_f_test_follower_arm, not OMX MQTT id.
-    unload_script = omx4_script if robot_id == "omx4" else omx3_script
-    if robot_id == "omx4":
-        env["F_POLICY_PATH"] = str(policy_path)
-        env["F_FOLLOWER_PORT"] = port_setting
-    print(f"[{robot_id}] Job {job_id}: unloading policy {policy_path}", flush=True)
-    global omx3_process
-    proc = subprocess.Popen(
-        ["bash", str(unload_script)], cwd=directory, env=env,
-        start_new_session=True,
-    )
-    omx3_process = proc
-    try:
-        returncode = proc.wait()
-    finally:
-        omx3_process = None
-    if returncode != 0:
-        raise RuntimeError(f"하차 프로그램 비정상 종료 (exit={returncode})")
-    if not marker.is_file():
-        raise RuntimeError("추론 프로세스 종료, 그러나 Home 정지 완료 이벤트 없음")
-    completion = json.loads(marker.read_text())
-    if completion.get("reason") != "home_stillness_after_departure":
-        raise RuntimeError("완료 이벤트 형식 오류")
-    return completion
-
+    if robot_id not in WORKSTATION_IDS:
+        raise RuntimeError("Not a workstation")
+    if not workstation_ready():
+        raise RuntimeError("Workstation not READY; refusing job")
+    managed=os.environ.get('OMX_MANAGED_UNLOAD')=='1'
+    extra={}
+    if managed:
+        from omx_manager.workstation import expected_quantity
+        extra=dict(expected_count=expected_quantity(items),items=items)
+        if os.environ.get('OMX_UNLOAD_MODE')=='cycles':
+            from omx_manager.workstation_cycles import require_count
+            require_count(extra['expected_count'])
+    atomic_json(workstation_command, {"session": workstation_session,
+                                     "command": "START", "job_id": str(job_id), "requested_at": time.time(),**extra})
+    timeout = float(os.environ.get("OMX_UNLOAD_TIMEOUT_S", "900"))
+    deadline = time.monotonic() + timeout
+    saw_running = False
+    last_progress=None
+    while time.monotonic() < deadline:
+        status = workstation_state()
+        if status.get("session") != workstation_session:
+            raise RuntimeError("Workstation session changed during job")
+        if not _workstation_process_alive(status):
+            raise RuntimeError("Workstation rollout process died during job")
+        phase = status.get("phase")
+        if phase == "ERROR":
+            raise RuntimeError(f"Workstation fault: {status.get('message', '')}")
+        if status.get("job_id") == job_id:
+            if phase in ('INSPECTION_FAILED','JOB_FAILED'):
+                if status.get('restore_verified') is not True:
+                    raise RuntimeError('Inspection failed without verified restoration')
+                failure_message=status.get('message','Basket inspection uncertain')
+                atomic_json(workstation_command,{'session':workstation_session,'command':'CLEAR',
+                                                'job_id':str(job_id),'requested_at':time.time()})
+                for _ in range(100):
+                    if workstation_ready():break
+                    time.sleep(.1)
+                else:raise RuntimeError('Inspection failed and workstation did not return READY')
+                raise RuntimeError(('Motion-cycle job rejected; idle restored; ' if phase=='JOB_FAILED' else 'Basket inspection failed; idle restored; ')+failure_message)
+            cycles_mode=os.environ.get('OMX_UNLOAD_MODE')=='cycles'
+            progress_value=status.get('completed_cycles',0) if cycles_mode else status.get('estimated_transfers',0)
+            if managed and progress_value!=last_progress:
+                last_progress=progress_value
+                publish(f'{robot_id}/progress',dict(job_id=job_id,current=last_progress,
+                        total=extra['expected_count'] or 0,total_known=extra['expected_count'] is not None,count_is_estimate=True,attempts=status.get('attempts',0),
+                        completed_cycles=status.get('completed_cycles',0),count_kind='motion_cycles' if cycles_mode else 'estimated_transfers'))
+            if phase == "RUNNING":
+                saw_running = True
+            if phase == "DONE":
+                partial=managed and os.environ.get('OMX_UNLOAD_VIEW_SCOPE')=='visible_only'
+                expected_reason='requested_cycles_completed' if cycles_mode else 'visible_empty_confirmed' if partial else 'basket_empty_confirmed' if managed else 'home_stillness_after_departure'
+                if status.get("reason") != expected_reason:
+                    raise RuntimeError("Unexpected workstation completion reason")
+                if cycles_mode:
+                    if (type(status.get('completed_cycles')) is not int or type(status.get('requested_cycles')) is not int
+                            or status.get('completed_cycles')!=extra['expected_count'] or status.get('requested_cycles')!=extra['expected_count']
+                            or status.get('count_kind')!='motion_cycles' or status.get('basket_empty_verified') is not False
+                            or status.get('physical_unloading_verified') is not False or status.get('inspection_scope')!='disabled'):
+                        raise RuntimeError('Motion-cycle completion evidence missing')
+                if not cycles_mode and partial and (status.get('visible_region_empty_verified') is not True or status.get('basket_empty_verified') is not False or status.get('inspection_scope')!='visible_only'):
+                    raise RuntimeError('Visible-only completion evidence missing')
+                if managed and not cycles_mode and not partial and status.get('basket_empty_verified') is not True:
+                    raise RuntimeError('Unload completion lacks empty-basket confirmation')
+                # Release completion event; next order must wait until READY again.
+                atomic_json(workstation_command, {"session": workstation_session,
+                                                 "command": "CLEAR", "job_id": str(job_id),
+                                                 "requested_at": time.time()})
+                break
+        time.sleep(0.1)
+    else:
+        raise TimeoutError(f"Workstation job timeout after {timeout:.0f}s; robot may still be moving")
+    for _ in range(100):
+        if workstation_ready():
+            return status
+        s = workstation_state()
+        if s.get('phase') == 'ERROR':
+            raise RuntimeError(f"Workstation fault on reset: {s.get('message')}")
+        time.sleep(0.1)
+    raise RuntimeError("Workstation completed but did not return to READY")
 
 
 # =============================================================
@@ -359,12 +434,36 @@ def run_job(job_id, orders):
         print(f"[ORDER] 작업 실패: {exc}", flush=True)
 
         result_message = str(exc)
+        if robot_id in PICKUP_ITEMS:
+            abort_path = os.environ.get("OMX_ABORT_FILE", "")
+            if abort_path:
+                try:
+                    # Flag creation is atomic at the filesystem level; no motor commands here.
+                    Path(abort_path).touch(exist_ok=True)
+                except OSError:
+                    print("[SAFETY] Failed to signal rollout abort", flush=True)
 
     finally:
+        done_message = ((("Visible basket region empty; unseen region unverified; transfer count estimated" if os.environ.get("OMX_UNLOAD_VIEW_SCOPE")=="visible_only" else "Basket empty confirmed; transfer count estimated, physical destination unverified") if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
+                         else "Home stillness detected after movement; physical unloading unverified")
+                        if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
+        if robot_id in WORKSTATION_IDS and os.environ.get('OMX_UNLOAD_MODE')=='cycles':
+            done_message='Requested motion cycles completed; basket contents and physical transfers unverified'
+        journal_committed=True
+        try:
+            journal.finish(job_id, success, done_message if success else result_message)
+        except Exception as exc:
+            journal_committed=False
+            success = False
+            result_message = f"Journal commit failed: {exc}"
+            abort_path = os.environ.get("OMX_ABORT_FILE", "")
+            if abort_path: Path(abort_path).touch(exist_ok=True)
         # 작업이 끝난 뒤 상태를 먼저 정리해야 Result 직후의 다음 Command를 받을 수 있다.
         current_job_id = None
         current_orders = None
-        current_state = "IDLE"
+        current_state = ("IDLE" if journal_committed and
+                         ((robot_id in WORKSTATION_IDS and workstation_ready()) or
+                          (success and robot_id not in WORKSTATION_IDS)) else "ERROR")
 
         try:
             send_status()
@@ -374,8 +473,11 @@ def run_job(job_id, orders):
         if success:
             print(f"[ORDER] Job 완료: {job_id}", flush=True)
 
-        done_message = ("Home stillness detected after movement; physical unloading unverified"
-                        if robot_id in WORKSTATION_IDS else "Order completed")
+        done_message = ((("Visible basket region empty; unseen region unverified; transfer count estimated" if os.environ.get("OMX_UNLOAD_VIEW_SCOPE")=="visible_only" else "Basket empty confirmed; transfer count estimated, physical destination unverified") if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
+                         else "Home stillness detected after movement; physical unloading unverified")
+                        if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
+        if robot_id in WORKSTATION_IDS and os.environ.get('OMX_UNLOAD_MODE')=='cycles':
+            done_message='Requested motion cycles completed; basket contents and physical transfers unverified'
         send_result(job_id, success, done_message if success else result_message)
 
 
@@ -394,7 +496,7 @@ def on_command(data):
     job_id = data.get("job_id")
     items = data.get("items")
 
-    if not job_id:
+    if not isinstance(job_id, str) or not job_id or len(job_id) > 200 or not isinstance(items, dict):
 
         print("[MQTT] job_id가 없습니다.", flush=True)
 
@@ -408,6 +510,25 @@ def on_command(data):
     print(f"Job   : {job_id}")
     print(f"Items : {items}")
     print("==============================")
+
+    try:
+        prior = journal.lookup(job_id, items)
+    except (ValueError, OSError) as exc:
+        print(f"[ERROR] Job journal: {exc}", flush=True)
+        send_ack(job_id, False)
+        return
+    if prior and current_job_id != job_id:
+        if prior["state"] in ("DONE", "INTERRUPTED"):
+            send_ack(job_id, True)
+            send_result(job_id, prior.get("success", False), prior.get("message", "Interrupted physical job"))
+        else:
+            send_ack(job_id, False)
+        return
+
+    if robot_id in WORKSTATION_IDS and current_job_id != job_id and not workstation_ready():
+        print(f"[MQTT] {robot_id} not READY; rejecting command {job_id}", flush=True)
+        send_ack(job_id, False)
+        return
 
     # =========================================================
     # 현재 실행 중인 job과 동일
@@ -436,6 +557,11 @@ def on_command(data):
     # 다른 작업 진행 중
     # =========================================================
 
+    if current_state == "ERROR":
+        print(f"[SAFETY] ERROR state: reject job={job_id}", flush=True)
+        send_ack(job_id, False)
+        return
+
     if not job_lock.acquire(blocking=False):
 
         print(f"[MQTT] OMX BUSY - " f"주문 거절: {job_id}", flush=True)
@@ -450,8 +576,15 @@ def on_command(data):
 
     try:
 
-        # OMX3은 품목/수량에 관계없이 command 1건당 한 번 실행한다.
-        orders = ("TRIGGER",) if robot_id in WORKSTATION_IDS else make_orders(items)
+        if robot_id in WORKSTATION_IDS and os.environ.get('OMX_MANAGED_UNLOAD')=='1':
+            from omx_manager.workstation import expected_quantity
+            quantity=expected_quantity(items)
+            if os.environ.get('OMX_UNLOAD_MODE')=='cycles':
+                from omx_manager.workstation_cycles import require_count
+                require_count(quantity)
+            orders=items.copy()
+        else:
+            orders = ("TRIGGER",) if robot_id in WORKSTATION_IDS else make_orders(items)
 
     except Exception as exc:
 
@@ -469,6 +602,11 @@ def on_command(data):
     # 주문 접수
     # =========================================================
 
+    try:
+        journal.begin(job_id, items)
+    except Exception:
+        job_lock.release()
+        raise
     current_job_id = job_id
     current_orders = tuple(orders)
     current_state = "WORKING"
@@ -489,8 +627,10 @@ def on_command(data):
 
 # 연결 이벤트를 처리한다.
 def on_connect(client, userdata, flags, rc):
-
+    global current_state
     print(f"[MQTT] Connected: {rc}", flush=True)
+    if robot_id in WORKSTATION_IDS and current_job_id is None:
+        current_state = "IDLE" if workstation_ready() else "ERROR"
 
     topic = f"{robot_id}/command"
 
@@ -521,7 +661,10 @@ def on_message(client, userdata, msg):
         return
 
     if msg.topic == (f"{robot_id}/command"):
-
+        if msg.retain:
+            print("[MQTT] Retained command ignored", flush=True)
+            return
+        if not isinstance(data, dict): return
         on_command(data)
 
 
@@ -555,7 +698,8 @@ def stop_omx3_process(signum, frame):
 
 # 명령행 프로그램의 실행 절차를 시작한다.
 def main():
-
+    if robot_id in WORKSTATION_IDS and not workstation_ready():
+        raise SystemExit("[ERROR] Persistent workstation not READY. Use omx_start, not direct MQTT client")
     signal.signal(signal.SIGTERM, stop_omx3_process)
     signal.signal(signal.SIGINT, stop_omx3_process)
 

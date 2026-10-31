@@ -17,6 +17,7 @@ Provides the OpenCVCamera class for capturing frames from cameras using OpenCV.
 """
 
 import logging
+from lerobot.utils.runtime_metrics import camera_event
 import math
 import os
 import platform
@@ -114,6 +115,8 @@ class OpenCVCamera(Camera):
         self.thread: Thread | None = None
         self.stop_event: Event | None = None
         self.frame_lock: Lock = Lock()
+        # Serialize capture reads with managed inspection sensor controls.
+        self.control_lock: Lock = Lock()
         self.latest_frame: NDArray[Any] | None = None
         self.latest_timestamp: float | None = None
         self.new_frame_event: Event = Event()
@@ -156,6 +159,9 @@ class OpenCVCamera(Camera):
                            has been captured by the background thread. Defaults to True.
         """
 
+        from omx_manager.reader_lifecycle import require_stopped
+        require_stopped(self)
+
         # Use 1 thread for OpenCV operations to avoid potential conflicts or
         # blocking in multi-threaded applications, especially during data collection.
         cv2.setNumThreads(1)
@@ -171,6 +177,9 @@ class OpenCVCamera(Camera):
 
         try:
             self._configure_capture_settings()
+            # Best effort: supported V4L2 devices should not accumulate old frames.
+            try:self.videocapture.set(cv2.CAP_PROP_BUFFERSIZE,1)
+            except cv2.error:logger.debug('Capture backend does not support buffer-size tuning')
             self._start_read_thread()
 
             if warmup and self.warmup_s > 0:
@@ -361,7 +370,8 @@ class OpenCVCamera(Camera):
         if self.videocapture is None:
             raise DeviceNotConnectedError(f"{self} videocapture is not initialized")
 
-        ret, frame = self.videocapture.read()
+        with self.control_lock:
+            ret, frame = self.videocapture.read()
 
         if not ret:
             raise RuntimeError(f"{self} read failed (status={ret}).")
@@ -472,6 +482,7 @@ class OpenCVCamera(Camera):
                 # Always read from the hardware continuously.
                 raw_frame = self._read_from_hardware()
                 capture_time = time.perf_counter()
+                camera_event(self, "captured")
 
                 # If processing_fps is configured, skip frames until the
                 # next processing/publishing interval.
@@ -487,10 +498,12 @@ class OpenCVCamera(Camera):
                 processed_frame = self._postprocess_image(raw_frame)
 
                 with self.frame_lock:
+                    if stop_event.is_set():
+                        break
                     self.latest_frame = processed_frame
                     self.latest_timestamp = capture_time
-
-                self.new_frame_event.set()
+                    self.new_frame_event.set()
+                camera_event(self, "published")
 
                 # Schedule the next publication based on absolute time rather
                 # than sleeping, preventing drift over long recordings.
@@ -525,6 +538,8 @@ class OpenCVCamera(Camera):
         """Starts or restarts the background read thread if it's not running."""
 
         self._stop_read_thread()
+        from omx_manager.reader_lifecycle import require_stopped
+        require_stopped(self)
 
         self.stop_event = Event()
 
@@ -553,8 +568,8 @@ class OpenCVCamera(Camera):
                     f"{self} read thread did not terminate within timeout."
                 )
 
-        self.thread = None
-        self.stop_event = None
+        from omx_manager.reader_lifecycle import retain_until_stopped
+        retain_until_stopped(self)
 
         with self.frame_lock:
             self.latest_frame = None
@@ -589,6 +604,9 @@ class OpenCVCamera(Camera):
                             f"releasing the capture."
                         )
 
+                from omx_manager.reader_lifecycle import require_stopped
+                require_stopped(self)
+
     @check_if_not_connected
     def async_read(self, timeout_ms: float = 200) -> NDArray[Any]:
         """
@@ -620,6 +638,9 @@ class OpenCVCamera(Camera):
 
     @check_if_not_connected
     def read_latest(self, max_age_ms: int = 500) -> NDArray[Any]:
+        return self.read_latest_with_timestamp(max_age_ms)[0]
+
+    def read_latest_with_timestamp(self, max_age_ms: int = 500):
         """
         Return the most recent processed frame immediately.
 
@@ -647,7 +668,7 @@ class OpenCVCamera(Camera):
                 f"(max allowed: {max_age_ms} ms)."
             )
 
-        return frame
+        return frame,timestamp
 
     def disconnect(self) -> None:
         """

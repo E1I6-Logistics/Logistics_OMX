@@ -1,0 +1,414 @@
+# OMX 팔로워 전용 설정: 위치값은 정규화 단위이며 각도가 아닙니다.
+# SET_ 항목은 현장 장치로 지정하고, 모델이 학습한 초기 자세에서 홈을 등록하세요.
+# 설정 파일 형식 버전: 현재 1 사용
+schema_version: 1
+# 이 팔의 장비 번호: omx1~omx4
+device_id: omx3
+# 작업 역할: pickup=피킹, unload=하차
+role: unload
+# 실제 모터·카메라와 학습 때의 보정 파일 설정
+hardware:
+  # 모터 컨트롤러의 고정 장치 경로: 현장 /dev/serial/by-id 값
+  port: /dev/serial/by-id/SET_OMX3_OPENRB_BY_ID
+  # 학습 때 사용한 팔 ID: 보정 JSON 파일명과 일치해야 함
+  robot_id: omx_e_follower_arm
+  # 기존 모터 영점·방향·범위 보정 JSON: 자동 덮어쓰기 안 함
+  calibration_file: ~/.cache/huggingface/lerobot/calibration/robots/omx_follower/omx_e_follower_arm.json
+  # 종료 시 토크 해제 여부: false=유지, 하중을 고려해 결정
+  disable_torque_on_disconnect: false
+  # 모델 config의 영상 입력 이름과 정확히 일치해야 함
+  cameras:
+    # 카메라 입력 키 'wrist': 모델 config 이름과 일치해야 함
+    wrist:
+      # 카메라 종류: opencv=USB, intelrealsense=RealSense
+      type: opencv
+      # 영상 장치 경로: 현장에서 실제 카메라 by-id 값 지정
+      index_or_path: /dev/v4l/by-id/usb-Innomaker_Innomaker-U20CAM-1080p-S1_SN0001-video-index0
+      # 입력 영상 가로 픽셀: 모델 입력 크기와 일치
+      width: 640
+      # 입력 영상 세로 픽셀: 모델 입력 크기와 일치
+      height: 480
+      # 카메라 하드웨어 요청 FPS: 실제 수신 FPS는 monitor에서 확인
+      fps: 30
+      # 영상 버퍼에 게시할 목표 FPS: 하드웨어 수신 FPS와 별개
+      processing_fps: 30
+      # USB 영상 전송 포맷: MJPG 등 장치가 지원하는 값
+      fourcc: MJPG
+      # 카메라 연결 후 준비 시간(초)
+      warmup_s: 5
+    # 카메라 입력 키 'top': 모델 config 이름과 일치해야 함
+    top:
+      # 카메라 종류: opencv=USB, intelrealsense=RealSense
+      type: opencv
+      # 영상 장치 경로: 현장에서 실제 카메라 by-id 값 지정
+      index_or_path: /dev/v4l/by-id/SET_OMX3_TOP_CAMERA
+      # 입력 영상 가로 픽셀: 모델 입력 크기와 일치
+      width: 640
+      # 입력 영상 세로 픽셀: 모델 입력 크기와 일치
+      height: 480
+      # 카메라 하드웨어 요청 FPS: 실제 수신 FPS는 monitor에서 확인
+      fps: 30
+      # 영상 버퍼에 게시할 목표 FPS: 하드웨어 수신 FPS와 별개
+      processing_fps: 30
+      # USB 영상 전송 포맷: MJPG 등 장치가 지원하는 값
+      fourcc: MJPG
+      # 카메라 연결 후 준비 시간(초)
+      warmup_s: 5
+# 고정 초기 자세 등록 및 복귀 판정: 위치 단위는 도가 아닌 정규화 값
+home:
+  # 등록한 6개 관절 초기 자세: null이면 미등록, capture로 저장
+  target: null
+  # 모델·보정·카메라 연결 해시: 도구가 저장하므로 수동 수정 금지
+  binding: null
+  # 사이클 홈 복귀 판정의 관절별 허용 오차(정규화 단위)
+  tolerance:
+    # 어깨 좌우 관절의 홈 복귀 허용 오차(정규화 단위, 각도 아님)
+    shoulder_pan: 7.0
+    # 어깨 상하 관절의 홈 복귀 허용 오차(정규화 단위, 각도 아님)
+    shoulder_lift: 7.0
+    # 팔꿈치 관절의 홈 복귀 허용 오차(정규화 단위, 각도 아님)
+    elbow_flex: 7.0
+    # 손목 굽힘 관절의 홈 복귀 허용 오차(정규화 단위, 각도 아님)
+    wrist_flex: 7.0
+    # 손목 회전 관절의 홈 복귀 허용 오차(정규화 단위, 각도 아님)
+    wrist_roll: 7.0
+    # 그리퍼 관절의 홈 복귀 허용 오차(정규화 단위, 각도 아님)
+    gripper: 7.0
+  # 등록 작업 단계 통과 후 홈 복귀 연속 정지 확인 시간(초): 피킹·반복 하차 공통
+  hold_s: 0.5
+  # 이전 단일 하차 경로의 정지 시간(초): 새 반복 하차는 hold_s와 영상 검사 사용
+  unload_hold_s: 15.0
+  # 연속 관측 간 정지로 인정할 최대 관절 변화(정규화 단위)
+  still_delta: 0.6
+  # 연속 관측으로 인정할 최대 공백(초): 넘으면 정지 시간 재측정
+  max_sample_gap_s: 0.2
+  # 홈 등록을 위해 관절을 관측하는 시간(초)
+  capture_s: 2.0
+  # 홈 등록 중 허용하는 관절 최대 흔들림 폭(정규화 단위)
+  capture_max_span: 0.8
+  # 고정 초기 자세 이동의 도착 오차(정규화 단위): 사이클 판정과 별개
+  arrival_tolerance: 0.8
+  # 홈 제한 이동의 최대 속도(정규화 단위/초)
+  move_speed: 3.0
+  # 홈 제한 이동의 최대 허용 시간(초)
+  move_timeout_s: 20.0
+  # 홈 접근을 허용할 최대 시작 오차(정규화 단위): 너무 멀면 이동 거절
+  max_start_error: 15.0
+  # 홈 이동 한 번의 최대 목표 변화(정규화 단위)
+  max_step: 0.3
+  # 홈 이동 중 목표와 실측 위치의 최대 차이: 지연 시 목표 전진 대기, 초과 시 정지(정규화 단위)
+  max_following_error: 3.0
+# 주요 관절 이동·전송 횟수·모델 복귀 영역으로 동작 사이클 카운트: 실제 물품 성공 수와 별개
+counting:
+  # 사이클 출발로 인정할 주요 관절 이동 폭: 손목·그리퍼만 움직이는 것은 제외
+  leave_tolerance: 12.0
+  # 한 사이클의 최소 경과 시간(초): 이탈 관측 자체를 늦추지는 않음
+  min_cycle_s: 5.0
+  # 홈 근처에서 진행이 없음을 진단하는 시간(초)
+  stall_s: 15.0
+  # 홈 접근 진행으로 인정할 오차 감소량(정규화 단위)
+  progress_epsilon: 0.5
+  # 카운터 방식: cycle=모델 복귀 영역 기반(권장), ordered_stages=이전 수동 단계 방식
+  mode: cycle
+  # 품목별 모델 복귀 프로필: omx_cycle_calibrate로 자동 계산·저장
+  profiles: {}
+  # 주요 관절이 복귀 영역 밖에 연속으로 머물러야 할 시간(초): 순간 흔들림 제외
+  departure_hold_s: 0.3
+  # 한 사이클에서 필요한 최소 모델 명령 전송 횟수: 정지/홈 보정 명령은 제외
+  min_actions: 30
+  # 학습한 모델 복귀 영역에서 연속 정지를 확인할 시간(초)
+  return_hold_s: 0.5
+  # 모델 보정에서 사람이 정상 완료를 확인할 최소 사이클 수: 기본 3
+  min_training_cycles: 3
+  # 확인한 복귀 흔들림 범위에 추가할 여유(정규화 단위)
+  tolerance_padding: 1.5
+  # 복귀 영역 관절별 최소 허용 폭(정규화 단위)
+  min_return_tolerance: 4.0
+  # 자동 계산 가능한 복귀 허용 폭의 최대값: 초과하면 저장 거절
+  max_return_tolerance: 8.0
+  # 정상 완료 확인 후 복귀 자세를 안정적으로 관측할 시간(초)
+  calibration_hold_s: 0.6
+  # Enter 후 모델 명령을 멈추고 연속 안정 구간을 기다릴 최대 시간(초): 초과하면 정지 상태로 재확인 대기
+  calibration_settle_timeout_s: 8.0
+# 품목별 모델 경로와 실행 프로필 설정
+models:
+  # 사용할 프로필 이름: 현재 original FP32만 구현
+  active_profile: original
+  # 모델 교체용 프로필 모음: 모델 변경 뒤 초기 자세 재확인·등록 필요
+  profiles:
+    # 모델 프로필 'original': 원본 또는 교체 후보 설정
+    original:
+      # 모델 실행 백엔드: 현재 lerobot_pytorch만 지원
+      runtime: lerobot_pytorch
+      # 모델 정밀도: 현재 실행 가능한 값은 fp32
+      precision: fp32
+      # 외부 품목 키별 사용할 모델과 작업 문장
+      items:
+        # 품목 'E'의 모델 설정: OMX1 A/B 반대 매핑은 현장 확인된 값
+        E:
+          # 체크포인트의 pretrained_model 폴더: 가중치·config·processor 파일 필요
+          path: lerobot_unified/outputs/train/warehouse_item_e_132_merged_act_300k/checkpoints/250000/pretrained_model
+          # 해당 모델에 전달할 작업 문장: 학습 작업과 맞게 지정
+          task: Pick up the topmost accessible item from the basket, place it on the
+            conveyor, and return to the initial pose
+    # 모델 프로필 'int8_candidate': 원본 또는 교체 후보 설정
+    int8_candidate:
+      # 모델 실행 백엔드: 현재 lerobot_pytorch만 지원
+      runtime: null
+      # 모델 정밀도: 현재 실행 가능한 값은 fp32
+      precision: int8
+      # 후보 모델 검증 표시: true만으로 미구현 INT8 실행이 허용되지는 않음
+      validated: false
+      # 외부 품목 키별 사용할 모델과 작업 문장
+      items:
+        # 품목 'E'의 모델 설정: OMX1 A/B 반대 매핑은 현장 확인된 값
+        E:
+          # 체크포인트의 pretrained_model 폴더: 가중치·config·processor 파일 필요
+          path: null
+          # 해당 모델에 전달할 작업 문장: 학습 작업과 맞게 지정
+          task: null
+# 운용 실행·통신·시간 제한 설정
+runtime:
+  # 영상 읽기 실패 시 모델 명령을 멈추고 같은 USB 카메라 재연결 시도: 토크·모터 모드는 변경하지 않음
+  camera_auto_reconnect: true
+  # 카메라 자동 재연결 최대 횟수(1~3): 실패 시 복구 대기, 미완료 주문 자동 재실행 없음
+  camera_reconnect_attempts: 2
+  # 카메라 재연결 시도 사이 대기 시간(초)
+  camera_reconnect_interval_s: 1.0
+  # FMS와 공유하는 MQTT 브로커 주소: Pi에서 접근 가능한 IP
+  broker_host: 192.168.0.16
+  # MQTT 브로커 포트 번호
+  broker_port: 1883
+  # PyTorch·수치 연산 CPU 스레드 수: Pi에서는 1~4 범위
+  cpu_threads: 4
+  # 정책 제어 루프의 목표 Hz: 실제 달성 주기는 monitor에서 확인
+  fps: 30
+  # 피킹 또는 하차 한 동작 사이클 제한 시간(초): 여러 번 하차 전체는 unload.job_timeout_s
+  cycle_timeout_s: 180
+  # 피킹 주문 감시에서 물품 1개당 허용 시간(초)
+  order_per_unit_s: 180
+  # 품목 주문 시작·모델 로딩을 위한 추가 여유 시간(초)
+  order_load_grace_s: 60
+  # 모델·장치 준비 완료를 기다리는 최대 시간(초)
+  startup_timeout_s: 120
+  # 제어 프로세스 생존 신호가 없어도 기다리는 시간(초)
+  heartbeat_timeout_s: 45
+  # 자식 프로세스 정상 종료 후 강제 정리까지 기다리는 시간(초)
+  shutdown_timeout_s: 12
+# 오류 후 감독 프로그램의 재시도 간격: 미완료 물리 작업은 자동 재집기 안 함
+recovery:
+  # 집기 중단 주문 처리: fail_and_idle=기록·실패 보존 후 홈 점검 및 새 주문 대기, require_ack=기존 수동 확인
+  interrupted_order_action: fail_and_idle
+  # 오류 후 첫 재시도 대기 시간(초)
+  retry_initial_s: 3
+  # 재시도 간격을 늘릴 때의 최대 대기 시간(초)
+  retry_max_s: 60
+  # 수동 복귀용 전체 토크 OFF 전 대기 시간(초): 팔 지지 후 실행, 기본 10초
+  release_delay_s: 10
+  # 오류 후 건강한 모터·허용 홈 접근 영역 또는 시험된 경로에서만 자동 복귀 시도
+  auto_home: true
+  # 복구 대기 중 상태 점검 간격(초): 모델을 다시 로딩하지 않음
+  poll_s: 5.0
+  # 현장에서 직접 등록하고 전체 이동 시험을 통과한 복귀 경로 목록
+  routes: {}
+# 선택적 중요 로그·성능 계측: 기본 비활성, 제어·영상 설정과 별개
+diagnostics:
+  # 상세 성능 카운터와 파일 로그 기본 활성 여부: false 권장 시작값
+  enabled: false
+  # 중요 로그 화면·파일 저장 기본 활성 여부: IDLE 반복 출력 제외
+  important_only: false
+  # 상세 성능 스냅샷 및 모니터의 기본 간격(초): 최소 1초
+  interval_s: 5.0
+  # 성능 스냅샷을 오래된 값으로 판단할 시간(초): 간격의 2배 이상
+  stale_s: 15.0
+  # 전체 로그 한 파일의 최대 크기(MiB): 넘으면 순환 보관
+  full_log_mb: 2
+  # 중요 로그 한 파일의 최대 크기(MiB)
+  important_log_mb: 1
+  # 현재 파일 외에 보관할 이전 로그 파일 수: 최소 1
+  backups: 1
+  # 비동기 로그 큐의 최대 줄 수: 가득 차면 제어를 막지 않고 로그 일부 생략
+  queue_lines: 128
+  # 반복 제어 주기 경고를 중요 화면에 표시할 최소 간격(초)
+  slow_warning_interval_s: 10.0
+# 사용자 systemd 서비스: 감독 프로그램 종료까지 자동 재시작 관리
+service:
+  # 감독 프로그램 비정상 종료 뒤 서비스 재시작 대기 시간(초)
+  restart_s: 5.0
+  # 서비스 종료 대기 한도(초): 자식 프로세스 정리 시간을 충분히 확보
+  stop_timeout_s: 45.0
+  # 설치 시 사용자 세션 자동 시작 등록: true면 --confirm-motion 필요
+  enable_on_boot: false
+# 품목별 실제 작업 단계: 홈 이탈만으로 카운트하지 않고 등록 자세를 순서대로 관측
+workflow:
+  # 외부 품목 이름별 작업 단계: OMX1 A/B 반대 모델 매핑은 그대로 유지
+  items: {}
+# OMX3/4 반복 하차·빈 바구니 영상 판정: 물품 개수는 영상 변화로 추정하며 확정값이 아님
+unload:
+  # 바구니 검사 사용: false면 지정한 1~8회 동작 사이클만 수행 (실제 물건 수·비움 미확인)
+  inspection_enabled: true
+  # 신선하게 정렬한 최근 검사 영상의 중앙값 장수(1/3/5): 3 권장, 움직임·오래된 영상이면 초기화
+  inspection_median_frames: 3
+  # 검사 중 노출·게인 확인 간격(초): 복원 전에는 별도로 모든 설정을 다시 확인
+  inspection_control_poll_s: 0.5
+  # 빈 바구니를 관측할 고정 상단 카메라 입력 이름
+  camera: top
+  # 바구니 내부 영상 영역 [왼쪽 x, 위쪽 y, 가로, 세로]: 팔·컨베이어·외부 배경 제외
+  roi: null
+  # 현장에서 빈 바구니 확인 후 저장한 기준 NPZ 영상: 자동 생성
+  reference: null
+  # 기준 영상의 홈·장치·카메라 연결 해시: 자동 생성
+  reference_binding: null
+  # 기준 영상과 픽셀 색상 차이를 변화로 볼 최소 값(0~255)
+  pixel_threshold: 25
+  # 변화 픽셀 비율이 이 값 이하면 빈 바구니 후보
+  empty_ratio: 0.01
+  # 변화 픽셀 비율이 이 값 이상이면 물건 있음 후보: 두 기준 사이는 판정 보류
+  occupied_ratio: 0.04
+  # 기준 대비 전체 평균 색상 변화 허용값: 조명·노출이 크게 바뀌면 판정 보류
+  illumination_limit: 18
+  # 연속 검사 영상의 평균 픽셀 변화 허용값: 움직임·흔들림 중 판정 보류
+  stability_delta: 3.0
+  # 홈에서 바구니를 검사할 간격(초): 모델 동작 중 영상 추가 처리 없음
+  sample_interval_s: 0.1
+  # 빈 상태 또는 물건 있음을 연속으로 확인할 프레임 수
+  stable_samples: 3
+  # 홈에서 영상 판정을 기다리는 최대 시간(초): 불명확하면 성공 처리 안 함
+  inspect_timeout_s: 12.0
+  # 하차 주문 한 건에서 집기를 시도할 최대 횟수
+  max_attempts: 16
+  # 집기 전후 바구니 변화가 없는 연속 실패 허용 횟수
+  max_no_change: 2
+  # 여러 번 집기를 포함한 하차 주문 전체 제한 시간(초)
+  job_timeout_s: 900.0
+  # 빈 바구니라도 추정 이동 횟수가 주문 수량과 다르면 불일치로 중단
+  require_quantity_match: true
+  # 빈 상태/물건 있음을 확정하기 위한 최소 실제 관측 시간(초)
+  confirmation_s: 0.2
+  # 바구니 판정에 허용할 프레임 최대 나이(초): 오래된 영상은 UNKNOWN
+  max_frame_age_s: 0.25
+  # 검사 방식: low_template=검사 전용 저노출·빈 기준 픽셀 비교, rgb_roi=대비·경계, legacy=이전 방식. 모델 구동에는 원래 카메라 설정 복원
+  vision_method: rgb_roi
+  # 바구니 내부 다각형: 원본 영상의 [[x,y],...] 절대 좌표(볼록, 3~12점). null이면 사각형 ROI 전체 사용
+  roi_polygon: null
+  # 바구니 내부 전체와 정차 오차까지 검사 영역에 들어오는지 현장 확인 여부: false이면 새 검사 방식은 EMPTY 확정/자동 하차 불가
+  full_view_confirmed: false
+  # 작은 영역의 명암 차이를 변화로 볼 최소 값(0~255): 낮을수록 민감하며 노이즈도 증가
+  local_pixel_threshold: 6.0
+  # 20×20 검사 타일 내부 변화 픽셀 비율: 연결된 변화 덩어리 조건과 함께 사용
+  local_occupied_ratio: 0.02
+  # 물건 후보로 인정할 연결된 변화의 최소 픽셀 수: 320×240 검사 영상 기준, 작은 변화도 빈 판정은 보류
+  min_component_pixels: 12
+  # 검사용 경계 검출의 낮은 임계값: 카메라/모델 영상은 바꾸지 않음
+  edge_threshold: 12.0
+  # 검사용 ROI의 국소 대비 보정 강도: 모델 원본 영상에는 적용하지 않음
+  contrast_clip_limit: 2.0
+  # 검사 영역에서 RGB 모두 250 이상인 과노출 픽셀 비율 한도: 초과 시 EMPTY 확정 금지
+  max_clipped_ratio: 0.15
+  # 홈에서 검사할 때만 센서를 저노출로 전환: 검사 후 원래 설정·새 프레임 확인 전 모델 동작 금지
+  low_exposure_enabled: false
+  # 검사 전용 고정 노출값: 카메라별 단위가 다르므로 exposure 조회·low-snapshot 시험 후 지정
+  # 검사 때만 활성 자동초점을 잠그고 원래 상태로 복원
+  inspection_freeze_autofocus: true
+  # 검사 전용 고정 노출값: 기존 빈 기준과 동일한 요청값 사용
+  inspection_exposure: null
+  # 노출 전환/복원 뒤 버릴 서로 다른 새 프레임 수: 이전 영상 재사용 방지
+  exposure_discard_frames: 5
+  # 전환/복원 뒤 신선한 영상의 평균 밝기가 안정돼야 할 연속 시간(초)
+  exposure_settle_s: 0.2
+  # 원래/검사 영상 안정 확인의 단계별 제한 시간(초): 실패 시 모델 동작 차단
+  exposure_switch_timeout_s: 5.0
+  # 자동 검사 뒤 원래 영상과 비교할 평균 밝기 허용 차이(0~255): 자동노출 복원 확인
+  exposure_restore_luma_tolerance: 8.0
+  # 저노출 기준/현재 ROI의 최소 평균 밝기: 지나치게 어두우면 UNKNOWN
+  inspection_min_luma: 15.0
+  # 저노출 ROI의 RGB 모두 5 이하인 픽셀 비율 한도: 초과 시 UNKNOWN
+  inspection_max_dark_ratio: 0.3
+
+
+  # 선택적 이동 바구니 정렬 검사: 기본 꺼짐, 켠 뒤 빈 기준 재등록
+  # 이동·회전하는 바구니 정렬 검사 사용 여부: 변경 시 빈 기준 재등록 필요
+  registration_enabled: false
+  # 기존 사각 ROI 밖으로 바구니를 찾을 추가 여유 픽셀: 원본 영상 기준
+  # 빈 기준은 유지하며 배경 합의·경계 오차·잡음을 제한 보정
+  registration_adaptive: true
+  # 128 정렬 영상의 기준 경계에서만 허용할 위치 차이(최대 5픽셀)
+  registration_spatial_tolerance: 4
+  # 얇은 선과 면적 있는 물체를 구분할 홀수 핵심 폭(3~7)
+  registration_min_blob_width: 7
+  # 배경 타일 사이에 허용할 RGB 차이
+  registration_background_tolerance: 3.0
+  # 분산된 배경 영역의 합의가 검증된 경우에만 허용할 최대 RGB 보정
+  registration_background_max_shift: 24.0
+  # 조명 보정에 필요한 최소 배경 타일 수(전체 16개)
+  registration_background_min_tiles: 8
+  # 같은 조명 변화에 동의할 배경 타일의 최소 비율
+  registration_background_fraction: 0.6
+  # 추정 배경 잡음이 이를 넘으면 판정 보류
+  registration_noise_limit: 4.0
+  # 바구니 후보를 찾을 기준 ROI 주변 확장 범위(원본 픽셀)
+  registration_search_pad: 60
+  # 흰 바구니 외곽 후보의 밝기 문턱 계수: Otsu 자동 문턱에 곱함
+  registration_threshold_factor: 1.35
+  # 바구니 후보의 최소 면적: 기존 사각 ROI 면적 대비 비율
+  registration_min_area_ratio: 0.1
+  # 기준 바구니 중심에서 허용할 최대 이동 거리: 원본 영상 픽셀
+  registration_max_shift_px: 60.0
+  # 기준 바구니에서 허용할 최대 영상 내 회전 각도(도)
+  registration_max_rotation_deg: 15.0
+  # 기준 대비 허용할 바구니 영상 면적 변화 비율
+  registration_scale_tolerance: 0.25
+  # 128 정렬 영상에서 테두리 혼합 픽셀을 제외할 폭: 과도한 확대 금지
+  registration_inner_margin: 6
+  # 정렬 후 물건 후보로 사용할 RGB 차이 문턱
+  registration_pixel_threshold: 8.0
+  # 정렬 후 약한 변화 확인 문턱: 물건 확정이 어려우면 UNKNOWN
+  registration_weak_threshold: 6.0
+  # 가는 선을 제거한 뒤 물건 확정에 필요한 연결 면적(128 정렬 영상 픽셀)
+  registration_component_pixels: 32
+  # 약한 변화 때문에 EMPTY를 보류할 연결 면적(128 정렬 영상 픽셀)
+  registration_weak_pixels: 32
+  # 보정할 수 있는 중앙 RGB 밝기 차이 한도: 넘으면 UNKNOWN
+  registration_color_limit: 6.0
+  # 전체 시야의 테두리 3면 이상 밝기 변화가 일치할 때만 허용할 RGB 조명 보정 한도(최대 16)
+  registration_wall_color_limit: 12.0
+  # 확정 대기 중 바구니 모서리에 허용할 원본 영상 움직임(픽셀)
+  registration_still_px: 3.0
+  # 부분 시야 검사 허용: true이면 보이는 영역만 판단하며 전체 비움으로 보고하지 않음
+  registration_allow_partial: false
+  # 사용자가 보이는 영역만 검사하는 범위를 확인했는지 여부
+  registration_visible_confirmed: false
+  # 128 정렬 영상에서 요구할 최소 관측 비율: 보이지 않는 부분은 비교에서 제외
+  registration_min_visible_ratio: 0.65
+  # 상단 잘림 모서리 위치 추정의 최대 거리: ROI 크기에 대한 비율, 추정 영역은 비움 근거로 사용하지 않음
+  registration_max_extrapolation: 0.35
+
+  # 부분 시야에서 물건 확정에 필요한 연결 면적: 추정 모서리·초점 차이로 인한 작은 변화는 UNKNOWN
+  registration_partial_component_pixels: 64
+  # 부분 시야의 중앙 RGB 밝기 차이 보정 한도: 넘으면 UNKNOWN
+  registration_partial_color_limit: 20.0
+  # 조명 차이가 큰 부분 시야에서 색상 비율 변화로 물건 있음만 추가 확인(EMPTY 우회 없음)
+  registration_partial_chroma_fallback: true
+  # 밝기를 정규화한 RGB 색상 차이 문턱(0~255 기준)
+  registration_chroma_threshold: 8.0
+  # 물건 있음을 확인할 최소 색상 연결 면적(128 정렬 영상 픽셀)
+  registration_chroma_component_pixels: 64
+
+# 노트북용 읽기 전용 카메라 웹 뷰어: omx_view 명령으로 시작
+view:
+  # auto=top 카메라 우선, 없으면 front. wrist를 자동 선택하지 않음
+  camera: auto
+  # 웹 서버가 받을 Pi 주소: 0.0.0.0=모든 인터페이스
+  bind: 0.0.0.0
+  # 노트북 브라우저에서 접속할 포트
+  port: 8080
+  # 영상 열람을 허용할 Windows 노트북 IPv4
+  allow_ip: 192.168.0.19
+  # 보기 전용 초당 전송 상한(0.2~2): 모델 주기와 별개
+  fps: 1.0
+  # 보기용 최대 가로 크기: 모델 입력 영상은 그대로 유지
+  max_width: 640
+  # JPEG 화질(30~90): 보기 전용 압축
+  jpeg_quality: 70
+  # 실시간 표시를 허용할 프레임 최대 나이(초)
+  max_age_s: 2.0

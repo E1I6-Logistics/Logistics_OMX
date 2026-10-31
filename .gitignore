@@ -19,3 +19,12 @@ reports/
 /lerobot_unified/outputs
 /lerobot_unified/.git
 /lerobot_unified/**/*.safetensors
+/logs/
+*.pid
+
+# Local YAML backups, test scratch and bytecode
+/params/backups/
+/tests/manager_tmp/
+/.pytest_cache/
+
+/dist/

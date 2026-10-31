@@ -19,6 +19,8 @@ from __future__ import annotations
 import abc
 import contextlib
 import logging
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lerobot.datasets.utils import DEFAULT_VIDEO_FILE_SIZE_IN_MB
@@ -154,24 +156,13 @@ class RolloutStrategy(abc.ABC):
 
     def _teardown_hardware(self, hw: HardwareContext, return_to_initial_position: bool = True) -> None:
         """Stop the inference engine, optionally return robot to initial position, and disconnect hardware."""
-        if self._engine is not None:
-            logger.info("Stopping inference engine...")
-            self._engine.stop()
-        robot = hw.robot_wrapper.inner
-        if robot.is_connected:
-            if return_to_initial_position and hw.initial_position:
-                logger.info("Returning robot to initial position before shutdown...")
-                self.return_to_initial_position(hw)
-            elif not return_to_initial_position:
-                logger.info(
-                    "Skipping return-to-initial-position (disabled by config); leaving robot in final pose."
-                )
-            logger.info("Disconnecting robot...")
-            robot.disconnect()
-        teleop = hw.teleop
-        if teleop is not None and teleop.is_connected:
-            logger.info("Disconnecting teleoperator...")
-            teleop.disconnect()
+        from omx_manager.hardware import cleanup_resources
+        # Failure teardown never returns Home: that is an explicit checked operation.
+        for failure in cleanup_resources(getattr(self, "_engine", None), hw.robot_wrapper.inner):
+            logger.warning("Cleanup failed: %s", failure)
+        if hw.teleop is not None:
+            try: hw.teleop.disconnect()
+            except Exception: logger.exception("Teleop cleanup failed")
 
     @staticmethod
     def return_to_initial_position(hw: HardwareContext, duration_s: float = 3.0, fps: int = 50) -> bool:
@@ -356,6 +347,27 @@ def send_next_action(
     # ``timer.section`` verbatim when no timer was passed.
     section = timer.section if timer is not None else contextlib.nullcontext
 
+    # Abort flag is only set for launcher-managed OMX1/2 sessions.
+    # The guard is repeated immediately before send_action because inference can block.
+    abort_path = os.environ.get("OMX_ABORT_FILE", "")
+    def abort_if_requested():
+        from omx_manager.exposure import ensure_policy_ready
+        ensure_policy_ready(getattr(ctx.hardware.robot_wrapper,'inner',ctx.hardware.robot_wrapper))
+        shutdown=getattr(getattr(ctx,'runtime',None),'shutdown_event',None)
+        if shutdown is not None and shutdown.is_set():
+            interpolator.reset();engine.reset()
+            raise InterruptedError('Operator shutdown; no motor actions after inference')
+        if abort_path and Path(abort_path).exists():
+            interpolator.reset()
+            engine.reset()
+            raise RuntimeError("OMX abort signalled; no more motor actions dispatched")
+
+    abort_if_requested()
+    def calibration_paused():
+        if os.environ.get('OMX_CYCLE_CALIBRATION')!='1':return False
+        from omx_manager.cycle_calibration import action_paused
+        return action_paused()
+    if calibration_paused():return None
     if interpolator.needs_new_action():
         with section("infer"):
             obs_frame = build_dataset_frame(features, obs_processed, prefix=OBS_STR)
@@ -363,6 +375,7 @@ def send_next_action(
         if action_tensor is not None:
             interpolator.add(action_tensor.cpu())
 
+    if calibration_paused():return None
     interp = interpolator.get()
     if interp is None:
         if timer is not None:
@@ -372,7 +385,16 @@ def send_next_action(
     if len(interp) != len(ordered_keys):
         raise ValueError(f"Interpolated tensor length ({len(interp)}) != action keys ({len(ordered_keys)})")
     action_dict = {k: interp[i].item() for i, k in enumerate(ordered_keys)}
+    abort_if_requested()
     with section("send"):
         processed = ctx.processors.robot_action_processor((action_dict, obs_raw))
-        ctx.hardware.robot_wrapper.send_action(processed)
+        abort_if_requested()
+        if calibration_paused():return None
+        sent_action = ctx.hardware.robot_wrapper.send_action(processed)
+        from omx_manager.hooks import note_action
+        note_action(getattr(ctx.hardware.robot_wrapper,'inner',ctx.hardware.robot_wrapper))
+        from lerobot.utils.runtime_metrics import event as metric_event
+        metric_event("action_sent")
+        from lerobot.utils.runtime_metrics import action_diagnostic
+        action_diagnostic(action_dict,processed,sent_action,obs_raw)
     return action_dict

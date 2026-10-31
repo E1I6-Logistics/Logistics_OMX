@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+echo '[ERROR] Legacy fixed-option launcher disabled on this branch. Use omx_control --config params/omxN.yaml run --confirm-motion.' >&2
+exit 2
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -73,11 +75,19 @@ esac
 OMX_PYTHON_ENV_PATH="${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}"
 [[ -f "$OMX_PYTHON_ENV_PATH/bin/activate" ]] || { echo '[ERROR] 기존 venv 없음' >&2; exit 1; }
 source "$OMX_PYTHON_ENV_PATH/bin/activate"
-export PYTHONPATH="$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="$SCRIPT_DIR/..:$SCRIPT_DIR/src${PYTHONPATH:+:$PYTHONPATH}"
 python3 -c 'import lerobot; print("[SOURCE]", lerobot.__file__)' 
 
 
 # All four devices share CPU/runtime policy. Model, camera, control and MQTT stay device-specific.
+# Optional local optimization settings (all four OMX launch through this script).
+OMX_PREFETCH_ENV_FILE="${OMX_PREFETCH_ENV_FILE:-$HOME/.config/omx/act_prefetch.env}"
+if [[ -f "$OMX_PREFETCH_ENV_FILE" ]]; then
+  # Preserve existing per-device CPU thread values in the legacy OFF config.
+  source "$OMX_PREFETCH_ENV_FILE"
+fi
+# Failed ACT prefetch removed; override any stale environment value.
+export OMX_ACT_PREFETCH=0
 source "$SCRIPT_DIR/omx_runtime_env.sh"
 
 # 같은 OMX를 두 번 실행해 동일 Command를 중복 처리하지 않는다.
@@ -182,6 +192,10 @@ fi
 
 # 픽업 OMX만 재고·주문 상태를 지우고 대기 상태에서 시작한다.
 if [[ "$ROBOT_ID" == "omx1" || "$ROBOT_ID" == "omx2" ]]; then
+  # MQTT failure flag is unique to this launcher session. Never reuse an old flag.
+  OMX_ABORT_FILE="$(mktemp "${TMPDIR:-/tmp}/${ROBOT_ID}_abort.XXXXXXXX")"
+  rm -f -- "$OMX_ABORT_FILE"
+  export OMX_ABORT_FILE
   bash "$SCRIPT_DIR/omx_new_order.sh" WAIT 0
 fi
 
@@ -360,6 +374,7 @@ echo "[DEVICE] 손목 카메라: $WRIST_CAMERA_PATH"
   --strategy.home_leave_tolerance=12 \
   --strategy.home_hold_s=0.3 \
   --strategy.min_cycle_s=5 \
+  --strategy.pickup_cycle_timeout_s="${OMX_PICKUP_CYCLE_TIMEOUT_S:-180}" \
   --robot.type=omx_follower \
   --robot.port="$ROBOT_PORT" \
   --robot.id=omx_follower_arm \
@@ -378,7 +393,70 @@ ROLLOUT_PID=$!
 echo "LeRobot PID: $ROLLOUT_PID"
 
 elif [[ "$ROBOT_ID" == "omx3" || "$ROBOT_ID" == "omx4" ]]; then
-  echo "[$ROBOT_ID] MQTT 대기. command 수신 시 고정된 작업 모델을 실행합니다."
+  ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+  mkdir -p "$ROOT_DIR/state"
+  export OMX_WORKSTATION_MODE=true
+  export OMX_WORKSTATION_SESSION="${ROBOT_ID}_$$_$(date +%s%N)"
+  export OMX_WORKSTATION_STATUS_FILE="$ROOT_DIR/state/${ROBOT_ID}_workstation_status.json"
+  export OMX_WORKSTATION_CONTROL_FILE="$ROOT_DIR/state/${ROBOT_ID}_workstation_command.json"
+  # Write a session-scoped BOOTING state: stale READY from a previous run cannot pass.
+  python3 - <<'PY_STATE'
+import os
+from lerobot.rollout.workstation_ipc import atomic_json, new_status
+atomic_json(os.environ['OMX_WORKSTATION_STATUS_FILE'],
+            new_status(os.environ['OMX_WORKSTATION_SESSION'], 'BOOTING'))
+PY_STATE
+  if [[ "$ROBOT_ID" == "omx3" ]]; then
+    POLICY="${OMX3_POLICY_PATH:-outputs/train/warehouse_item_e_132_merged_act_300k/checkpoints/250000/pretrained_model}"
+    [[ "$POLICY" == /* ]] || POLICY="$SCRIPT_DIR/$POLICY"
+    export E_POLICY_PATH="$POLICY"
+    export E_IDLE_COMPLETE_ENABLED=true
+    export E_DISPLAY_DATA=false
+    export E_ROBOT_ID="${E_ROBOT_ID:-omx_e_follower_arm}"
+    if [[ -z "${E_FOLLOWER_PORT:-${OMX3_FOLLOWER_PORT:-}}" ]]; then
+      shopt -s nullglob
+      PORTS=(/dev/serial/by-id/usb-ROBOTIS_OpenRB-150_*)
+      shopt -u nullglob
+      [[ ${#PORTS[@]} -eq 1 ]] || { echo '[ERROR] OMX3 OpenRB port ambiguous/missing' >&2; exit 1; }
+      export E_FOLLOWER_PORT="${PORTS[0]}"
+    else
+      export E_FOLLOWER_PORT="${E_FOLLOWER_PORT:-$OMX3_FOLLOWER_PORT}"
+    fi
+    ROLLOUT_SCRIPT="$SCRIPT_DIR/run_e_rollout.sh"
+  else
+    ROLLOUT_SCRIPT="$SCRIPT_DIR/run_f_rollout.sh"
+    export E_IDLE_COMPLETE_ENABLED=true
+  fi
+  echo "[$ROBOT_ID] Preloading one ACT policy (persistent mode)..."
+  "${OMX_RUN_PREFIX[@]}" bash "$ROLLOUT_SCRIPT" &
+  ROLLOUT_PID=$!
+  # Publish MQTT IDLE only after policy, cameras and robot are really READY.
+  TIMEOUT="${OMX_STARTUP_TIMEOUT_S:-120}"
+  READY=0
+  for ((N=0; N<TIMEOUT*4; N++)); do
+    if ! kill -0 "$ROLLOUT_PID" 2>/dev/null; then
+      echo "[ERROR] $ROBOT_ID policy process terminated during preload" >&2
+      exit 1
+    fi
+    if python3 - <<'PY_READY'
+import os, sys
+from lerobot.rollout.workstation_ipc import read_json, valid_ready
+state = read_json(os.environ['OMX_WORKSTATION_STATUS_FILE'])
+if state.get('session') != os.environ['OMX_WORKSTATION_SESSION']:
+    sys.exit(1)
+if state.get('phase') == 'ERROR':
+    print('[ERROR] Workstation init:', state.get('message'), file=sys.stderr)
+    sys.exit(2)
+sys.exit(0 if valid_ready(state, os.environ['OMX_WORKSTATION_SESSION']) else 1)
+PY_READY
+    then
+      READY=1
+      break
+    fi
+    sleep 0.25
+  done
+  [[ "$READY" -eq 1 ]] || { echo "[ERROR] $ROBOT_ID not READY after ${TIMEOUT}s" >&2; exit 1; }
+  echo "[$ROBOT_ID] READY: policy/cameras/robot connected; waiting for MQTT command"
 else
   echo "$ROBOT_ID 하차 동작은 아직 구현되지 않아 LeRobot을 시작하지 않습니다."
 fi
@@ -394,6 +472,8 @@ echo "MQTT Client 시작"
 echo "================================"
 
 
+# Pass the rollout PID to the MQTT child. Workstation PID remains session-managed.
+export OMX_ROLLOUT_PID="$ROLLOUT_PID"
 "${OMX_RUN_PREFIX[@]}" python3 "$SCRIPT_DIR/omx_mqtt_client.py" \
   --robot-id "$ROBOT_ID" \
   --broker-ip "$BROKER_IP" &

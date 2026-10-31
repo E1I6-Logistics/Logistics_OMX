@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Common CPU/runtime policy for OMX1-4. Source from run_omx_mqtt.sh.
 # No GPU, accelerator, CPU affinity or real-time scheduler is forced.
-OMX_CPU_THREADS="${OMX_CPU_THREADS:-2}"
+# Pi dedicated to OMX; default to physical online CPU count up to 4.
+# Benchmark determines optimal policy-specific count; override in profile.env.
+ONLINE_CPUS="$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 2)"
+[[ "$ONLINE_CPUS" =~ ^[1-9][0-9]*$ ]] || ONLINE_CPUS=2
+[[ "$ONLINE_CPUS" -le 4 ]] || ONLINE_CPUS=4
+OMX_CPU_THREADS="${OMX_CPU_THREADS:-$ONLINE_CPUS}"
 if [[ ! "${OMX_CPU_THREADS:-2}" =~ ^[1-9][0-9]*$ ]]; then
   echo '[ERROR] OMX_CPU_THREADS must be a positive integer' >&2
   return 1

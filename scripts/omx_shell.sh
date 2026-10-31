@@ -1,46 +1,184 @@
 #!/usr/bin/env bash
-# Loaded once through ~/.bashrc. Compatible with older omx_start aliases.
-[[ $- == *i* ]] || return 0
-[[ -f "$HOME/.config/logistics_omx/device.env" ]] || return 0
-source "$HOME/.config/logistics_omx/device.env"
-unalias omx_start 2>/dev/null || true
-omx_start() {
-  "$HOME/Logistics_OMX/run_omx_mqtt.sh" "$@"
-}
-if [[ "$OMX_ROBOT_ID" == omx1 || "$OMX_ROBOT_ID" == omx2 ]]; then
-  omx_reset() {
-    local file="${OMX_INVENTORY_STATE_PATH:-$HOME/Logistics_OMX/state/omx_inventory.json}"
-    if [[ ! -f "$file" ]]; then echo "상태 파일이 없습니다: $file"; return 1; fi
-    if pgrep -af '[l]erobot-rollout|[o]mx_mqtt_client.py' >/dev/null 2>&1; then
-      echo '[ERROR] OMX 실행 중에는 주문/재고 초기화를 허용하지 않습니다.' >&2
-      return 1
-    fi
-    echo '주의: 기존 주문 및 재고 카운터를 초기화합니다.'
-    local answer
-    read -r -p '실제 물품을 다시 채웠습니까? (yes): ' answer
-    [[ "$answer" == yes ]] || return 0
-    cp -a "$file" "$file.bak.$(date +%Y%m%d_%H%M%S)"
-    OMX_RESET_FILE="$file" "${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}/bin/python" - <<'__OMX_RESET_PY__'
-import json
-import os
-import time
-from pathlib import Path
-path = Path(os.environ['OMX_RESET_FILE']).expanduser()
-data = json.loads(path.read_text(encoding='utf-8'))
-now = time.strftime('%Y-%m-%dT%H:%M:%S%z')
-data.update({
-    'total_completed': 0, 'remaining': 0,
-    'order_item': 'WAIT', 'order_quantity': 0,
-    'order_completed': 0, 'order_started_at': now,
-    'order_started_at_epoch': time.time(), 'updated_at': now,
-})
-temporary = path.with_suffix(path.suffix + '.tmp')
-temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2)+'\n', encoding='utf-8')
-os.replace(temporary, path)
-print(f"초기화 완료: capacity={data.get('capacity')}, total_completed=0, remaining=0, WAIT")
-__OMX_RESET_PY__
-  }
+# .bashrc에서 불러오는 단축 명령. 불러오기만 할 때 장치/서비스를 실행하지 않습니다.
+_OMX_SHELL_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+_OMX_SHELL_REGISTRY="$HOME/.config/logistics_omx/shell.env"
+if [[ -f "$_OMX_SHELL_REGISTRY" ]]; then
+  source "$_OMX_SHELL_REGISTRY"
+elif [[ -f "$HOME/.config/logistics_omx/device.env" ]]; then
+  source "$HOME/.config/logistics_omx/device.env"
+  OMX_CONFIG_PATH="$_OMX_SHELL_ROOT/state/config/${OMX_ROBOT_ID:-}.yaml"
+  OMX_PYTHON="${OMX_PYTHON:-${OMX_PYTHON_ENV_PATH:-$HOME/venv/.venv}/bin/python}"
 else
-  # OMX3/4에는 재고 초기화 기능이 없어야 한다.
-  unset -f omx_reset 2>/dev/null || true
+  return 0
 fi
+export OMX_ROBOT_ID OMX_CONFIG_PATH OMX_PYTHON
+# 이전 alias와 재고 직접 초기화 함수를 제거하고 현재 YAML 관리 명령을 사용합니다.
+for _omx_name in omx_motor_check omx_start omx_home omx_arm omx_release omx_observe omx_capture omx_check omx_calibrate omx_logs omx_monitor omx_status omx_recover omx_reset omx_order omx_service omx_info omx_help omx_cd omx_setup omx_workflow omx_stage omx_route omx_route_test omx_return_home omx_basket omx_resume omx_unload omx_tune omx_cycle_calibrate omx_view; do
+  unalias "$_omx_name" 2>/dev/null || true
+done
+unset -f omx_reset 2>/dev/null || true
+unset _omx_name
+_omx_ctl() {
+  if [[ ! -f "${OMX_CONFIG_PATH:-}" ]]; then
+    echo '[ERROR] 현장 YAML이 없습니다. bash scripts/install_omx_shell.sh 로 등록하세요.' >&2
+    return 2
+  fi
+  "$_OMX_SHELL_ROOT/omx_control" --config "$OMX_CONFIG_PATH" --expected-device "$OMX_ROBOT_ID" "$@"
+}
+omx_start() {
+  echo "[OMX] $OMX_ROBOT_ID 실행: $OMX_CONFIG_PATH"
+  "$_OMX_SHELL_ROOT/run_omx_mqtt.sh" --robot-id "$OMX_ROBOT_ID" --config "$OMX_CONFIG_PATH" --confirm-motion --important-only "$@"
+}
+omx_motor_check() { _omx_ctl motor-check "$@"; }
+omx_home() { _omx_ctl home --confirm-motion "$@"; }
+omx_arm() { _omx_ctl arm --confirm-motion "$@"; }
+omx_release() { _omx_ctl release --confirm-motion "$@"; }
+omx_observe() { _omx_ctl observe "$@"; }
+omx_capture() { _omx_ctl capture "$@"; }
+omx_check() { _omx_ctl check "$@"; }
+omx_calibrate() { _omx_ctl menu "$@"; }
+omx_logs() { _omx_ctl logs "$@"; }
+omx_monitor() { _omx_ctl monitor "$@"; }
+omx_status() { _omx_ctl monitor --samples 1 "$@"; }
+omx_recover() { _omx_ctl acknowledge-recovery --confirm-motion "$@"; }
+omx_setup() { _omx_ctl setup-workflow "$@"; }
+omx_tune() { _omx_ctl tune "$@"; }
+omx_cycle_calibrate() {
+  if [[ $# -ne 1 ]]; then echo '사용법: omx_cycle_calibrate 품목 — 모델이 실제로 움직입니다.' >&2; return 2; fi
+  _omx_ctl cycle-calibrate --item "$1" --confirm-motion
+}
+omx_workflow() { _omx_ctl workflow-check "$@"; }
+omx_stage() {
+  if [[ $# -ne 2 ]]; then echo '사용법: omx_stage 품목 단계이름 (예: omx_stage F pick)' >&2; return 2; fi
+  _omx_ctl stage-capture --item "$1" --name "$2"
+}
+omx_route() {
+  if [[ $# -ne 1 ]]; then echo '사용법: omx_route 경로이름 — 현 자세를 다음 경유점으로 추가' >&2; return 2; fi
+  _omx_ctl route-capture --name "$1"
+}
+omx_route_test() {
+  if [[ $# -ne 1 ]]; then echo '사용법: omx_route_test 경로이름 — 홈에서 경로 왕복 실제 이동' >&2; return 2; fi
+  _omx_ctl route-test --name "$1" --confirm-motion --round-trip
+}
+omx_return_home() { _omx_ctl return-home --confirm-motion "$@"; }
+omx_basket() {
+  case "${1:-check}" in
+    collect) _omx_ctl basket-collect;;
+    snapshot) _omx_ctl basket-snapshot;;
+    capture) _omx_ctl basket-capture --confirm-empty;;
+    check) _omx_ctl basket-check;;
+    watch) shift; _omx_ctl basket-watch "$@";;
+    status) _omx_ctl basket-status;;
+    diagnose) _omx_ctl basket-diagnose;;
+    pose) _omx_ctl basket-pose;;
+    align)
+      case "${2:-}" in
+        on) _omx_ctl set --key unload.registration_allow_partial --value false && _omx_ctl set --key unload.registration_enabled --value true;;
+        off) _omx_ctl set --key unload.registration_allow_partial --value false && _omx_ctl set --key unload.registration_enabled --value false;;
+        partial) _omx_ctl set --key unload.registration_enabled --value true && _omx_ctl set --key unload.registration_allow_partial --value true;;
+        *) echo '사용법: omx_basket align on|partial|off — 변경 후 빈 기준 재등록 필요' >&2; return 2;;
+      esac;;
+    off) _omx_ctl set --key unload.inspection_enabled --value false;;
+    on) _omx_ctl set --key unload.inspection_enabled --value true;;
+    exposure) _omx_ctl basket-exposure;;
+    low)
+      if [[ $# -ne 2 ]]; then echo '사용법: omx_basket low 노출값 / omx_basket low off' >&2; return 2; fi
+      _omx_ctl basket-low --value "$2";;
+    low-snapshot) _omx_ctl basket-low-snapshot;;
+    restore) _omx_ctl basket-restore-exposure;;
+    roi|polygon)
+      if [[ $# -ne 2 ]]; then echo '사용법: omx_basket roi "[x,y,w,h]" / omx_basket polygon "[[x,y],...]" (해제: null)' >&2; return 2; fi
+      local key=unload.roi
+      if [[ "$1" == polygon ]]; then key=unload.roi_polygon; fi
+      _omx_ctl set --key "$key" --value "$2";;
+    confirm-visible) _omx_ctl set --key unload.registration_visible_confirmed --value true;;
+    confirm-view)
+      if [[ $# -ne 1 ]]; then echo '사용법: omx_basket confirm-view — 바구니 내부 전체와 정차 오차를 직접 확인한 경우에만 실행' >&2; return 2; fi
+      _omx_ctl set --key unload.full_view_confirmed --value true;;
+    *) echo '사용법: omx_basket off|on|collect|exposure|low 값|low-snapshot|restore|snapshot|capture|check|watch|align|pose|diagnose|status|roi|polygon|confirm-view — 전체 시야 확인 후 confirm-view, 빈 상태에서만 capture' >&2; return 2;;
+  esac
+}
+omx_resume() { _omx_ctl resume --confirm-motion "$@"; }
+omx_unload() {
+  local item
+  case "$OMX_ROBOT_ID" in omx3) item=E;; omx4) item=F;; *) echo 'OMX3/4 하차 전용 명령입니다.' >&2; return 2;; esac
+  if [[ $# -eq 0 ]]; then _omx_ctl order --until-empty
+  elif [[ $# -eq 1 ]]; then _omx_ctl order --item "$item" --quantity "$1"
+  else echo '사용법: omx_unload [수량/사이클 횟수] — 검사 OFF면 1~8회 필수' >&2; return 2; fi
+}
+omx_order() {
+  if [[ $# -lt 1 || $# -gt 2 ]]; then
+    echo '사용법: omx_order 품목 [수량=1] — 실제 팔이 움직입니다.' >&2
+    return 2
+  fi
+  _omx_ctl order --item "$1" --quantity "${2:-1}"
+}
+omx_service() {
+  local action="${1:-status}"
+  if [[ $# -gt 0 ]]; then shift; fi
+  case "$action" in
+    start|enable) _omx_ctl service --action "$action" --confirm-motion "$@";;
+    *) _omx_ctl service --action "$action" "$@";;
+  esac
+}
+omx_view() {
+  OMX_PYTHON="$OMX_PYTHON" "$_OMX_SHELL_ROOT/omx_view" --config "$OMX_CONFIG_PATH" "$@"
+}
+omx_cd() { cd -- "$_OMX_SHELL_ROOT"; }
+omx_info() {
+  printf 'OMX: %s\nYAML: %s\nPython: %s\nRepo: %s\n' "$OMX_ROBOT_ID" "$OMX_CONFIG_PATH" "$OMX_PYTHON" "$_OMX_SHELL_ROOT"
+}
+omx_help() {
+  omx_info
+  cat <<'HELP'
+omx_motor_check            모터 목표·현재 위치 흔들림 약 3초 관측 (모터 쓰기 없음)
+omx_start [--diagnostics]   실행 / 전경 실행 종료는 Ctrl+C
+omx_home                    등록 홈 근처에서 제한 복귀 (실제 이동)
+omx_arm                     현재 자세 유지 토크 ON (홈 접근 범위 안)
+omx_release                 YAML 대기 시간 후 전체 토크 OFF — 팔 지지 필수
+omx_observe                 관절값 확인
+omx_capture                 현재 자세를 홈으로 저장 — 복귀 명령이 아님
+omx_check                   파일·등록 홈 검사
+omx_calibrate               설정/보정 메뉴
+omx_status                  현재 상태 한 번 조회
+omx_monitor                 성능 모니터 (Ctrl+C로 모니터만 종료)
+omx_logs [--follow]          중요 로그 조회
+omx_recover                 물품 확인 후 중단 작업 기록 보관/해제
+omx_setup                   기존 설정에 작업 단계·반복 하차·복귀 경로 설정 추가
+omx_tune                    CPU 스레드 4·사이클 카운터·바구니 검사 기본 0.1초/3프레임 적용
+omx_cycle_calibrate A       모델을 돌리며 정상 복귀 3회를 확인·학습 (실제 이동)
+omx_workflow                모델 복귀 프로필·하차 기준 영상 등록 검사
+omx_stage F pick            이전 수동 단계 등록 (cycle 모드에서는 사용하지 않음)
+omx_route fold              현재 자세를 fold 복귀 경로의 다음 지점으로 등록
+omx_route_test fold         홈에서 첫 경유점까지 역방향 이동 후 복귀 시험·승인
+omx_return_home             홈 접근 또는 시험된 경로를 이용한 실제 복귀
+omx_view                    노트북 브라우저용 보기 서버 (기존 카메라 공유, 읽기 전용)
+omx_view --camera-only      모델 정지 상태에서 고정 카메라만 열기 (모터 미접속)
+omx_basket pose             바구니 추적 후보·실제 검사 영역 PNG 저장 (모터 이동 없음)
+omx_basket align on         이동·회전 정렬 검사 활성화 (기존 다각형 해제 및 빈 기준 재등록 필요)
+omx_basket align partial    잘린 바구니의 보이는 영역만 검사 (전체 비움 보장 없음)
+omx_basket confirm-visible  부분 시야 검사 범위를 확인한 경우에만 실행
+omx_basket align off        이전 고정 ROI 방식 (빈 기준 재등록 필요)
+omx_basket diagnose         저장 기준·현재 ROI·차이 위치 비교 PNG 저장 (기준 자동 변경 없음)
+omx_basket collect          빈/물건/모서리/다시 빈 상태를 한 번에 수집 → PC 전달 ZIP (모델·모터 이동 없음)
+omx_basket snapshot         홈에서 상단 영상 좌표 격자 PNG 저장
+omx_basket capture          빈 바구니 직접 확인 후 기준 저장
+omx_basket check            빈 바구니/물건 있음/불명확 판정 시험
+omx_basket watch            카메라 한 번 연결 후 간단 판정 (--json: 상세, Ctrl+C로 종료)
+omx_basket status           실행 중 컨트롤러의 최신 영상 판정 조회 (장치 연결 없음)
+omx_basket roi '[x,y,w,h]'   검사 사각형 설정 (전체 시야 확인 해제, 기준 재등록 필요)
+omx_basket polygon '[[x,y],...]' 바구니 내부 다각형 설정 (null로 해제)
+omx_basket confirm-view     내부 전체·정차 오차·모서리 검출을 직접 확인한 뒤에만 사용
+omx_basket exposure         상단 카메라 노출·게인·자동 설정 조회 (모터/노출 쓰기 없음)
+omx_basket low 값           검사 전용 고정 노출 설정 (같은 노출로 빈 기준 재등록 필요)
+omx_basket low-snapshot     정밀 홈에서 저노출 미리보기 → 원래 설정·프레임 복원
+omx_basket restore          강제 종료/복원 실패 뒤 남은 원래 카메라 설정 복원 (작업 재실행 없음)
+omx_resume                  물품 확인 후 실행 중인 복구 대기에 재점검 요청 (작업 재실행 안 함)
+omx_basket off|on           바구니 검사 OFF/ON 저장 (재시작 후 적용)
+omx_unload [수량]            검사 ON: 비움 확인 / OFF: 지정한 1~8회 사이클 후 종료
+omx_order A 1               수동 MQTT 실물 주문 (장비에 맞는 품목 사용)
+omx_service install         자동 재시작 서비스 설치만 수행
+omx_service start|stop|status 서비스 구동/수동 정지/상태
+omx_cd                      저장소로 이동
+HELP
+}
