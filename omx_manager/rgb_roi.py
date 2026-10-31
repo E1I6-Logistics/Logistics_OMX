@@ -41,7 +41,7 @@ def signature(spec):
         # Preserve installed references with the default independent-wall
         # estimator; custom bounds remain part of the reference signature.
         if registration['registration_wall_color_limit']==12.:registration.pop('registration_wall_color_limit')
-        for key,value in (('registration_partial_chroma_fallback',True),('registration_chroma_threshold',8.),('registration_chroma_component_pixels',64)):
+        for key,value in (('registration_full_chroma_fallback',True),('registration_partial_chroma_fallback',True),('registration_chroma_threshold',8.),('registration_chroma_component_pixels',64)):
             if registration[key]==value:registration.pop(key)
         material.update(version=3,registration=registration)
     return hashlib.sha256(json.dumps(material,sort_keys=True).encode()).hexdigest()

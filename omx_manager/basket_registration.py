@@ -9,7 +9,7 @@ DEFAULTS=dict(registration_enabled=False,registration_search_pad=60,
               registration_scale_tolerance=.25,registration_inner_margin=6,
               registration_pixel_threshold=8.,registration_weak_threshold=6.,
               registration_component_pixels=32,registration_weak_pixels=32,
-              registration_color_limit=6.,registration_wall_color_limit=12.,registration_partial_chroma_fallback=True,
+              registration_color_limit=6.,registration_wall_color_limit=12.,registration_partial_chroma_fallback=True,registration_full_chroma_fallback=True,
               registration_chroma_threshold=8.,registration_chroma_component_pixels=64,
               registration_still_px=3.,registration_allow_partial=False,
               registration_visible_confirmed=False,registration_min_visible_ratio=.65,registration_max_extrapolation=.35,registration_partial_component_pixels=64,registration_partial_color_limit=20.)
@@ -23,7 +23,7 @@ class ViewError(ConfigError):
 
 def validate(spec):
     if type(spec['registration_enabled']) is not bool:raise ConfigError('registration_enabled must be boolean')
-    for name in ('registration_allow_partial','registration_visible_confirmed','registration_partial_chroma_fallback'):
+    for name in ('registration_allow_partial','registration_visible_confirmed','registration_partial_chroma_fallback','registration_full_chroma_fallback'):
         if type(spec[name]) is not bool:raise ConfigError(name+' must be boolean')
     if spec['registration_allow_partial'] and not spec['registration_enabled']:raise ConfigError('Partial view requires registration')
     for key,lo,hi in (('registration_search_pad',0,150),('registration_inner_margin',2,8),
@@ -349,7 +349,7 @@ class Comparator:
         if flags:
             # Geometry/visibility/exposure still gate this path. A clear colored
             # object may prove OCCUPIED under shadow, but it never proves EMPTY.
-            if flags==['LIGHTING_SHIFT'] and s['registration_allow_partial'] and s['registration_partial_chroma_fallback']:
+            if flags==['LIGHTING_SHIFT'] and s['registration_partial_chroma_fallback' if s['registration_allow_partial'] else 'registration_full_chroma_fallback']:
                 color,_=self.chromatic_change(image,mask,offset)
                 if color['chroma_component_pixels']>=s['registration_chroma_component_pixels']:
                     return dict(result,**color,verdict='OCCUPIED',evidence_reason='REGISTERED_COLORED_OBJECT',

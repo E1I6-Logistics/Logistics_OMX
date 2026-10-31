@@ -162,7 +162,8 @@ class BaseStrategy(RolloutStrategy):
         ctx.hardware.robot_wrapper.inner._omx_runtime_ready = True
         heartbeat()
         from lerobot.utils.runtime_metrics import start_metrics
-        start_metrics(ctx.hardware.robot_wrapper.inner, ctx.runtime.shutdown_event, ctx.runtime.cfg.fps)
+        start_metrics(ctx.hardware.robot_wrapper.inner, ctx.runtime.shutdown_event, ctx.runtime.cfg.fps,
+                      policy=getattr(ctx.policy,"policy",None),policy_path=getattr(getattr(ctx.runtime.cfg,"policy",None),"path",None))
         logger.info("Base strategy ready")
 
     @property

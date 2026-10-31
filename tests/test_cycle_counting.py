@@ -345,7 +345,7 @@ def test_watch_opens_one_camera_and_updates_presence_then_empty_without_old_labe
     monkeypatch.setattr(commissioning,'time',NS(perf_counter=clock,sleep=clock.sleep,time=clock))
     monkeypatch.setattr(basket,'time',NS(perf_counter=clock))
     device=NS(read=lambda:pose())
-    result=commissioning.basket_operation(basket_cfg,device,watch=True,samples_limit=8)
+    result=commissioning.basket_operation(basket_cfg,device,watch=True,samples_limit=8,json_output=True)
     camera.connect.assert_called_once();camera.disconnect.assert_called_once()
     assert result['verdict']=='EMPTY' and len(calls)==8 and result['connection_s']==5
     rows=[json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith('{')]

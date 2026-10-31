@@ -66,7 +66,7 @@ omx_basket() {
     snapshot) _omx_ctl basket-snapshot;;
     capture) _omx_ctl basket-capture --confirm-empty;;
     check) _omx_ctl basket-check;;
-    watch) _omx_ctl basket-watch;;
+    watch) shift; _omx_ctl basket-watch "$@";;
     status) _omx_ctl basket-status;;
     diagnose) _omx_ctl basket-diagnose;;
     pose) _omx_ctl basket-pose;;
@@ -160,7 +160,7 @@ omx_basket diagnose         저장 기준·현재 ROI·차이 위치 비교 PNG 
 omx_basket snapshot         홈에서 상단 영상 좌표 격자 PNG 저장
 omx_basket capture          빈 바구니 직접 확인 후 기준 저장
 omx_basket check            빈 바구니/물건 있음/불명확 판정 시험
-omx_basket watch            카메라 한 번 연결 후 실시간 판정 (Ctrl+C로 종료)
+omx_basket watch            카메라 한 번 연결 후 간단 판정 (--json: 상세, Ctrl+C로 종료)
 omx_basket status           실행 중 컨트롤러의 최신 영상 판정 조회 (장치 연결 없음)
 omx_basket roi '[x,y,w,h]'   검사 사각형 설정 (전체 시야 확인 해제, 기준 재등록 필요)
 omx_basket polygon '[[x,y],...]' 바구니 내부 다각형 설정 (null로 해제)

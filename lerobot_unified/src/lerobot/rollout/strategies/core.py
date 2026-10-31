@@ -390,9 +390,11 @@ def send_next_action(
         processed = ctx.processors.robot_action_processor((action_dict, obs_raw))
         abort_if_requested()
         if calibration_paused():return None
-        ctx.hardware.robot_wrapper.send_action(processed)
+        sent_action = ctx.hardware.robot_wrapper.send_action(processed)
         from omx_manager.hooks import note_action
         note_action(getattr(ctx.hardware.robot_wrapper,'inner',ctx.hardware.robot_wrapper))
         from lerobot.utils.runtime_metrics import event as metric_event
         metric_event("action_sent")
+        from lerobot.utils.runtime_metrics import action_diagnostic
+        action_diagnostic(action_dict,processed,sent_action,obs_raw)
     return action_dict

@@ -68,10 +68,11 @@ def test_unseen_pixels_do_not_supply_color_evidence():
  assert r['verdict']=='UNKNOWN' and r['chroma_component_pixels']==0
 
 
-def test_fallback_can_be_disabled_and_does_not_change_full_view_mode():
+def test_partial_and_full_fallback_can_be_disabled_independently():
  ref,image=shadow_scene();s=partial_spec();s['registration_partial_chroma_fallback']=False
  assert R.Comparator(ref,s).compare(image)['verdict']=='UNKNOWN'
- r=R.Comparator(ref,spec()).compare(image)
+ full=spec();full['registration_full_chroma_fallback']=False
+ r=R.Comparator(ref,full).compare(image)
  assert r['verdict']=='UNKNOWN' and 'chroma_component_pixels' not in r
 
 
@@ -85,7 +86,7 @@ def test_normal_empty_and_occupied_path_does_not_compute_color(monkeypatch):
 
 def test_default_fallback_preserves_installed_reference_signature():
  s=partial_spec()
- new={'registration_partial_chroma_fallback','registration_chroma_threshold','registration_chroma_component_pixels'}
+ new={'registration_full_chroma_fallback','registration_partial_chroma_fallback','registration_chroma_threshold','registration_chroma_component_pixels'}
  before={k:s[k] for k in R.DEFAULTS if k not in new and k!='registration_wall_color_limit'}
  old=dict(version=3,size=(320,240),roi=s['roi'],polygon=s['roi_polygon'],registration=before)
  assert signature(s)==hashlib.sha256(json.dumps(old,sort_keys=True).encode()).hexdigest()

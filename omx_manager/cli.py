@@ -194,7 +194,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                     print(json.dumps(result,ensure_ascii=False,indent=2))
                     print('Read-only diagnostic saved. Reference, thresholds and counting settings unchanged.');return result
                 capture_mode='snapshot' if command=='basket-snapshot' else 'low_snapshot' if command in ('basket-low-snapshot','basket-pose') else command=='basket-capture'
-                result=basket_operation(cfg,device,capture=capture_mode,watch=command=='basket-watch',samples_limit=samples)
+                result=basket_operation(cfg,device,capture=capture_mode,watch=command=='basket-watch',samples_limit=samples,json_output=json_output)
                 if command=='basket-watch':return result
                 if command=='basket-check': print(json.dumps(result));return result
                 exposure_profile=None;registration_profile=None;registration_mask=None

@@ -116,7 +116,7 @@ def camera_for(cfg):
     return make_cameras_from_configs({name:spec})[name]
 
 
-def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0,diagnose=False):
+def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0,diagnose=False,json_output=False):
     from .basket import options,BasketInspector
     from .exposure import Session,require_restored
     require_home(cfg)
@@ -159,13 +159,13 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0,diag
                 def check_inspection():
                     check_pose();session.verify()
                 result=_basket_connected(cfg,camera,check_inspection,inspector,capture,watch,samples_limit,opened,connection_s,
-                                         dict(inspection_exposure=session.target['exposure'],camera_state='INSPECTION_LOW'))
+                                         dict(inspection_exposure=session.target['exposure'],camera_state='INSPECTION_LOW'),json_output=json_output)
                 profile=session.profile()
             if capture:
                 if isinstance(result,dict):return dict(result,exposure_profile=profile,timings=session.timing)
                 return dict(image=result,exposure_profile=profile,timings=session.timing)
             result.update(session.timing,camera_state='NORMAL_RESTORED');return finalize(result)
-        return finalize(_basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,{}))
+        return finalize(_basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,{},json_output=json_output))
     except CaptureViewError as exc:
         # This catch runs AFTER Session.__exit__ restores camera controls.
         from .config import ROOT,write_json
@@ -188,7 +188,7 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0,diag
         if camera.is_connected:camera.disconnect()
 
 
-def _basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,metadata):
+def _basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,metadata,*,json_output=False):
     import numpy as np
     from .basket import options,crop,read_camera
     from .hooks import heartbeat
@@ -231,7 +231,16 @@ def _basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limi
         result=np.median(np.stack(samples),axis=0).astype(np.uint8);check_pose()
         if tracker:return dict(image=result,registration_profile=tracker.last_profile,registration_mask=np.logical_and.reduce(sample_masks))
         return result
-    deadline=time.perf_counter()+spec['inspect_timeout_s'];iterations=0;last_print=None;next_print=0.
+    deadline=time.perf_counter()+spec['inspect_timeout_s'];iterations=0
+    if watch:
+        from .basket_console import WatchOutput
+        from .config import ROOT,write_json
+        destination=ROOT/'state'/'manager'/cfg['device_id']/'basket_watch.json'
+        output=WatchOutput(cfg['device_id'],json_output=json_output,clock=time.perf_counter,
+                           save=lambda row:write_json(destination,row,durable=False))
+        if not json_output:
+            scope='보이는 영역만 검사 · 화면 밖 미확인' if spec['registration_allow_partial'] else '전체 시야 검사'
+            print('[BASKET] '+scope+' / 상태 변경 즉시 · 유지 시 5초 / 상세: omx_basket watch --json',flush=True)
     while watch or time.perf_counter()<deadline:
         check_pose();heartbeat()
         try:
@@ -241,9 +250,7 @@ def _basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limi
         snapshot=inspector.snapshot(time.time())
         snapshot.update(metadata,connection_s=connection_s,elapsed_s=time.perf_counter()-opened)
         if watch:
-            tag=(snapshot['verdict'],snapshot['candidate'],snapshot['reason'])
-            if tag!=last_print or time.perf_counter()>=next_print:
-                print(__import__('json').dumps(snapshot,ensure_ascii=False),flush=True);last_print=tag;next_print=time.perf_counter()+1
+            output.update(snapshot)
             iterations+=1
             if samples_limit and iterations>=samples_limit:return snapshot
         if result!='UNKNOWN' and not watch:return snapshot
