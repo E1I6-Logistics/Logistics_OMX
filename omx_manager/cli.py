@@ -171,7 +171,10 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
         original=digest(path)
         original_binding=binding(cfg) if command == "capture" else None
         with FollowerBus(cfg) as device:
-            if command=='motor-check':
+            if command=='basket-collect':
+                from .basket_evidence import collect
+                return collect(cfg,path,device)
+            elif command=='motor-check':
                 from .motor_diagnostics import save as motor_report
                 result=motor_report(device,cfg,samples or 20)
                 print(json.dumps({key:value for key,value in result.items() if key!='samples'},ensure_ascii=False,indent=2));return result
@@ -306,7 +309,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True,help="params/omx1.yaml etc.")
-    parser.add_argument("command",choices=("motor-check","menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose","basket-pose"))
+    parser.add_argument("command",choices=("motor-check","menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose","basket-pose","basket-collect"))
     parser.add_argument("--confirm-motion",action="store_true")
     parser.add_argument("--expected-device",choices=("omx1","omx2","omx3","omx4"),help="Launcher device/YAML consistency check")
     parser.add_argument("--key");parser.add_argument("--value")
