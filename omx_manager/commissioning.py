@@ -51,7 +51,8 @@ def require_commissioned(cfg):
             if options(cfg)['mode']=='cycle':require_profile(cfg,item)
             else:require_stages(cfg,item)
         except ConfigError as exc: missing.append(str(exc))
-    if cfg['role']=='unload':
+    from .basket import options as basket_options
+    if cfg['role']=='unload' and basket_options(cfg)['inspection_enabled']:
         from .basket import BasketInspector
         try:
             inspector=BasketInspector(cfg)

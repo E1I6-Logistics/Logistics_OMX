@@ -9,6 +9,8 @@ def send_order(cfg, item=None, quantity=1, until_empty=False):
     robot = cfg['device_id']
     allowed = {'omx1': ('A', 'B'), 'omx2': ('C', 'D'), 'omx3': ('E',), 'omx4': ('F',)}
     if until_empty:
+        from .basket import options
+        if not options(cfg)['inspection_enabled']:raise ValueError('바구니 검사 OFF: omx_unload 1 처럼 동작 횟수 1~8을 지정하세요.')
         if cfg['role']!='unload': raise ValueError('빈 바구니까지 반복은 OMX3/4 하차만 가능합니다.')
         if quantity!=1: raise ValueError('--until-empty와 --quantity는 함께 지정하지 마세요.')
         items={}

@@ -133,7 +133,9 @@ def send_progress(job_id, current, total):
 # 결과를 전송한다.
 def send_result(job_id, success, message=""):
     payload={"job_id":job_id,"success":success,"message":message}
-    if os.environ.get('OMX_MANAGED_UNLOAD')=='1' and os.environ.get('OMX_UNLOAD_VIEW_SCOPE')=='visible_only':
+    if os.environ.get('OMX_UNLOAD_MODE')=='cycles':
+        payload.update(inspection_scope='disabled',basket_empty_verified=False,visible_region_empty_verified=False,physical_unloading_verified=False,count_kind='motion_cycles')
+    elif os.environ.get('OMX_MANAGED_UNLOAD')=='1' and os.environ.get('OMX_UNLOAD_VIEW_SCOPE')=='visible_only':
         payload.update(inspection_scope='visible_only',basket_empty_verified=False,visible_region_empty_verified=bool(success))
     publish(f"{robot_id}/result",payload)
 
@@ -327,6 +329,9 @@ def execute_unload(job_id, items):
     if managed:
         from omx_manager.workstation import expected_quantity
         extra=dict(expected_count=expected_quantity(items),items=items)
+        if os.environ.get('OMX_UNLOAD_MODE')=='cycles':
+            from omx_manager.workstation_cycles import require_count
+            require_count(extra['expected_count'])
     atomic_json(workstation_command, {"session": workstation_session,
                                      "command": "START", "job_id": str(job_id), "requested_at": time.time(),**extra})
     timeout = float(os.environ.get("OMX_UNLOAD_TIMEOUT_S", "900"))
@@ -343,7 +348,7 @@ def execute_unload(job_id, items):
         if phase == "ERROR":
             raise RuntimeError(f"Workstation fault: {status.get('message', '')}")
         if status.get("job_id") == job_id:
-            if phase=='INSPECTION_FAILED':
+            if phase in ('INSPECTION_FAILED','JOB_FAILED'):
                 if status.get('restore_verified') is not True:
                     raise RuntimeError('Inspection failed without verified restoration')
                 failure_message=status.get('message','Basket inspection uncertain')
@@ -353,22 +358,30 @@ def execute_unload(job_id, items):
                     if workstation_ready():break
                     time.sleep(.1)
                 else:raise RuntimeError('Inspection failed and workstation did not return READY')
-                raise RuntimeError('Basket inspection failed; idle restored; '+failure_message)
-            if managed and status.get('estimated_transfers')!=last_progress:
-                last_progress=status.get('estimated_transfers',0)
+                raise RuntimeError(('Motion-cycle job rejected; idle restored; ' if phase=='JOB_FAILED' else 'Basket inspection failed; idle restored; ')+failure_message)
+            cycles_mode=os.environ.get('OMX_UNLOAD_MODE')=='cycles'
+            progress_value=status.get('completed_cycles',0) if cycles_mode else status.get('estimated_transfers',0)
+            if managed and progress_value!=last_progress:
+                last_progress=progress_value
                 publish(f'{robot_id}/progress',dict(job_id=job_id,current=last_progress,
                         total=extra['expected_count'] or 0,total_known=extra['expected_count'] is not None,count_is_estimate=True,attempts=status.get('attempts',0),
-                        completed_cycles=status.get('completed_cycles',0)))
+                        completed_cycles=status.get('completed_cycles',0),count_kind='motion_cycles' if cycles_mode else 'estimated_transfers'))
             if phase == "RUNNING":
                 saw_running = True
             if phase == "DONE":
                 partial=managed and os.environ.get('OMX_UNLOAD_VIEW_SCOPE')=='visible_only'
-                expected_reason='visible_empty_confirmed' if partial else 'basket_empty_confirmed' if managed else 'home_stillness_after_departure'
+                expected_reason='requested_cycles_completed' if cycles_mode else 'visible_empty_confirmed' if partial else 'basket_empty_confirmed' if managed else 'home_stillness_after_departure'
                 if status.get("reason") != expected_reason:
                     raise RuntimeError("Unexpected workstation completion reason")
-                if partial and (status.get('visible_region_empty_verified') is not True or status.get('basket_empty_verified') is not False or status.get('inspection_scope')!='visible_only'):
+                if cycles_mode:
+                    if (type(status.get('completed_cycles')) is not int or type(status.get('requested_cycles')) is not int
+                            or status.get('completed_cycles')!=extra['expected_count'] or status.get('requested_cycles')!=extra['expected_count']
+                            or status.get('count_kind')!='motion_cycles' or status.get('basket_empty_verified') is not False
+                            or status.get('physical_unloading_verified') is not False or status.get('inspection_scope')!='disabled'):
+                        raise RuntimeError('Motion-cycle completion evidence missing')
+                if not cycles_mode and partial and (status.get('visible_region_empty_verified') is not True or status.get('basket_empty_verified') is not False or status.get('inspection_scope')!='visible_only'):
                     raise RuntimeError('Visible-only completion evidence missing')
-                if managed and not partial and status.get('basket_empty_verified') is not True:
+                if managed and not cycles_mode and not partial and status.get('basket_empty_verified') is not True:
                     raise RuntimeError('Unload completion lacks empty-basket confirmation')
                 # Release completion event; next order must wait until READY again.
                 atomic_json(workstation_command, {"session": workstation_session,
@@ -434,6 +447,8 @@ def run_job(job_id, orders):
         done_message = ((("Visible basket region empty; unseen region unverified; transfer count estimated" if os.environ.get("OMX_UNLOAD_VIEW_SCOPE")=="visible_only" else "Basket empty confirmed; transfer count estimated, physical destination unverified") if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
                          else "Home stillness detected after movement; physical unloading unverified")
                         if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
+        if robot_id in WORKSTATION_IDS and os.environ.get('OMX_UNLOAD_MODE')=='cycles':
+            done_message='Requested motion cycles completed; basket contents and physical transfers unverified'
         journal_committed=True
         try:
             journal.finish(job_id, success, done_message if success else result_message)
@@ -461,6 +476,8 @@ def run_job(job_id, orders):
         done_message = ((("Visible basket region empty; unseen region unverified; transfer count estimated" if os.environ.get("OMX_UNLOAD_VIEW_SCOPE")=="visible_only" else "Basket empty confirmed; transfer count estimated, physical destination unverified") if os.environ.get('OMX_MANAGED_UNLOAD')=='1'
                          else "Home stillness detected after movement; physical unloading unverified")
                         if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
+        if robot_id in WORKSTATION_IDS and os.environ.get('OMX_UNLOAD_MODE')=='cycles':
+            done_message='Requested motion cycles completed; basket contents and physical transfers unverified'
         send_result(job_id, success, done_message if success else result_message)
 
 
@@ -561,7 +578,10 @@ def on_command(data):
 
         if robot_id in WORKSTATION_IDS and os.environ.get('OMX_MANAGED_UNLOAD')=='1':
             from omx_manager.workstation import expected_quantity
-            expected_quantity(items)
+            quantity=expected_quantity(items)
+            if os.environ.get('OMX_UNLOAD_MODE')=='cycles':
+                from omx_manager.workstation_cycles import require_count
+                require_count(quantity)
             orders=items.copy()
         else:
             orders = ("TRIGGER",) if robot_id in WORKSTATION_IDS else make_orders(items)

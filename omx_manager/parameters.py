@@ -11,6 +11,7 @@ DIAGNOSTIC_DEFAULTS = {
 SERVICE_DEFAULTS = {"restart_s":5.,"stop_timeout_s":45.,"enable_on_boot":False}
 
 COMMENTS = {
+    'inspection_enabled':'하차 바구니 검사 사용 여부: false면 지정한 1~8회 동작 사이클만 수행, 물건 수·비움 확인 안 함',
     'inspection_freeze_autofocus':'검사 중 활성 UVC 자동초점을 잠그고 종료·오류 시 원래 자동초점 복원: 고정초점 카메라는 변경 없음',
     'registration_adaptive':'배경 합의로 조명·잡음 보정, 기존 테두리의 작은 위치 오차와 얇은 선 구분: 빈 기준 자동 변경 없음',
     'registration_spatial_tolerance':'기존 기준의 테두리에서만 허용할 픽셀 위치 오차(128 정렬 영상, 최대 5): 평평한 바닥의 약한 물체 차이는 유지',

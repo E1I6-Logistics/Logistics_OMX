@@ -5,7 +5,7 @@ from .rgb_roi import DEFAULTS as RGB_DEFAULTS
 from .exposure import DEFAULTS as EXPOSURE_DEFAULTS
 from .basket_registration import DEFAULTS as REGISTRATION_DEFAULTS
 
-DEFAULTS = dict(camera="top", roi=None, reference=None, reference_binding=None,
+DEFAULTS = dict(inspection_enabled=True,camera="top", roi=None, reference=None, reference_binding=None,
                 pixel_threshold=25, empty_ratio=.01, occupied_ratio=.04,
                 illumination_limit=18, stability_delta=3., sample_interval_s=.1,
                 stable_samples=3,confirmation_s=.2,max_frame_age_s=.25,inspect_timeout_s=12., max_attempts=16,
@@ -20,6 +20,7 @@ def validate_unload(cfg):
     if not isinstance(spec, dict): raise ConfigError("unload must be a mapping")
     only_keys(spec, " ".join(DEFAULTS), "unload")
     spec = options(cfg)
+    if type(spec['inspection_enabled']) is not bool:raise ConfigError('unload.inspection_enabled must be boolean')
     if type(spec['inspection_median_frames']) is not int or spec['inspection_median_frames'] not in (1,3,5):
         raise ConfigError('inspection_median_frames must be 1, 3 or 5')
     if spec["camera"] not in cfg["hardware"]["cameras"] and cfg["role"] == "unload":

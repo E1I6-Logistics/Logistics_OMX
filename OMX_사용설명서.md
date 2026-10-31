@@ -1258,3 +1258,26 @@ python scripts/replay_basket_evidence.py --root /path/to/evidence --report repor
 ### 검사 종료 중 Ctrl+C와 복원 대기
 
 검사 종료 후 카메라 노출·자동초점·새 프레임 복원을 진행하는 동안 추가 Ctrl+C를 받으면, 정해진 복원 대기 시간 안에서 정리를 마치고 원래 종료 핸들러로 한 번 전달합니다. 복원 실패 자체는 숨기지 않으며 복구 저널과 모델 차단을 유지합니다. 강제 프로세스 종료·전원 차단까지 이 경로가 실행된다고 보장하지 않습니다. 이미 `Camera exposure restoration pending` 상태라면 실행 중인 모델·watch를 멈춘 뒤 `omx_basket restore`를 한 번 실행하고 완료될 때까지 기다리세요. 기준 재등록이나 pending 파일 삭제로 우회하지 않습니다.
+
+
+## 29. 바구니 검사 없이 지정한 횟수만 하차 동작
+
+OMX3·4에서 모델/watch를 종료한 뒤 `omx_basket off`를 한 번 실행하면 현재 장비 YAML에 `unload.inspection_enabled: false`를 저장합니다. 다음 `omx_start`부터 빈 기준·ROI 비교와 검사 노출 전환 없이 지정한 사이클만 수행합니다. 학습된 사이클 이탈·복귀 판정과 등록 홈 정밀 복귀는 유지합니다. 모델 입력용 상단·손목 카메라는 계속 필요합니다. 이미 남은 노출 복원 저널은 우회하지 않고 `omx_basket restore`로 정상 복원해야 합니다.
+
+```bash
+cd ~/Logistics_OMX
+git pull --ff-only origin dev
+source ~/.bashrc
+omx_basket off
+omx_start --diagnostics
+# 별도 터미널에서, 준비된 물품에 맞춰 첫 시험은 1회
+omx_unload 1
+# 2회 동작이 필요하면
+omx_unload 2
+```
+
+검사 OFF에서는 수량을 1~8로 반드시 지정합니다. 인자 없는 `omx_unload`/빈 items 주문은 거절하며 무한 반복하지 않습니다. FMS가 items 수량을 보내면 합계를 동작 사이클 수로 사용합니다. 실제 물건을 놓친 경우에도 충분히 이탈하고 복귀한 동작은 한 사이클이므로 물품 수량을 보증하지 않습니다. 움직이지 않거나 복귀하지 않은 동작은 기존 판정과 제한 시간에 따라 실패합니다.
+
+MQTT 완료는 `requested_cycles_completed`, `count_kind: motion_cycles`이며 진행 current는 완료 사이클 수입니다. `basket_empty_verified`와 `physical_unloading_verified`는 false, `inspection_scope`는 disabled입니다. success는 지정한 동작 횟수 완료를 뜻하며 바구니 비움이나 물건 전달 검증을 뜻하지 않습니다. 주문별 카운트는 새로 시작하며 오류·종료 후 이전 주문을 재실행하지 않습니다.
+
+검사를 다시 사용하려면 실행을 종료하고 `omx_basket on`을 저장한 다음 재시작합니다. 기존 기준·조명 설정·홈·보정·모델은 off/on으로 삭제하거나 재등록하지 않습니다.

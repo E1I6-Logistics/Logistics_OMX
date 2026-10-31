@@ -4,7 +4,7 @@ import os
 import time
 from pathlib import Path
 
-from .basket import BasketInspector,read_camera
+from .basket import BasketInspector,read_camera,options as unload_options
 from .config import ConfigError, write_json
 from .home import errors
 from .hooks import heartbeat, initialize_home
@@ -25,6 +25,9 @@ def expected_quantity(items):
 def run(strategy,ctx,send_action,make_timer):
     from lerobot.rollout.workstation_ipc import atomic_json,new_status,read_json
     cfg=strategy._manager_home.cfg
+    if not unload_options(cfg)['inspection_enabled']:
+        from .workstation_cycles import run as run_cycles
+        return run_cycles(strategy,ctx,send_action,make_timer)
     inspector=BasketInspector(cfg)
     options=inspector.spec
     engine=strategy._engine

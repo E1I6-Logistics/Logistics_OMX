@@ -78,6 +78,8 @@ omx_basket() {
         partial) _omx_ctl set --key unload.registration_enabled --value true && _omx_ctl set --key unload.registration_allow_partial --value true;;
         *) echo '사용법: omx_basket align on|partial|off — 변경 후 빈 기준 재등록 필요' >&2; return 2;;
       esac;;
+    off) _omx_ctl set --key unload.inspection_enabled --value false;;
+    on) _omx_ctl set --key unload.inspection_enabled --value true;;
     exposure) _omx_ctl basket-exposure;;
     low)
       if [[ $# -ne 2 ]]; then echo '사용법: omx_basket low 노출값 / omx_basket low off' >&2; return 2; fi
@@ -93,7 +95,7 @@ omx_basket() {
     confirm-view)
       if [[ $# -ne 1 ]]; then echo '사용법: omx_basket confirm-view — 바구니 내부 전체와 정차 오차를 직접 확인한 경우에만 실행' >&2; return 2; fi
       _omx_ctl set --key unload.full_view_confirmed --value true;;
-    *) echo '사용법: omx_basket collect|exposure|low 값|low-snapshot|restore|snapshot|capture|check|watch|align|pose|diagnose|status|roi|polygon|confirm-view — 전체 시야 확인 후 confirm-view, 빈 상태에서만 capture' >&2; return 2;;
+    *) echo '사용법: omx_basket off|on|collect|exposure|low 값|low-snapshot|restore|snapshot|capture|check|watch|align|pose|diagnose|status|roi|polygon|confirm-view — 전체 시야 확인 후 confirm-view, 빈 상태에서만 capture' >&2; return 2;;
   esac
 }
 omx_resume() { _omx_ctl resume --confirm-motion "$@"; }
@@ -102,7 +104,7 @@ omx_unload() {
   case "$OMX_ROBOT_ID" in omx3) item=E;; omx4) item=F;; *) echo 'OMX3/4 하차 전용 명령입니다.' >&2; return 2;; esac
   if [[ $# -eq 0 ]]; then _omx_ctl order --until-empty
   elif [[ $# -eq 1 ]]; then _omx_ctl order --item "$item" --quantity "$1"
-  else echo '사용법: omx_unload [예상 수량] — 생략하면 빈 바구니까지 제한 반복' >&2; return 2; fi
+  else echo '사용법: omx_unload [수량/사이클 횟수] — 검사 OFF면 1~8회 필수' >&2; return 2; fi
 }
 omx_order() {
   if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -172,7 +174,8 @@ omx_basket low 값           검사 전용 고정 노출 설정 (같은 노출�
 omx_basket low-snapshot     정밀 홈에서 저노출 미리보기 → 원래 설정·프레임 복원
 omx_basket restore          강제 종료/복원 실패 뒤 남은 원래 카메라 설정 복원 (작업 재실행 없음)
 omx_resume                  물품 확인 후 실행 중인 복구 대기에 재점검 요청 (작업 재실행 안 함)
-omx_unload [수량]            OMX3/4 하차: 수량 생략 시 빈 바구니까지, 지정 시 수량도 대조
+omx_basket off|on           바구니 검사 OFF/ON 저장 (재시작 후 적용)
+omx_unload [수량]            검사 ON: 비움 확인 / OFF: 지정한 1~8회 사이클 후 종료
 omx_order A 1               수동 MQTT 실물 주문 (장비에 맞는 품목 사용)
 omx_service install         자동 재시작 서비스 설치만 수행
 omx_service start|stop|status 서비스 구동/수동 정지/상태

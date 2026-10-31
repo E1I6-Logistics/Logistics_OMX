@@ -157,7 +157,8 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
         if command=='workflow-check':
             from .commissioning import require_commissioned
             check_files(cfg);require_commissioned(cfg)
-            print('Cycle return regions and basket reference registered. Physical reliability/return route still require local tests.');return
+            from .basket import options as unload_options
+            print('Cycle return regions registered; basket inspection OFF, explicit cycle count required.' if cfg['role']=='unload' and not unload_options(cfg)['inspection_enabled'] else 'Cycle return regions and basket reference registered. Physical reliability/return route still require local tests.');return
         if command=="set":
             updated=edit_value(cfg,key,value); save(path,updated); print("Saved; takes effect on NEXT start");return
         if command=="acknowledge-recovery":
