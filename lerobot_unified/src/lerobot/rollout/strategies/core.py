@@ -158,7 +158,7 @@ class RolloutStrategy(abc.ABC):
         """Stop the inference engine, optionally return robot to initial position, and disconnect hardware."""
         from omx_manager.hardware import cleanup_resources
         # Failure teardown never returns Home: that is an explicit checked operation.
-        for failure in cleanup_resources(self._engine, hw.robot_wrapper.inner):
+        for failure in cleanup_resources(getattr(self, "_engine", None), hw.robot_wrapper.inner):
             logger.warning("Cleanup failed: %s", failure)
         if hw.teleop is not None:
             try: hw.teleop.disconnect()

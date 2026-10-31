@@ -64,6 +64,7 @@ class Capture:
                 try: proc.stdout.close()
                 except OSError: pass
         thread=threading.Thread(target=drain,name='omx-log-'+source,daemon=True)
+        self.readers[:]=[reader for reader in self.readers if reader.is_alive()]
         self.readers.append(thread);thread.start()
     def _write(self):
         while not self.stop.is_set() or not self.queue.empty():

@@ -14,7 +14,11 @@ DEFAULTS=dict(registration_enabled=False,registration_search_pad=60,
               registration_still_px=3.,registration_allow_partial=False,
               registration_visible_confirmed=False,registration_min_visible_ratio=.65,registration_max_extrapolation=.35,registration_partial_component_pixels=64,registration_partial_color_limit=20.)
 
-class ViewError(ConfigError):pass
+class ViewError(ConfigError):
+    def __init__(self,reason,details=None):
+        super().__init__(reason)
+        self.details=details or {}
+
 
 
 def validate(spec):
@@ -155,11 +159,17 @@ class Tracker:
         if threshold<4:raise ViewError('BASKET_CONTRAST_TOO_LOW')
         binary=(gray>=min(254,threshold*spec['registration_threshold_factor'])).astype(np.uint8)*255
         contours=cv2.findContours(binary,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)[0]
-        candidates=[];clipped=False;partial_rejections=[]
+        candidates=[];clipped=False;partial_rejections=[];rejections={};nearest=None
+        def reject(reason,**detail):
+            nonlocal nearest
+            rejections[reason]=rejections.get(reason,0)+1
+            if detail and (nearest is None or detail.get('shift_px',float('inf'))<nearest.get('shift_px',float('inf'))):
+                nearest=dict(reason=reason,**detail)
         target=np.array(self.reference['quad'],np.float32).mean(0) if self.reference else np.array([x+w/2,y+h/2])
         for contour in contours:
             area=cv2.contourArea(contour)
-            if not spec['registration_min_area_ratio']*w*h<=area<=1.6*w*h:continue
+            if not spec['registration_min_area_ratio']*w*h<=area<=1.6*w*h:
+                reject('CONTOUR_AREA');continue
             points=contour[:,0]+[x0,y0]
             boundary=bool((points[:,0]<=3).any() or (points[:,1]<=3).any() or (points[:,0]>=width-4).any() or (points[:,1]>=height-4).any())
             search_cut=bool((contour[:,0,0]<=1).any() or (contour[:,0,1]<=1).any() or (contour[:,0,0]>=x1-x0-2).any() or (contour[:,0,1]>=y1-y0-2).any())
@@ -168,10 +178,12 @@ class Tracker:
                 clipped=True
                 top_only=bool((points[:,1]<=3).any() and not (points[:,0]<=3).any()
                               and not (points[:,0]>=width-4).any() and not (points[:,1]>=height-4).any())
-                if not spec['registration_allow_partial'] or not top_only:continue
+                if not spec['registration_allow_partial'] or not top_only:
+                    reject('CLIPPED_CONTOUR');continue
                 partial=True
             hull=cv2.convexHull(contour);hull_area=cv2.contourArea(hull)
-            if not hull_area or area/hull_area<.7:continue
+            if not hull_area or area/hull_area<.7:
+                reject('NONCONVEX_CONTOUR');continue
             if partial:
                 try:q=top_partial_quad(hull,np.array([x0,y0]),spec)
                 except ViewError as exc:
@@ -180,18 +192,22 @@ class Tracker:
                     continue
             else:
                 approx=cv2.approxPolyDP(hull,.02*cv2.arcLength(hull,True),True)
-                if len(approx)!=4 or not cv2.isContourConvex(approx):continue
+                if len(approx)!=4 or not cv2.isContourConvex(approx):
+                    reject('NO_QUADRILATERAL');continue
                 q=ordered(approx[:,0]+[x0,y0])
             try:info=describe(q)
             except ViewError:continue
             distance=float(np.linalg.norm(np.array(info['center'])-target))
             limit=spec['registration_max_shift_px']+(spec['registration_search_pad'] if partial and self.reference is None else 0)
-            if distance>limit:continue
+            if distance>limit:
+                reject('SHIFT_LIMIT',shift_px=distance,limit_px=limit,center=info['center']);continue
             if self.reference:
                 original=describe(self.reference['quad']);scale=info['area']/original['area']
                 angle=abs((info['angle']-original['angle']+180)%360-180)
-                if not 1-spec['registration_scale_tolerance']<=scale<=1+spec['registration_scale_tolerance']:continue
-                if angle>spec['registration_max_rotation_deg']:continue
+                if not 1-spec['registration_scale_tolerance']<=scale<=1+spec['registration_scale_tolerance']:
+                    reject('SCALE_LIMIT',shift_px=distance,area_scale=scale,center=info['center']);continue
+                if angle>spec['registration_max_rotation_deg']:
+                    reject('ROTATION_LIMIT',shift_px=distance,rotation_deg=angle,center=info['center']);continue
             candidates.append((distance,q,info,partial))
         candidates.sort(key=lambda row:row[0])
         if not candidates:
@@ -211,8 +227,10 @@ class Tracker:
                     self.valid_mask=retry.valid_mask;self.pose_anchor=retry.pose_anchor
                     self.last_info['registration_threshold_used']=factor
                     return result
-            if partial_rejections:raise ViewError(min(partial_rejections)[1])
-            raise ViewError('BASKET_CLIPPED' if clipped else 'BASKET_POSE_NOT_FOUND')
+            details=dict(otsu_threshold=float(threshold),threshold_factor=spec['registration_threshold_factor'],
+                         search_bounds=[x0,y0,x1,y1],contours=len(contours),rejections=rejections,nearest_rejected=nearest)
+            if partial_rejections:raise ViewError(min(partial_rejections)[1],details)
+            raise ViewError('BASKET_CLIPPED' if clipped else 'BASKET_POSE_NOT_FOUND',details)
         if len(candidates)>1 and candidates[1][0]-candidates[0][0]<15:raise ViewError('MULTIPLE_BASKET_CANDIDATES')
         _,q,info,partial=candidates[0]
         destination=np.array([[0,0],[127,0],[127,127],[0,127]],np.float32)

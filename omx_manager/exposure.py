@@ -361,7 +361,7 @@ def inspect(camera,cfg,inspector,*,guard=lambda:None,stopped=lambda:False,report
             time.sleep(inspector.spec['sample_interval_s'])
         else:
             failure=inspector.snapshot(time.time())
-            details={key:failure.get(key) for key in ('reason','candidate','confirmation_reset','quality_flags','frame_age_ms','observation_gap_s','component_pixels','weak_component_pixels')}
+            details={key:failure.get(key) for key in ('reason','candidate','confirmation_reset','quality_flags','frame_age_ms','observation_gap_s','component_pixels','weak_component_pixels','registration_detail')}
             # Context exit verifies/restores controls before this exception
             # reaches the workstation's recoverable inspection branch.
             raise InspectionUncertain('Low-exposure basket inspection remained UNKNOWN; no model action permitted; '+json.dumps(details))

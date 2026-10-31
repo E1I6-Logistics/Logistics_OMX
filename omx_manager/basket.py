@@ -173,6 +173,7 @@ class BasketInspector:
                 self.last_sample=now;self.last_frame=frame_timestamp;self.reason=str(exc)
                 self.frame_delta_mean=None;self.confirmation_reset=str(exc);self.confirmation_hold_s=0.
                 self.evidence=dict(quality_flags=[str(exc)],registration='REJECTED',features_computed=False)
+                if exc.details:self.evidence['registration_detail']=exc.details
                 self.processing_ms=(time.perf_counter()-begun)*1000
                 return 'UNKNOWN'
         else:current=crop(image,self.spec)

@@ -158,12 +158,24 @@ class Supervisor:
     def __init__(self, config_path, diagnostics=None, important_only=None):
         self.path=Path(config_path); self.stopped=threading.Event()
         self.diagnostics=diagnostics; self.important_only=important_only; self.capture=None
+        self.pending_cleanup=[]
     def message(self, line):
         if self.capture: self.capture.emit("manager",line)
         else: print(line,flush=True)
     def stop(self, *_): self.stopped.set()
+    def reap_pending(self,cfg):
+        remaining=[]
+        for proc in self.pending_cleanup:
+            try: stop_process(proc,cfg['runtime']['shutdown_timeout_s'])
+            except Exception as exc:
+                remaining.append(proc)
+                self.message('[ERROR] Child cleanup still pending: '+str(exc))
+        self.pending_cleanup=remaining
+        if remaining:
+            raise RuntimeError('Child process cleanup pending; new hardware session blocked')
     def preflight(self,cfg,allow_motion=True,verify_registration=True,operator_confirmed=False):
         """Motor-only checks before loading Torch/cameras; no order replay."""
+        self.reap_pending(cfg)
         from .exposure import require_restored
         require_restored(cfg)
         from .commissioning import require_commissioned
@@ -263,6 +275,7 @@ class Supervisor:
         finally:
             if client is not None: stop_process(client,cfg['runtime']['shutdown_timeout_s'])
     def run_once(self,cfg):
+        self.reap_pending(cfg)
         check_files(cfg); require_home(cfg)
         self.last_run_started=time.time()
         directory=state_dir(cfg); directory.mkdir(parents=True,exist_ok=True)
@@ -311,7 +324,11 @@ class Supervisor:
             except OSError as exc:self.message("[WARNING] Could not save stop record: "+str(exc))
             for proc in (client,worker):
                 try: stop_process(proc,cfg["runtime"]["shutdown_timeout_s"])
-                except Exception as exc: self.message("[ERROR] Cleanup failure: "+str(exc))
+                except Exception as exc:
+                    if proc is not None:self.pending_cleanup.append(proc)
+                    self.message("[ERROR] Cleanup failure: "+str(exc))
+            if self.pending_cleanup:
+                raise RuntimeError('Child process cleanup pending; new hardware session blocked')
     def run(self):
         cfg=load(self.path)
         with device_lock(cfg):

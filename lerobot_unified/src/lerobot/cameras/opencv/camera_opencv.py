@@ -159,6 +159,9 @@ class OpenCVCamera(Camera):
                            has been captured by the background thread. Defaults to True.
         """
 
+        from omx_manager.reader_lifecycle import require_stopped
+        require_stopped(self)
+
         # Use 1 thread for OpenCV operations to avoid potential conflicts or
         # blocking in multi-threaded applications, especially during data collection.
         cv2.setNumThreads(1)
@@ -495,10 +498,11 @@ class OpenCVCamera(Camera):
                 processed_frame = self._postprocess_image(raw_frame)
 
                 with self.frame_lock:
+                    if stop_event.is_set():
+                        break
                     self.latest_frame = processed_frame
                     self.latest_timestamp = capture_time
-
-                self.new_frame_event.set()
+                    self.new_frame_event.set()
                 camera_event(self, "published")
 
                 # Schedule the next publication based on absolute time rather
@@ -534,6 +538,8 @@ class OpenCVCamera(Camera):
         """Starts or restarts the background read thread if it's not running."""
 
         self._stop_read_thread()
+        from omx_manager.reader_lifecycle import require_stopped
+        require_stopped(self)
 
         self.stop_event = Event()
 
@@ -562,8 +568,8 @@ class OpenCVCamera(Camera):
                     f"{self} read thread did not terminate within timeout."
                 )
 
-        self.thread = None
-        self.stop_event = None
+        from omx_manager.reader_lifecycle import retain_until_stopped
+        retain_until_stopped(self)
 
         with self.frame_lock:
             self.latest_frame = None
@@ -597,6 +603,9 @@ class OpenCVCamera(Camera):
                             f"{self} read thread remained alive after "
                             f"releasing the capture."
                         )
+
+                from omx_manager.reader_lifecycle import require_stopped
+                require_stopped(self)
 
     @check_if_not_connected
     def async_read(self, timeout_ms: float = 200) -> NDArray[Any]:
