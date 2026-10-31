@@ -7,6 +7,12 @@ from .home import errors, stable_pose
 from .workflow import registration_binding, require_stages
 
 
+class CaptureViewError(ConfigError):
+    def __init__(self,reason,frame,stamp):
+        super().__init__('Empty reference camera not stable/fresh; '+reason)
+        self.reason=reason;self.frame=frame;self.stamp=stamp
+
+
 def initialize(cfg):
     from .basket import DEFAULTS
     result=copy.deepcopy(cfg)
@@ -160,6 +166,23 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0,diag
                 return dict(image=result,exposure_profile=profile,timings=session.timing)
             result.update(session.timing,camera_state='NORMAL_RESTORED');return finalize(result)
         return finalize(_basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limit,opened,connection_s,{}))
+    except CaptureViewError as exc:
+        # This catch runs AFTER Session.__exit__ restores camera controls.
+        from .config import ROOT,write_json
+        from .viewer import write_bytes
+        import cv2
+        directory=ROOT/'state'/'manager'/cfg['device_id'];directory.mkdir(parents=True,exist_ok=True)
+        row=dict(operation='empty_reference_capture',reason=exc.reason,at=time.time(),existing_reference_unchanged=True,
+                 restore_verified=not bool(getattr(camera,'_omx_exposure_blocked',False)))
+        if exc.frame is not None:
+            view=cv2.cvtColor(exc.frame,cv2.COLOR_RGB2BGR)
+            cv2.putText(view,exc.reason,(12,24),cv2.FONT_HERSHEY_SIMPLEX,.55,(0,180,255),1)
+            ok,png=cv2.imencode('.png',view)
+            if ok:
+                destination=directory/'basket_failure.png';write_bytes(destination,png.tobytes())
+                row.update(image_path=str(destination),image_at=time.time()-(time.perf_counter()-exc.stamp))
+        write_json(directory/'basket_capture_failure.json',row)
+        raise ConfigError(str(exc)+'; previous reference unchanged; see '+str(directory/'basket_capture_failure.json')) from exc
     finally:
         if preview:preview.close()
         if camera.is_connected:camera.disconnect()
@@ -178,19 +201,33 @@ def _basket_connected(cfg,camera,check_pose,inspector,capture,watch,samples_limi
             from .basket_registration import Tracker
             tracker=Tracker(spec)
         samples=[];sample_masks=[];last=None;deadline=time.perf_counter()+spec['inspect_timeout_s']
+        last_reason='WAIT_STABLE_FRAMES';last_image=None;last_stamp=None;next_notice=0.
         while time.perf_counter()<deadline and len(samples)<spec['stable_samples']:
             check_pose();heartbeat()
-            frame,stamp=read_camera(camera,spec['max_frame_age_s'])
+            try:frame,stamp=read_camera(camera,spec['max_frame_age_s'])
+            except TimeoutError:
+                samples=[];sample_masks=[];last_reason='STALE_FRAME'
+                if tracker:tracker.pose_anchor=None
+                time.sleep(spec['sample_interval_s']);continue
             if last is None or stamp>last:
-                image=tracker.extract(frame) if tracker else crop(frame,spec)
+                last_image=frame;last_stamp=stamp
+                from .basket_registration import ViewError
+                try:image=tracker.extract(frame) if tracker else crop(frame,spec)
+                except ViewError as exc:
+                    samples=[];sample_masks=[];last=stamp;last_reason=str(exc)
+                    tracker.pose_anchor=None
+                    if time.perf_counter()>=next_notice:
+                        print('[BASKET] 기준 등록 재탐색: '+last_reason,flush=True);next_notice=time.perf_counter()+1.
+                    time.sleep(spec['sample_interval_s']);continue
                 if tracker and not tracker.last_info['pose_stable']:
+                    last_reason='WAIT_STABLE_POSE'
                     samples=[];sample_masks=[];last=stamp;time.sleep(spec['sample_interval_s']);continue
                 if samples and float(np.abs(image.astype(float)-samples[-1]).mean())>spec['stability_delta']:
-                    samples=[];sample_masks=[]
+                    samples=[];sample_masks=[];last_reason='FRAME_CHANGE'
                 samples.append(image);last=stamp
                 if tracker:sample_masks.append(tracker.valid_mask.copy())
             time.sleep(spec['sample_interval_s'])
-        if len(samples)<spec['stable_samples']:raise ConfigError('Empty reference camera not stable/fresh')
+        if len(samples)<spec['stable_samples']:raise CaptureViewError(last_reason,last_image,last_stamp)
         result=np.median(np.stack(samples),axis=0).astype(np.uint8);check_pose()
         if tracker:return dict(image=result,registration_profile=tracker.last_profile,registration_mask=np.logical_and.reduce(sample_masks))
         return result

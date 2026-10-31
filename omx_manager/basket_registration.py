@@ -192,9 +192,10 @@ class Tracker:
             candidates.append((distance,q,info,partial))
         candidates.sort(key=lambda row:row[0])
         if not candidates:
-            if spec['registration_allow_partial'] and self.reference and not getattr(self,'_threshold_retry',False):
-                # Cargo changes Otsu's histogram. Retry a bounded set of brighter
-                # analysis thresholds against the SAME saved pose/area limits.
+            if not getattr(self,'_threshold_retry',False) and (spec['registration_allow_partial'] or not clipped):
+                # Scene brightness changes Otsu's histogram, including while
+                # registering an empty full-view tray. Retry bounded analysis
+                # thresholds against the SAME ROI center / saved pose limits.
                 # No camera controls or source/model frames are changed.
                 for delta in (.1,.2,-.1):
                     factor=spec['registration_threshold_factor']+delta
