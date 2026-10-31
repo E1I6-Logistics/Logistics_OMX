@@ -1,5 +1,7 @@
 # Logistics_OMX 현재 구조 · 정리 1단계
 
+> 이전 `refactor/omx-unified-runtime` 정리 당시의 구조·배포 기록입니다. 현재 YAML 관리 실행기의 시작 문서는 [README](../README.md), 실행·설정 명령은 [COMMANDS.md](../COMMANDS.md)입니다. 아래의 profile.env·overlay·구형 런처 설명을 현재 일반 실행 경로로 사용하지 마세요.
+
 대상: `refactor/omx-unified-runtime` (기준 `fix/omx-safety-stability`의 `e2d9dd3`)
 
 ## 목적과 안전 원칙

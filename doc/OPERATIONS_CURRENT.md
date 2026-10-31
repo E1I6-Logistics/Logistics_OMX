@@ -1,5 +1,7 @@
 # Logistics_OMX — OMX1~4 운영 및 배포 가이드
 
+> 이전 `refactor/omx-unified-runtime` 정리 당시의 구조·배포 기록입니다. 현재 YAML 관리 실행기의 시작 문서는 [README](../README.md), 실행·설정 명령은 [COMMANDS.md](../COMMANDS.md)입니다. 아래의 profile.env·overlay·구형 런처 설명을 현재 일반 실행 경로로 사용하지 마세요.
+
 > 이 문서는 `refactor/omx-unified-runtime` 정리 브랜치에 대응한다. 로봇 제어 구조와 체크포인트는 기존 `fix/omx-safety-stability` 기준으로 유지한다. 물리적 모터 구동 테스트를 대신하지 않는다.
 
 ## 개요
