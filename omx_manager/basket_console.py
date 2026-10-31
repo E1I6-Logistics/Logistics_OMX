@@ -14,6 +14,8 @@ def reason_text(row):
         return '바구니 위치·잘림 확인'
     if reason in ('STALE_FRAME','NO_FRESH_BASKET_SNAPSHOT','CAMERA_RECONNECTING'):
         return '새 영상 대기'
+    if reason in ('NOISY_BACKGROUND','BACKGROUND_UNOBSERVABLE'):
+        return '영상 잡음·배경 확인'
     if reason in ('ROI_OVEREXPOSED','ROI_UNDEREXPOSED'):
         return '너무 밝음' if reason=='ROI_OVEREXPOSED' else '너무 어두움'
     if reason in ('REGISTERED_FAINT_CHANGE','REGISTERED_WEAK_CHANGE'):

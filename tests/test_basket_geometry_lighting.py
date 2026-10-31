@@ -53,8 +53,8 @@ def test_box_shadow_uses_independent_rim_without_increasing_lighting_limit():
 
 
 @pytest.mark.parametrize('delta',[13,20,30])
-def test_large_global_lighting_shift_remains_unknown(delta):
- s=spec();ref=np.full((128,128,3),120,np.uint8);image=ref-delta
+def test_legacy_large_global_lighting_shift_remains_unknown(delta):
+ s=spec();s['registration_adaptive']=False;ref=np.full((128,128,3),120,np.uint8);image=ref-delta
  r=R.Comparator(ref,s).compare(image)
  assert r['verdict']=='UNKNOWN' and r['quality_flags']==['LIGHTING_SHIFT']
 
@@ -76,8 +76,8 @@ def test_shadow_without_a_clear_object_does_not_authorize_empty():
  assert r['verdict']=='UNKNOWN' and r['evidence_reason']=='REGISTERED_FAINT_CHANGE'
 
 
-def test_rim_correction_requires_three_agreeing_observed_sides():
- s=spec();ref,image=boxed_shadow()
+def test_legacy_rim_correction_requires_three_agreeing_observed_sides():
+ s=spec();s['registration_adaptive']=False;ref,image=boxed_shadow()
  valid=np.ones((128,128),bool);valid[:6]=False;valid[-6:]=False
  r=R.Comparator(ref,s).compare(image,valid)
  assert r['verdict']=='UNKNOWN' and r['lighting_offset_source']=='interior'
@@ -102,6 +102,6 @@ def test_low_level_quality_flags_survive_temporal_buffer_warmup(tmp_path,monkeyp
  assert inspector.snapshot(1)['temporal_samples']==1
 
 
-def test_partial_view_keeps_original_illumination_estimator():
- s=partial_spec();ref,image=boxed_shadow();r=R.Comparator(ref,s).compare(image)
+def test_legacy_partial_view_keeps_original_illumination_estimator():
+ s=partial_spec();s['registration_adaptive']=False;ref,image=boxed_shadow();r=R.Comparator(ref,s).compare(image)
  assert r['lighting_offset_source']=='interior' and r['view_scope']=='visible_only'

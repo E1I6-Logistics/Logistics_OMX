@@ -11,6 +11,15 @@ DIAGNOSTIC_DEFAULTS = {
 SERVICE_DEFAULTS = {"restart_s":5.,"stop_timeout_s":45.,"enable_on_boot":False}
 
 COMMENTS = {
+    'inspection_freeze_autofocus':'검사 중 활성 UVC 자동초점을 잠그고 종료·오류 시 원래 자동초점 복원: 고정초점 카메라는 변경 없음',
+    'registration_adaptive':'배경 합의로 조명·잡음 보정, 기존 테두리의 작은 위치 오차와 얇은 선 구분: 빈 기준 자동 변경 없음',
+    'registration_spatial_tolerance':'기존 기준의 테두리에서만 허용할 픽셀 위치 오차(128 정렬 영상, 최대 5): 평평한 바닥의 약한 물체 차이는 유지',
+    'registration_min_blob_width':'얇은 테두리 선을 제거할 물체 핵심 폭(128 영상의 홀수 3~7): 2cm 물체의 면적은 열기 연산으로 복원',
+    'registration_background_max_shift':'여러 배경 영역이 동의할 때만 허용할 동적 RGB 보정 한도(초과 시 UNKNOWN): 합의가 없으면 기존 조명 한도 사용',
+    'registration_background_tolerance':'16개 배경 타일이 같은 조명 변화로 동의할 RGB 오차 한도(0~255)',
+    'registration_background_min_tiles':'조명 보정에 필요한 최소 평탄 배경 타일 수: 3개 사분면 이상으로 분산돼야 함',
+    'registration_background_fraction':'사용 가능한 배경 타일 중 같은 RGB 변화에 동의해야 할 최소 비율',
+    'registration_noise_limit':'배경 합의 영역의 잡음 추정 한도: 초과 시 임계값을 계속 높이지 않고 UNKNOWN',
     'registration_full_chroma_fallback':'전체 시야에서 조명 차이만으로 거절될 때 색상·국소 RGB 근거로 물건 있음만 추가 확인: 빈 바구니 판정과 조명 허용값은 완화하지 않음',
     'registration_partial_chroma_fallback':'부분 시야에서 조명 차이만으로 막힐 때 밝기를 정규화한 색상 변화로 물건 있음만 추가 확인: EMPTY로 우회하지 않음',
     'registration_chroma_threshold':'색상 보조 판정의 차이 문턱(정규화 RGB 0~255): 조명 밝기와 전역 색조 차이는 별도 보정',

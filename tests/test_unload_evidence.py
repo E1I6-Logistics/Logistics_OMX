@@ -16,8 +16,12 @@ def test_full_view_colored_cargo_survives_global_rgb_drift(offset):
     image=(ref.astype(np.int16)+offset).clip(0,255).astype(np.uint8)
     image[50:66,50:66]=[100,70,40]
     r=R.Comparator(ref,s).compare(image)
-    assert r['verdict']=='OCCUPIED' and r['evidence_reason']=='REGISTERED_COLORED_OBJECT'
-    assert r['quality_warnings']==['LIGHTING_SHIFT'] and not r['quality_flags']
+    assert r['verdict']=='OCCUPIED' and not r['quality_flags']
+    if abs(min(offset))<=s['registration_background_max_shift']:
+        assert r['evidence_reason']=='REGISTERED_OBJECT_CHANGE' and r['background_consensus']
+    else:
+        assert r['evidence_reason']=='REGISTERED_COLORED_OBJECT'
+        assert r['quality_warnings']==['LIGHTING_SHIFT']
     assert r['view_scope']=='full' and r['full_basket_verified'] is False
 
 
@@ -29,8 +33,9 @@ def test_full_view_global_color_drift_and_noise_never_authorize_motion(gradient)
     for _ in range(10):
         image=(ref.astype(np.int16)+[-4,-10,-17]+rng.integers(-1,2,ref.shape)).clip(0,255).astype(np.uint8)
         r=R.Comparator(ref,s).compare(image)
-        assert r['verdict']=='UNKNOWN'
-        assert r['chroma_component_pixels']==0
+        assert r['verdict'] in ('EMPTY','UNKNOWN')
+        if r['verdict']=='EMPTY':assert r['background_consensus']
+        assert r.get('chroma_component_pixels',0)==0
 
 
 @pytest.mark.parametrize('gate',['full_view_confirmed','dark','clipped'])

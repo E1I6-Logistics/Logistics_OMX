@@ -9,7 +9,7 @@ import time
 from .config import ConfigError,ROOT,write_json
 
 logger=logging.getLogger(__name__)
-DEFAULTS=dict(low_exposure_enabled=False,inspection_exposure=None,
+DEFAULTS=dict(low_exposure_enabled=False,inspection_exposure=None,inspection_freeze_autofocus=True,
               exposure_discard_frames=5,exposure_settle_s=.2,
               exposure_switch_timeout_s=5.,exposure_restore_luma_tolerance=8.,
               inspection_min_luma=15.,inspection_max_dark_ratio=.3,inspection_control_poll_s=.5)
@@ -20,6 +20,7 @@ class InspectionUncertain(TimeoutError):
 
 def validate(spec):
     from .config import number
+    if type(spec['inspection_freeze_autofocus']) is not bool:raise ConfigError('inspection_freeze_autofocus must be boolean')
     if type(spec['low_exposure_enabled']) is not bool:raise ConfigError('low_exposure_enabled must be boolean')
     if spec['inspection_exposure'] is not None:number(spec['inspection_exposure'],'inspection_exposure',1,1000000)
     if spec['low_exposure_enabled'] and spec['inspection_exposure'] is None:
@@ -274,12 +275,22 @@ class Session:
         self.record=dict(schema_version=1,device_id=self.cfg['device_id'],camera=self.spec['camera'],
                          hardware=self.cfg['hardware']['cameras'][self.spec['camera']],backend=self.adapter.backend,
                          original=self.original,baseline_luma=self.baseline,phase='PENDING',at=time.time())
+        from .inspection_focus import snapshot as focus_snapshot
+        self.record['focus_original']=focus_snapshot(self.adapter) if self.spec['inspection_freeze_autofocus'] else None
         write_json(self.path,self.record)
         self.camera._omx_exposure_blocked=True
         try:
+            if self.record.get('focus_original') is not None:
+                from .inspection_focus import freeze
+                self.record['focus_locked']=freeze(self.adapter)
             apply(self.adapter,self.requested)
             self.wait_frames(self.clock(),control_target=self.requested if self.learning else self.expected,learning=self.learning)
             self.target=dict(self.settled_controls)
+            if self.record.get('focus_locked') is not None:
+                from .inspection_focus import locked
+                self.record['focus_locked']=locked(self.adapter,self.record['focus_locked'],position=False)
+                write_json(self.path,self.record,durable=False)
+                logger.info('[EXPOSURE] inspection autofocus locked: %s',self.record['focus_locked'])
             if self.target!=self.requested:
                 logger.info('[EXPOSURE] stable sensor readback: requested=%s actual=%s',self.requested,self.target)
             self.timing['exposure_enter_s']=self.clock()-self.started
@@ -288,6 +299,8 @@ class Session:
         except BaseException:
             self.finish();raise
     def verify(self):
+        from .inspection_focus import locked
+        if self.record.get('focus_locked') is not None:locked(self.adapter,self.record['focus_locked'])
         return verify_controls(self.adapter,self.target)
     def profile(self):
         # Replay the same command, require the SAME settled actual values as capture.
@@ -295,7 +308,13 @@ class Session:
     def finish(self):
         start=self.clock()
         try:
-            restore_controls(self.adapter,self.original)
+            failures=[]
+            try:restore_controls(self.adapter,self.original)
+            except BaseException as exc:failures.append(str(exc))
+            from .inspection_focus import restore as restore_focus
+            try:restore_focus(self.adapter,self.record.get('focus_original'))
+            except BaseException as exc:failures.append(str(exc))
+            if failures:raise RuntimeError('; '.join(failures))
             self.wait_frames(self.clock(),restoring=True,baseline=None if self.allow_scene_change else self.baseline)
             self.record.update(phase='RESTORED',at=time.time())
             write_json(self.path.with_name('camera_exposure_last.json'),self.record,durable=False)

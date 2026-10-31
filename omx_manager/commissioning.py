@@ -155,11 +155,12 @@ def basket_operation(cfg,device,*,capture=False,watch=False,samples_limit=0,diag
         if spec['low_exposure_enabled']:
             target=inspector.exposure_profile if inspector else None
             with Session(camera,cfg,target=target,guard=check_pose,allow_scene_change=watch) as session:
-                print(f"[BASKET] 검사 전용 노출={session.target['exposure']} / 모델 동작 차단. 종료 시 원래 설정을 복원합니다.",flush=True)
+                focus_note=' / 자동초점 잠금' if session.record.get('focus_locked') is not None else ''
+                print(f"[BASKET] 검사 전용 노출={session.target['exposure']}{focus_note} / 종료 시 원래 설정 복원",flush=True)
                 def check_inspection():
                     check_pose();session.verify()
                 result=_basket_connected(cfg,camera,check_inspection,inspector,capture,watch,samples_limit,opened,connection_s,
-                                         dict(inspection_exposure=session.target['exposure'],camera_state='INSPECTION_LOW'),json_output=json_output)
+                                         dict(inspection_exposure=session.target['exposure'],inspection_focus=session.record.get('focus_locked'),camera_state='INSPECTION_LOW'),json_output=json_output)
                 profile=session.profile()
             if capture:
                 if isinstance(result,dict):return dict(result,exposure_profile=profile,timings=session.timing)

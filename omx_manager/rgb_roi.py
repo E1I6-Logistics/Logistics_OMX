@@ -38,6 +38,8 @@ def signature(spec):
     if spec.get('registration_enabled'):
         from .basket_registration import DEFAULTS
         registration={k:spec[k] for k in DEFAULTS}
+        for key in ('registration_adaptive','registration_spatial_tolerance','registration_min_blob_width','registration_background_tolerance','registration_background_max_shift','registration_background_min_tiles','registration_background_fraction','registration_noise_limit'):
+            if registration[key]==DEFAULTS[key]:registration.pop(key)
         # Preserve installed references with the default independent-wall
         # estimator; custom bounds remain part of the reference signature.
         if registration['registration_wall_color_limit']==12.:registration.pop('registration_wall_color_limit')

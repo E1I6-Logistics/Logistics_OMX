@@ -125,6 +125,9 @@ class BasketInspector:
         self.reset()
 
     def reset(self):
+        if self.tracker:
+            self.tracker.pose_anchor=None
+            for field in ('_previous_gray','_previous_rim','_previous_edges'):setattr(self.tracker,field,None)
         self.previous = None
         self.last_sample = None
         self.last_frame = None
@@ -179,10 +182,9 @@ class BasketInspector:
         else:current=crop(image,self.spec)
         self.last_sample=now; self.last_frame=frame_timestamp
         # A small median uses only distinct, fresh, registered observations.
-        # Discard history when the tray moves; never blend unseen black pixels.
+        # Confirmation still requires a full stable window; stale/gapped frames
+        # discard history. Never blend unseen black pixels.
         frames=self.spec['inspection_median_frames'] if self.tracker else 1
-        if self.tracker and not self.tracker.last_info['pose_stable']:
-            self.temporal_frames=[];self.temporal_masks=[]
         self.temporal_frames.append(current);self.temporal_frames=self.temporal_frames[-frames:]
         if self.tracker:
             self.temporal_masks.append(self.tracker.valid_mask.copy());self.temporal_masks=self.temporal_masks[-frames:]
@@ -209,6 +211,9 @@ class BasketInspector:
         values=None if difference is None else difference[self.comparator.mask] if self.comparator else difference
         self.frame_delta_mean=None if values is None or values.size==0 else float(values.mean())
         image_stable=self.frame_delta_mean is not None and self.frame_delta_mean<=self.spec['stability_delta']
+        if self.tracker and self.tracker.last_info.get('observed_rim_stable') is not None:
+            image_stable=self.tracker.last_info['observed_rim_stable']
+            self.evidence['frame_stability_basis']='observed_rim'
         stable=image_stable
         if self.tracker:stable=stable and self.tracker.last_info['pose_stable']
         if verdict=='UNKNOWN':self.confirmation_reset='EVIDENCE_UNKNOWN'
@@ -221,10 +226,12 @@ class BasketInspector:
         continuing=stable and verdict==self.verdict and verdict!='UNKNOWN'
         self.samples=self.samples+1 if continuing else 1 if verdict!='UNKNOWN' else 0
         self.since=self.since if continuing and self.since is not None else now if verdict!='UNKNOWN' else None
+        if self.tracker and self.tracker.last_info.get('observed_rim_stable') is False:
+            self.samples=0;self.since=None
         self.previous=current16; self.verdict=verdict
         self.confirmation_hold_s=0. if self.since is None else now-self.since
         held=self.since is not None and now-self.since+1e-9>=self.spec['confirmation_s']
-        self.result=verdict if self.samples>=self.spec['stable_samples'] and held else 'UNKNOWN'
+        self.result=verdict if self.samples>=max(self.spec['stable_samples'],frames) and held else 'UNKNOWN'
         self.reason='CONFIRMED' if self.result!='UNKNOWN' else 'STABILIZING' if verdict!='UNKNOWN' else 'LIGHTING_OR_UNCERTAIN'
         if self.comparator and verdict=='UNKNOWN':self.reason=self.evidence['evidence_reason']
         self.processing_ms=(time.perf_counter()-begun)*1000

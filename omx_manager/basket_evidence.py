@@ -185,6 +185,8 @@ def collect(cfg,config_path,device,*,input_fn=input,cameras=None,clock=time.perf
             with Session(top,cfg,target=inspector.exposure_profile if inspector else None,allow_scene_change=True) as session:
                 scene['normal_controls_before_inspection']=dict(session.original)
                 scene['inspection_profile']=session.profile()
+                scene['inspection_focus']=session.record.get('focus_locked')
+                scene['original_focus']=session.record.get('focus_original')
                 scene['low']=record_frames(top,scene_folder/'low'/spec['camera'],count=8,spec=spec,
                     clock=clock,sleep=sleep,inspector=inspector,controls=session.adapter)
             scene['timings']=session.timing;scene['restore_verified']=not journal_path(cfg).exists()

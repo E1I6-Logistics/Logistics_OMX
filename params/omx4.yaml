@@ -306,6 +306,9 @@ unload:
   # 홈에서 검사할 때만 센서를 저노출로 전환: 검사 후 원래 설정·새 프레임 확인 전 모델 동작 금지
   low_exposure_enabled: false
   # 검사 전용 고정 노출값: 카메라별 단위가 다르므로 exposure 조회·low-snapshot 시험 후 지정
+  # 검사 때만 활성 자동초점을 잠그고 원래 상태로 복원
+  inspection_freeze_autofocus: true
+  # 검사 전용 고정 노출값: 기존 빈 기준과 동일한 요청값 사용
   inspection_exposure: null
   # 노출 전환/복원 뒤 버릴 서로 다른 새 프레임 수: 이전 영상 재사용 방지
   exposure_discard_frames: 5
@@ -325,6 +328,23 @@ unload:
   # 이동·회전하는 바구니 정렬 검사 사용 여부: 변경 시 빈 기준 재등록 필요
   registration_enabled: false
   # 기존 사각 ROI 밖으로 바구니를 찾을 추가 여유 픽셀: 원본 영상 기준
+  # 빈 기준은 유지하며 배경 합의·경계 오차·잡음을 제한 보정
+  registration_adaptive: true
+  # 128 정렬 영상의 기준 경계에서만 허용할 위치 차이(최대 5픽셀)
+  registration_spatial_tolerance: 4
+  # 얇은 선과 면적 있는 물체를 구분할 홀수 핵심 폭(3~7)
+  registration_min_blob_width: 7
+  # 배경 타일 사이에 허용할 RGB 차이
+  registration_background_tolerance: 3.0
+  # 분산된 배경 영역의 합의가 검증된 경우에만 허용할 최대 RGB 보정
+  registration_background_max_shift: 24.0
+  # 조명 보정에 필요한 최소 배경 타일 수(전체 16개)
+  registration_background_min_tiles: 8
+  # 같은 조명 변화에 동의할 배경 타일의 최소 비율
+  registration_background_fraction: 0.6
+  # 추정 배경 잡음이 이를 넘으면 판정 보류
+  registration_noise_limit: 4.0
+  # 바구니 후보를 찾을 기준 ROI 주변 확장 범위(원본 픽셀)
   registration_search_pad: 60
   # 흰 바구니 외곽 후보의 밝기 문턱 계수: Otsu 자동 문턱에 곱함
   registration_threshold_factor: 1.35

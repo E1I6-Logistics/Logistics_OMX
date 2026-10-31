@@ -3,7 +3,9 @@ import math
 from .config import ConfigError,number
 
 SIZE=(128,128)
-DEFAULTS=dict(registration_enabled=False,registration_search_pad=60,
+DEFAULTS=dict(registration_adaptive=True,registration_spatial_tolerance=4,registration_min_blob_width=7,
+              registration_background_tolerance=3.,registration_background_max_shift=24.,registration_background_min_tiles=8,registration_background_fraction=.6,registration_noise_limit=4.,
+              registration_enabled=False,registration_search_pad=60,
               registration_threshold_factor=1.35,registration_min_area_ratio=.1,
               registration_max_shift_px=60.,registration_max_rotation_deg=15.,
               registration_scale_tolerance=.25,registration_inner_margin=6,
@@ -22,11 +24,12 @@ class ViewError(ConfigError):
 
 
 def validate(spec):
+    if type(spec['registration_adaptive']) is not bool:raise ConfigError('registration_adaptive must be boolean')
     if type(spec['registration_enabled']) is not bool:raise ConfigError('registration_enabled must be boolean')
     for name in ('registration_allow_partial','registration_visible_confirmed','registration_partial_chroma_fallback','registration_full_chroma_fallback'):
         if type(spec[name]) is not bool:raise ConfigError(name+' must be boolean')
     if spec['registration_allow_partial'] and not spec['registration_enabled']:raise ConfigError('Partial view requires registration')
-    for key,lo,hi in (('registration_search_pad',0,150),('registration_inner_margin',2,8),
+    for key,lo,hi in (('registration_spatial_tolerance',0,5),('registration_min_blob_width',3,7),('registration_background_min_tiles',6,12),('registration_search_pad',0,150),('registration_inner_margin',2,8),
                       ('registration_component_pixels',8,128),('registration_weak_pixels',8,128),('registration_partial_component_pixels',16,192),('registration_chroma_component_pixels',16,256)):
         if type(spec[key]) is not int or not lo<=spec[key]<=hi:raise ConfigError('Invalid '+key)
     for key,lo,hi in (('registration_threshold_factor',1.05,1.8),('registration_min_area_ratio',.03,.4),
@@ -34,6 +37,11 @@ def validate(spec):
                       ('registration_scale_tolerance',.05,.4),('registration_pixel_threshold',4,20),
                       ('registration_weak_threshold',2,12),('registration_color_limit',1,12),('registration_still_px',.5,5),('registration_min_visible_ratio',.5,.95),('registration_max_extrapolation',.05,.5),('registration_partial_color_limit',1,32)):
         number(spec[key],key,lo,hi)
+    if spec['registration_min_blob_width']%2!=1:raise ConfigError('registration_min_blob_width must be odd')
+    number(spec['registration_background_tolerance'],'registration_background_tolerance',1,5)
+    number(spec['registration_background_max_shift'],'registration_background_max_shift',8,32)
+    number(spec['registration_background_fraction'],'registration_background_fraction',.5,.9)
+    number(spec['registration_noise_limit'],'registration_noise_limit',1,6)
     number(spec['registration_wall_color_limit'],'registration_wall_color_limit',1,16)
     number(spec['registration_chroma_threshold'],'registration_chroma_threshold',4,24)
     if spec['registration_weak_threshold']>spec['registration_pixel_threshold']:raise ConfigError('Weak threshold must not exceed strong threshold')
@@ -221,10 +229,14 @@ class Tracker:
                     if not 1.05<=factor<=1.8:continue
                     retry=Tracker(dict(spec,registration_threshold_factor=factor),self.reference)
                     retry._threshold_retry=True;retry.pose_anchor=self.pose_anchor
+                    for field in ('_previous_gray','_previous_rim','_previous_edges'):
+                        setattr(retry,field,getattr(self,field,None))
                     try:result=retry.extract(image)
                     except ViewError:continue
                     self.last_profile=retry.last_profile;self.last_info=retry.last_info
                     self.valid_mask=retry.valid_mask;self.pose_anchor=retry.pose_anchor
+                    for field in ('_previous_gray','_previous_rim','_previous_edges'):
+                        setattr(self,field,getattr(retry,field,None))
                     self.last_info['registration_threshold_used']=factor
                     return result
             details=dict(otsu_threshold=float(threshold),threshold_factor=spec['registration_threshold_factor'],
@@ -243,10 +255,15 @@ class Tracker:
         visible=float(self.valid_mask.mean())
         if visible<spec['registration_min_visible_ratio']:raise ViewError('INSUFFICIENT_VISIBLE_BASKET')
         self.last_profile=dict(version=1,quad=q.tolist(),frame_shape=[height,width],partial=partial)
-        stable=self.pose_anchor is not None and float(np.linalg.norm(q-self.pose_anchor,axis=1).max())<=spec['registration_still_px']
+        quad_stable=self.pose_anchor is not None and float(np.linalg.norm(q-self.pose_anchor,axis=1).max())<=spec['registration_still_px']
+        motion={}
+        if spec['registration_adaptive']:
+            from .basket_motion import observe
+            motion=observe(self,gray,q,[x0,y0])
+        stable=quad_stable if motion.get('observed_rim_stable') is None else motion['observed_rim_stable']
         if not stable:self.pose_anchor=q.copy()
         self.last_info=dict(registration='POSE_FOUND',pose_stable=stable,tray_quad=q.tolist(),tray_center=info['center'],tray_angle_deg=info['angle'],visible_ratio=visible,
-                            view_scope='visible_only' if spec['registration_allow_partial'] else 'full',full_basket_verified=False)
+                            view_scope='visible_only' if spec['registration_allow_partial'] else 'full',full_basket_verified=False,quad_stable=quad_stable,**motion)
         return canonical
 
 
@@ -332,6 +349,11 @@ class Comparator:
         if float(mask.sum()/self.reference_mask.sum())<s['registration_min_visible_ratio']:
             return dict(verdict='UNKNOWN',evidence_reason='INSUFFICIENT_COMMON_VIEW',changed_ratio=None,quality_flags=['INSUFFICIENT_COMMON_VIEW'],features_computed=False)
         offset,lighting=self.illumination_offset(signed,mask,valid_mask)
+        adaptive=None;extra={}
+        if s['registration_adaptive']:
+            from .basket_adaptive import evidence
+            offset,lighting,extra,delta,largest,faint=evidence(self,image,mask,offset,lighting)
+            adaptive=(delta,largest,faint)
         clipped=max(self.reference_clipped,float((image.min(2)[mask]>=250).mean()))
         dark=max(self.reference_dark,float((image.max(2)[mask]<=5).mean()))
         flags=[]
@@ -340,31 +362,38 @@ class Comparator:
         elif not s['full_view_confirmed']:flags.append('FULL_VIEW_NOT_CONFIRMED')
         if clipped>s['max_clipped_ratio']:flags.append('ROI_OVEREXPOSED')
         if dark>s['inspection_max_dark_ratio'] or min(float(self.reference_mean.mean()),float(image[mask].mean()))<s['inspection_min_luma']:flags.append('ROI_UNDEREXPOSED')
-        limit=(s['registration_partial_color_limit'] if s['registration_allow_partial'] else
+        limit=(s['registration_background_max_shift'] if lighting['lighting_offset_source']=='background_consensus' else
+               s['registration_partial_color_limit'] if s['registration_allow_partial'] else
                s['registration_wall_color_limit'] if lighting['lighting_offset_source']=='rim_consensus' else s['registration_color_limit'])
         if float(abs(offset).max())>limit:flags.append('LIGHTING_SHIFT')
+        if extra.get('background_noise',0)>s['registration_noise_limit']:flags.append('NOISY_BACKGROUND')
+        if adaptive is not None and extra.get('background_eligible_tiles',0)<s['registration_background_min_tiles']:flags.append('BACKGROUND_UNOBSERVABLE')
         result=dict(changed_ratio=0.,quality_flags=flags,clipped_ratio=clipped,illumination_delta=float(abs(offset).max()),
                     comparison='registered_low_template',view_scope='visible_only' if s['registration_allow_partial'] else 'full',
-                    full_basket_verified=False,color_offset=offset.tolist(),features_computed=not bool(flags),**lighting)
+                    full_basket_verified=False,color_offset=offset.tolist(),features_computed=not bool(flags),**lighting,**extra)
         if flags:
             # Geometry/visibility/exposure still gate this path. A clear colored
             # object may prove OCCUPIED under shadow, but it never proves EMPTY.
-            if flags==['LIGHTING_SHIFT'] and s['registration_partial_chroma_fallback' if s['registration_allow_partial'] else 'registration_full_chroma_fallback']:
+            if flags==['LIGHTING_SHIFT'] and (adaptive is None or extra.get('background_consensus')) and s['registration_partial_chroma_fallback' if s['registration_allow_partial'] else 'registration_full_chroma_fallback']:
                 color,_=self.chromatic_change(image,mask,offset)
-                if color['chroma_component_pixels']>=s['registration_chroma_component_pixels']:
+                if color['chroma_component_pixels']>=s['registration_chroma_component_pixels'] and (adaptive is None or adaptive[1]>=(s['registration_partial_component_pixels'] if s['registration_allow_partial'] else s['registration_component_pixels'])):
                     return dict(result,**color,verdict='OCCUPIED',evidence_reason='REGISTERED_COLORED_OBJECT',
                                 quality_flags=[],quality_warnings=['LIGHTING_SHIFT'],features_computed=True,
-                                difference_basis='normalized_color',changed_ratio=color['chroma_changed_ratio'])
+                                difference_basis='normalized_color' if adaptive is None else 'spatial_rgb_color',
+                                component_pixels=None if adaptive is None else adaptive[1],weak_component_pixels=None if adaptive is None else adaptive[2],
+                                changed_ratio=color['chroma_changed_ratio'])
                 return dict(result,**color,verdict='UNKNOWN',evidence_reason='LIGHTING_SHIFT')
             return dict(result,verdict='UNKNOWN',evidence_reason=flags[0])
-        raw=np.abs(signed-offset).max(2)
+        raw=np.abs(signed-offset).max(2) if adaptive is None else adaptive[0]
         strong=((raw>=s['registration_pixel_threshold'])&mask).astype(np.uint8)
         weak=((raw>=s['registration_weak_threshold'])&mask).astype(np.uint8)
         def component(binary):
             coherent=cv2.erode(binary,np.ones((3,3),np.uint8))
             n,_,stats,_=cv2.connectedComponentsWithStats(coherent,connectivity=8)
             return int(stats[1:,cv2.CC_STAT_AREA].max()) if n>1 else 0
-        largest=component(strong);faint=component(weak)
+        if adaptive is None:largest=component(strong);faint=component(weak)
+        else:
+            largest,faint=adaptive[1:];strong=self.last_strong_mask
         occupied=largest>=(s['registration_partial_component_pixels'] if s['registration_allow_partial'] else s['registration_component_pixels'])
         uncertain=faint>=s['registration_weak_pixels']
         verdict='OCCUPIED' if occupied else 'UNKNOWN' if uncertain else 'EMPTY'
@@ -380,11 +409,14 @@ def comparison_view(reference,current,spec,reference_mask=None,current_mask=None
     offset=np.asarray(evidence.get('color_offset',[0,0,0]))
     delta=np.abs(current.astype(np.int16)-reference-offset).max(2)
     threshold=spec['registration_pixel_threshold'];title='REGISTERED DIFFERENCE'
-    if evidence.get('difference_basis')=='normalized_color':
+    if evidence.get('difference_basis','').startswith('spatial_rgb'):
+        delta=comparator.last_delta;threshold=evidence['effective_pixel_threshold'];title='SPATIAL RGB DIFFERENCE'
+    elif evidence.get('difference_basis')=='normalized_color':
         _,delta=comparator.chromatic_change(current,comparator.mask,offset)
         threshold=spec['registration_chroma_threshold'];title='COLOR DIFFERENCE'
     heat=cv2.cvtColor(np.clip(delta*12,0,255).astype(np.uint8),cv2.COLOR_GRAY2BGR)
-    heat[(delta>=threshold)&comparator.mask]=(0,0,255)
+    selected=comparator.last_strong_mask if evidence.get('difference_basis','').startswith('spatial_rgb') else (delta>=threshold)&comparator.mask
+    heat[selected]=(0,0,255)
     panels=[cv2.cvtColor(reference,cv2.COLOR_RGB2BGR),cv2.cvtColor(current,cv2.COLOR_RGB2BGR),heat]
     canvas=np.zeros((288,768,3),np.uint8)
     for i,(panel,title) in enumerate(zip(panels,('REGISTERED REFERENCE','REGISTERED CURRENT',title))):

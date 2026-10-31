@@ -87,6 +87,7 @@ def test_normal_empty_and_occupied_path_does_not_compute_color(monkeypatch):
 def test_default_fallback_preserves_installed_reference_signature():
  s=partial_spec()
  new={'registration_full_chroma_fallback','registration_partial_chroma_fallback','registration_chroma_threshold','registration_chroma_component_pixels'}
+ new.update({'registration_adaptive','registration_spatial_tolerance','registration_min_blob_width','registration_background_tolerance','registration_background_max_shift','registration_background_min_tiles','registration_background_fraction','registration_noise_limit'})
  before={k:s[k] for k in R.DEFAULTS if k not in new and k!='registration_wall_color_limit'}
  old=dict(version=3,size=(320,240),roi=s['roi'],polygon=s['roi_polygon'],registration=before)
  assert signature(s)==hashlib.sha256(json.dumps(old,sort_keys=True).encode()).hexdigest()
@@ -94,4 +95,4 @@ def test_default_fallback_preserves_installed_reference_signature():
 
 def test_comparison_view_uses_the_same_color_evidence():
  s=partial_spec();ref,image=shadow_scene();view,r=R.comparison_view(ref,image,s)
- assert view.shape==(288,768,3) and r['difference_basis']=='normalized_color'
+ assert view.shape==(288,768,3) and r['difference_basis']=='spatial_rgb_color'
