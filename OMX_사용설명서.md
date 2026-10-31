@@ -1281,3 +1281,22 @@ omx_unload 2
 MQTT 완료는 `requested_cycles_completed`, `count_kind: motion_cycles`이며 진행 current는 완료 사이클 수입니다. `basket_empty_verified`와 `physical_unloading_verified`는 false, `inspection_scope`는 disabled입니다. success는 지정한 동작 횟수 완료를 뜻하며 바구니 비움이나 물건 전달 검증을 뜻하지 않습니다. 주문별 카운트는 새로 시작하며 오류·종료 후 이전 주문을 재실행하지 않습니다.
 
 검사를 다시 사용하려면 실행을 종료하고 `omx_basket on`을 저장한 다음 재시작합니다. 기존 기준·조명 설정·홈·보정·모델은 off/on으로 삭제하거나 재등록하지 않습니다.
+
+
+## 30. 서비스 시작 시 bad unit file setting 복구
+
+기존 생성 코드가 WorkingDirectory 경로에 ExecStart 인자용 큰따옴표를 적용해 systemd에서 절대 경로가 아니라고 거절하는 문제가 있었습니다. 수정 버전은 디렉터리 값을 별도로 처리하고, 실행 스크립트는 /bin/bash의 인자로 전달합니다. 설치 시 systemd-analyze가 있으면 임시 후보 unit을 실제 문법 검사한 뒤 기존 생성 unit을 백업·교체합니다. 검사 실패 시 기존 unit은 유지하고 서비스는 시작하지 않습니다. status는 오류가 잘리거나 pager에 갇히지 않도록 --no-pager --full로 출력합니다.
+
+이미 설치한 unit은 git pull만으로 바뀌지 않으므로 각 Pi에서 다음을 실행합니다. 이전 status 화면은 q로 종료합니다.
+
+```bash
+cd ~/Logistics_OMX
+git pull --ff-only origin dev
+source ~/.bashrc
+omx_service install
+omx_service enable
+omx_service start
+omx_service status
+```
+
+앞서 설정한 loginctl enable-linger는 유지됩니다. active (running)은 감독 프로그램 실행을 뜻하므로, 실제 준비는 `omx_service logs --follow`에서 HOME ARRIVED·WORKSTATION/주문 대기·MQTT 연결 로그까지 확인합니다. 모델 동작 시험과 Pi 재부팅 후 자동 준비 확인은 현장에서 별도로 진행합니다. 서비스 재설치는 YAML·홈·사이클 보정·바구니 검사 ON/OFF·모델 가중치를 변경하지 않습니다.

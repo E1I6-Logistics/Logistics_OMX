@@ -1,6 +1,8 @@
 """Explicit user-service management. Install alone never starts a robot."""
 from pathlib import Path
 import subprocess
+import shutil
+import tempfile
 import time
 from .config import ROOT,atomic_write,check_files,require_home,service_options
 
@@ -11,16 +13,37 @@ def quote(value):
     if any(c in value for c in ('\n','\r','\x00')):raise ValueError('Invalid service path')
     return '"'+value.replace('\\','\\\\').replace('"','\\"').replace('%','%%')+'"'
 
+def working_directory(value):
+    # This scalar directive is NOT parsed as an ExecStart argument list.
+    # Quotes/backslashes/dollars inside the absolute path are literal here.
+    value=str(value)
+    if (not Path(value).is_absolute() or value!=value.strip() or value.endswith('\\')
+            or any(ord(c)<32 or ord(c)==127 for c in value)):
+        raise ValueError('Invalid absolute service working directory')
+    return value.replace('%','%%')
+
+
+def verify_unit(text,unit):
+    executable=shutil.which('systemd-analyze')
+    if executable is None:return
+    # Parse a temporary candidate before changing the installed unit. verify
+    # does not start the service or execute the robot command.
+    with tempfile.TemporaryDirectory(prefix='omx-unit-check-') as folder:
+        candidate=Path(folder)/unit;candidate.write_text(text,encoding='utf-8')
+        result=subprocess.run([executable,'verify','--man=no',str(candidate)],
+                              check=False,capture_output=True,text=True,timeout=15)
+        if result.returncode:
+            raise ValueError('Generated service rejected by systemd: '+(result.stderr or result.stdout).strip())
+
+
 def render(cfg,path,root=ROOT):
     options=service_options(cfg)
     if options['stop_timeout_s']<2*cfg['runtime']['shutdown_timeout_s']+6:
         raise ValueError('service.stop_timeout_s must allow 2*runtime.shutdown_timeout_s+6 seconds')
-    command=' '.join([quote(root/'run_omx_mqtt.sh'),'--robot-id',cfg['device_id'],'--config',quote(Path(path).resolve()).replace('$','$$'),
+    command=' '.join(['/bin/bash',quote(root/'run_omx_mqtt.sh').replace('$','$$'),'--robot-id',cfg['device_id'],'--config',quote(Path(path).resolve()).replace('$','$$'),
                       '--confirm-motion','--important-only'])
-    # Escape dollar expansion in the executable path too (systemd ExecStart grammar).
-    command=command.replace(quote(root/'run_omx_mqtt.sh'),quote(root/'run_omx_mqtt.sh').replace('$','$$'),1)
     text=(ROOT/'deploy/omx-manager@.service').read_text()
-    for key,value in {'@OMX_ROOT@':quote(root),'@OMX_COMMAND@':command,
+    for key,value in {'@OMX_ROOT@':working_directory(root),'@OMX_COMMAND@':command,
                       '@RESTART_S@':str(options['restart_s']),'@STOP_TIMEOUT_S@':str(options['stop_timeout_s'])}.items():text=text.replace(key,value)
     return text
 
@@ -35,16 +58,19 @@ def manage(cfg,path,action,confirm_motion=False,follow=False,unit_dir=None):
     if action=='install':
         if options['enable_on_boot'] and not confirm_motion:raise ValueError('Boot autostart requires --confirm-motion')
         text=render(cfg,path)
+        previous=None
         if file.exists():
             previous=file.read_text()
             if not previous.startswith(MARKER):raise ValueError('Existing custom unit will not be overwritten: '+str(file))
+        verify_unit(text,unit)
+        if previous is not None:
             atomic_write(file.with_name(file.name+'.'+str(time.time_ns())+'.bak'),previous)
         atomic_write(file,text)
         systemctl('daemon-reload')
         systemctl('enable' if options['enable_on_boot'] else 'disable',unit)
         print('Installed '+str(file)+'; not started. Use service --action start --confirm-motion.')
         return
-    if action=='status':return subprocess.run(['systemctl','--user','status',unit],check=False)
+    if action=='status':return subprocess.run(['systemctl','--user','--no-pager','--full','status',unit],check=False)
     if action=='logs':
         argv=['journalctl','--user','-u',unit,'-n','50','--no-pager']
         if follow:argv.append('--follow')
