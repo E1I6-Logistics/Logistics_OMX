@@ -217,6 +217,34 @@ def luma(frame):
     return float(cv2.cvtColor(cv2.resize(frame,(32,24)),cv2.COLOR_RGB2GRAY).mean())
 
 
+@contextmanager
+def _defer_restore_interrupt():
+    """Finish bounded sensor restoration before honoring another Ctrl+C."""
+    import signal
+    import threading
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous=signal.getsignal(signal.SIGINT)
+    if previous==signal.SIG_IGN:
+        yield
+        return
+    pending=False
+    def defer(signum,frame):
+        nonlocal pending
+        pending=True
+    signal.signal(signal.SIGINT,defer)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT,previous)
+    # A restoration error keeps priority and its durable journal. With successful
+    # cleanup, deliver the stop through the application's original handler once.
+    if pending:
+        if callable(previous):previous(signal.SIGINT,None)
+        else:raise KeyboardInterrupt
+
+
 class Session:
     def __init__(self,camera,cfg,*,target=None,guard=lambda:None,stopped=lambda:False,clock=None,sleep=None,allow_scene_change=False):
         from .basket import options
@@ -306,6 +334,9 @@ class Session:
         # Replay the same command, require the SAME settled actual values as capture.
         return dict(backend=self.adapter.backend,controls=dict(self.target),requested_controls=dict(self.requested))
     def finish(self):
+        with _defer_restore_interrupt():
+            self._finish()
+    def _finish(self):
         start=self.clock()
         try:
             failures=[]
