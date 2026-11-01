@@ -6,7 +6,7 @@ from pathlib import Path
 from .config import ConfigError,number,only_keys,write_json,ROOT
 
 DEFAULTS=dict(enabled=False,camera='front',interval_s=5.,stable_samples=3,max_frame_age_s=.5,
-              pixel_threshold=20.,weak_pixel_threshold=8.,min_component_pixels=20,empty_ratio=.003,items={})
+              pixel_threshold=20.,weak_pixel_threshold=8.,min_component_pixels=20,empty_ratio=.003,max_color_offset=18.,items={})
 ITEMS={'omx1':('A','B'),'omx2':('C','D')}
 
 
@@ -21,7 +21,7 @@ def validate(cfg):
     if s['enabled'] and cfg['device_id'] not in ITEMS:raise ConfigError('팔레트 검사는 OMX1·2 전용입니다')
     if not isinstance(s['camera'],str) or not s['camera']:raise ConfigError('팔레트 카메라 키는 문자열이어야 합니다')
     if s['enabled'] and s['camera'] not in cfg['hardware']['cameras']:raise ConfigError('팔레트 검사 카메라가 없습니다')
-    for key,lo,hi in (('interval_s',2,300),('max_frame_age_s',.1,2),('pixel_threshold',5,80),('weak_pixel_threshold',2,40),('empty_ratio',0,.02)):
+    for key,lo,hi in (('interval_s',2,300),('max_frame_age_s',.1,2),('pixel_threshold',5,80),('weak_pixel_threshold',2,40),('empty_ratio',0,.02),('max_color_offset',0,30)):
         number(s[key],'pallet_stock.'+key,lo,hi)
     if s['weak_pixel_threshold']>=s['pixel_threshold']:raise ConfigError('약한 변화 기준은 강한 변화 기준보다 작아야 합니다')
     for key,lo,hi in (('stable_samples',2,10),('min_component_pixels',4,500)):
@@ -96,8 +96,20 @@ def compare(current,reference,s):
     if current.shape!=reference.shape:raise ConfigError('빈 기준 영상 크기 불일치')
     a=current.astype(np.float32);b=reference.astype(np.float32)
     offset=np.median(a-b,axis=(0,1));clipped=float(np.mean(current.min(axis=2)>=250))
-    if max(abs(offset))>6 or clipped>max(.45,float(np.mean(reference.min(axis=2)>=250))+.1):
-        return dict(candidate='UNKNOWN',reason='조명 변화·과노출',color_offset=offset.tolist())
+    reference_clipped=float(np.mean(reference.min(axis=2)>=250))
+    clipped_limit=max(.45,reference_clipped+.1)
+    limit=s['max_color_offset']
+    flags=[]
+    if max(abs(offset))>limit:flags.append('COLOR_OFFSET_LIMIT')
+    if clipped>clipped_limit:flags.append('OVEREXPOSED')
+    metadata=dict(color_offset=offset.tolist(),color_offset_limit=limit,
+                  clipped_ratio=clipped,reference_clipped_ratio=reference_clipped,
+                  clipped_limit=clipped_limit,quality_flags=flags)
+    if flags:
+        reason='과노출 픽셀 비율 증가' if 'OVEREXPOSED' in flags else '색상 변화가 보정 한도 초과'
+        return dict(metadata,candidate='UNKNOWN',reason=reason,features_computed=False)
+    # Correct only a bounded per-channel median shift in this ROI copy.
+    # Local connected change is STILL required; offset alone is not an object.
     # One-pixel local tolerance absorbs static-grid jitter without image warping.
     hi=cv2.dilate(reference,np.ones((3,3),np.uint8)).astype(float)
     lo=cv2.erode(reference,np.ones((3,3),np.uint8)).astype(float)
@@ -112,7 +124,7 @@ def compare(current,reference,s):
     if strong>=s['min_component_pixels']:candidate='PRESENT';reason='빈 기준과 물체 크기 변화 확인'
     elif weak<max(4,s['min_component_pixels']//3) and ratio<=s['empty_ratio']:candidate='EMPTY';reason='빈 기준과 일치'
     else:candidate='UNKNOWN';reason='변화가 작거나 물건 여부 불명확'
-    return dict(candidate=candidate,reason=reason,component_pixels=strong,weak_component_pixels=weak,changed_ratio=ratio,color_offset=offset.tolist())
+    return dict(metadata,candidate=candidate,reason=reason,component_pixels=strong,weak_component_pixels=weak,changed_ratio=ratio,features_computed=True)
 
 
 class Inspector:

@@ -677,7 +677,7 @@ omx_stock status
 
 서비스를 멈춘 뒤 `omx_stock roi 품목 '[x,y,너비,높이]'`로 각 팔레트 영역을 지정합니다. 좌표는 실제 front 영상 기준입니다. 사진 예시에서 임의 추측한 좌표를 기본값으로 넣지 않았습니다. OMX1은 A/B, OMX2는 C/D 두 영역을 각각 지정합니다. 팔레트 테두리·케이블·옆 작업 영역을 과도하게 포함하지 않도록 실제 검사할 내부 영역을 선택합니다. 저장 뒤 서비스를 다시 시작해야 적용됩니다.
 
-설정은 현장 YAML `pallet_stock`에 저장하며 모든 값에 한글 주석이 붙습니다. `interval_s`, `stable_samples`, `pixel_threshold`, `weak_pixel_threshold`, `min_component_pixels`, `empty_ratio`, `max_frame_age_s`를 조정할 수 있습니다. 예: 서비스 정지 후 `./omx_control --config "$OMX_CONFIG_PATH" set --key pallet_stock.interval_s --value 10`. 실물 결과 없이 임계값을 낮추어 UNKNOWN을 숨기지 않습니다.
+설정은 현장 YAML `pallet_stock`에 저장하며 모든 값에 한글 주석이 붙습니다. `interval_s`, `stable_samples`, `pixel_threshold`, `weak_pixel_threshold`, `min_component_pixels`, `empty_ratio`, `max_frame_age_s`, `max_color_offset`를 조정할 수 있습니다. 예: 서비스 정지 후 `./omx_control --config "$OMX_CONFIG_PATH" set --key pallet_stock.interval_s --value 10`. 실물 결과 없이 임계값을 낮추어 UNKNOWN을 숨기지 않습니다.
 
 ### 3. 각 팔레트를 완전히 비운 상태에서 기준 저장
 
@@ -759,19 +759,25 @@ omx_service logs --follow
 
 새 모델은 현 실행기 기준 FP32 LeRobot ACT 6축이고 카메라 키 `top`·`wrist`, 입력 크기가 현장 설정과 맞아야 합니다. 가중치 외 config·pre/postprocessor·processor state도 폴더에 필요합니다. 교체 후에는 모델 해시가 달라지므로 정상 초기 자세 확인 → `omx_capture` → `omx_arm` → `omx_check` → `omx_cycle_calibrate E` → `omx_workflow` 후 서비스를 시작합니다. 이전 사이클 보정 해시를 새 모델에 억지로 붙이지 않습니다. F 모델 재적용 도구 `model_compat --apply`를 새 E 모델 설정 후 다시 실행하면 F 모델로 돌아가므로 사용하지 않습니다.
 
-+
-+### OMX1·2 현재 상단 사진 기준 ROI 시작값 (640×480)
-+
-+2026-11-01 전달받은 현장 사진 기준이며 왼쪽 A/C, 오른쪽 B/D입니다. 아래는 `pallet_stock` 검사 영역만 바꾸며 모델 영상·홈·카운팅 설정은 바꾸지 않습니다. 템플릿을 덮어쓰지 않고 실제 현장 YAML에 저장합니다. 카메라 위치·해상도가 바뀌면 새 사진으로 다시 지정합니다.
-+
-+```bash
-+# OMX1에서, 서비스 정지 상태
-+omx_stock roi A '[28,280,128,116]'
-+omx_stock roi B '[472,272,132,124]'
-+# OMX2에서는 위 두 줄 대신
-+omx_stock roi C '[28,258,130,114]'
-+omx_stock roi D '[482,248,132,120]'
-+```
-+
-+서비스 재시작 후 READY를 확인하고 각 팔레트를 완전히 비운 상태에서 OMX1은 `omx_stock capture A`, `omx_stock capture B`, OMX2는 `omx_stock capture C`, `omx_stock capture D`로 빈 기준을 등록합니다. 이번에 전달한 물건이 올라간 사진을 빈 기준으로 쓰지 않습니다. 10~15초 뒤 `omx_stock status`로 빈 상태를 확인하고, 물건 한 개 넣기·다시 빼기를 시험합니다. `omx_stock snapshot`으로 ROI 표시를 함께 확인합니다.
-+
+
+### OMX1·2 현재 상단 사진 기준 ROI 시작값 (640×480)
+
+2026-11-01 전달받은 현장 사진 기준이며 왼쪽 A/C, 오른쪽 B/D입니다. 아래는 `pallet_stock` 검사 영역만 바꾸며 모델 영상·홈·카운팅 설정은 바꾸지 않습니다. 템플릿을 덮어쓰지 않고 실제 현장 YAML에 저장합니다. 카메라 위치·해상도가 바뀌면 새 사진으로 다시 지정합니다.
+
+```bash
+# OMX1에서, 서비스 정지 상태
+omx_stock roi A '[28,280,128,116]'
+omx_stock roi B '[472,272,132,124]'
+# OMX2에서는 위 두 줄 대신
+omx_stock roi C '[28,258,130,114]'
+omx_stock roi D '[482,248,132,120]'
+```
+
+서비스 재시작 후 READY를 확인하고 각 팔레트를 완전히 비운 상태에서 OMX1은 `omx_stock capture A`, `omx_stock capture B`, OMX2는 `omx_stock capture C`, `omx_stock capture D`로 빈 기준을 등록합니다. 이번에 전달한 물건이 올라간 사진을 빈 기준으로 쓰지 않습니다. 10~15초 뒤 `omx_stock status`로 빈 상태를 확인하고, 물건 한 개 넣기·다시 빼기를 시험합니다. `omx_stock snapshot`으로 ROI 표시를 함께 확인합니다.
+
+
+### 팔레트 검사: 작은 색상 변화 보정
+
+`pallet_stock.max_color_offset`은 기본 18(0~255 RGB 값), 설정 가능 범위 0~30입니다. 기존 현장 YAML에 이 키가 없으면 기본값을 사용합니다. 저장한 빈 기준 대비 채널별 중앙 색상 차이가 이 한도 이내이면 ROI 사본에서만 차이를 빼고, 보정 뒤 남은 국소 변화 연결 영역으로 존재 여부를 판단합니다. OMX1 현장 `[1,-2,-7]`처럼 기존 고정 6 기준에서 차단되던 작은 차이는 비교를 계속합니다. 큰 색상 변화·과노출은 UNKNOWN으로 유지하며 모델 입력이나 센서 노출을 바꾸지 않습니다.
+
+`omx_stock status --json`에 `color_offset_limit`, `clipped_ratio`, `reference_clipped_ratio`, `clipped_limit`, `quality_flags`, `features_computed`를 표시해 색상 한도 차단과 실제 과노출을 구분합니다. 같은 결과 3회 연속 확인은 유지합니다. 이 변경은 기존 ROI·빈 기준 파일 형식을 바꾸지 않으므로 재등록하지 않고 서비스 정지 → Git 업데이트 → 서비스 시작으로 적용합니다. 물건 있는 상태와 모두 뺀 상태를 각각 확인해야 실제 현장 성능을 판단할 수 있습니다.

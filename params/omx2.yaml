@@ -311,6 +311,8 @@ pallet_stock:
   min_component_pixels: 20
   # 빈 상태에서 허용하는 약한 변화 비율
   empty_ratio: 0.003
+  # ROI RGB 채널별 중앙 색상 차이 보정 한도: 기본 18, 최대 30, 초과 시 UNKNOWN
+  max_color_offset: 18.0
   # 외부 주문 품목별 팔레트: OMX1 A/B, OMX2 C/D
   items:
     # 외부 품목 C의 고정 팔레트 설정

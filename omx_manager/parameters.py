@@ -219,6 +219,7 @@ def comment(path):
                 'weak_pixel_threshold':'약한 변화 기준: 불명확하면 UNKNOWN 유지',
                 'min_component_pixels':'물체 변화 연결 영역 최소 크기: 최대 변 160픽셀로 축소 후 기준',
                 'empty_ratio':'빈 상태에서 허용하는 약한 변화 비율',
+                'max_color_offset':'ROI RGB 채널별 중앙 색상 차이 보정 한도(0~255): 기본 18, 최대 30, 초과 시 UNKNOWN',
                 'items':'외부 주문 품목별 팔레트: OMX1 A/B, OMX2 C/D',
                 'roi':'고정 팔레트 영역 [x,y,너비,높이]: 실제 영상 기준, null이면 UNKNOWN'}.get(key,'외부 품목 '+key+'의 고정 팔레트 설정')
     if key=='profiles' and 'counting' in path:return '품목별 모델 복귀 프로필: omx_cycle_calibrate로 자동 계산·저장'
