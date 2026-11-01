@@ -46,7 +46,7 @@ def prepare(cfg, serial, model_path=None):
     updated['models']['active_profile'] = TEMP_PROFILE
     updated['hardware']['cameras'] = cameras
     updated.setdefault('unload', {}).update(inspection_enabled=False, low_exposure_enabled=False,
-                                           inspection_exposure=None, vision_method='rgb_roi')
+                                           inspection_exposure=None, vision_method='rgb_roi', registration_enabled=False)
     updated['counting']['mode'] = 'cycle'
     if changed_contract:
         # Retain the physical Home values and this arm's motor calibration.

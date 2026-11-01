@@ -24,7 +24,7 @@ def original():
     cfg['workflow']['items'] = {'E': {'old': 'stages'}}
     cfg['recovery']['routes'] = {'old': {'path': 'model-specific'}}
     cfg['unload'].update(inspection_enabled=True, low_exposure_enabled=True, inspection_exposure=81,
-                         reference='/old-c920.npz', reference_binding='old-ref', vision_method='low_template')
+                         reference='/old-c920.npz', reference_binding='old-ref', vision_method='low_template', registration_enabled=True)
     return cfg
 
 
@@ -48,6 +48,7 @@ def test_temp_model_contract_preserves_omx3_identity_and_original_model():
     assert result['workflow']['items'] == {} and result['recovery']['routes'] == {}
     assert result['unload']['reference'] is None
     assert not result['unload']['inspection_enabled'] and not result['unload']['low_exposure_enabled']
+    assert not result['unload']['registration_enabled']
     argv, mqtt, env, _ = R.build(result, ROOT / 'params/omx3.yaml')
     assert '--robot-id' in mqtt and 'omx3' in mqtt
     assert '--task=' + C.profile(source)['items']['F']['task'] in argv
@@ -145,3 +146,23 @@ def test_templates_use_same_temporary_f_model_and_realsense_rgb():
         top = c['hardware']['cameras']['top']
         assert top['type'] == 'intelrealsense' and not top['use_depth'] and top['use_rgb']
     assert not cfg['unload']['inspection_enabled']
+
+
+@pytest.mark.parametrize('inspection', [False, True])
+@pytest.mark.parametrize('same_contract', [False, True])
+def test_old_low_template_registration_is_disabled_even_on_repeat(inspection,same_contract):
+    cfg = C.load(ROOT / 'params/omx3.yaml')
+    if same_contract:
+        cfg = M.prepare(cfg, '123456789012')
+        cfg['home']['binding'] = 'new-registration-preserved'
+    cfg['unload'].update(inspection_enabled=inspection, low_exposure_enabled=True,
+                         inspection_exposure=81, vision_method='low_template', registration_enabled=True)
+    C.validate(cfg)
+    before = copy.deepcopy(cfg)
+    updated = M.prepare(cfg, '123456789012')
+    assert cfg == before
+    assert not updated['unload']['registration_enabled']
+    assert not updated['unload']['low_exposure_enabled']
+    assert not updated['unload']['inspection_enabled']
+    C.validate(updated)
+    if same_contract: assert updated['home']['binding'] == 'new-registration-preserved'
