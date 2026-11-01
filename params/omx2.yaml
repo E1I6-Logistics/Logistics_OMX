@@ -313,6 +313,16 @@ pallet_stock:
   empty_ratio: 0.003
   # ROI RGB 채널별 중앙 색상 차이 보정 한도: 기본 18, 최대 30, 초과 시 UNKNOWN
   max_color_offset: 18.0
+  # 배경 격자 기반 조명·작은 이동 보정: 현장 설정은 omx_stock improve로 활성화
+  precision_enabled: false
+  # 여러 배경 격자가 일치할 때만 확장하는 RGB 보정 한도: 기본 40
+  adaptive_color_limit: 40.0
+  # 빈 격자와 현재 ROI의 이동 탐색 범위(축소 ROI 픽셀): 기본 3
+  alignment_max_px: 3
+  # 정렬 뒤 작은 격자 차이를 허용할 반경(축소 ROI 픽셀): 기본 2
+  reference_slack_px: 2
+  # 가는 격자 차이를 제거할 폭(축소 ROI 픽셀): 1/3/5, 크게 하면 작은 물건을 놓칠 수 있음
+  min_object_width_px: 3
   # 외부 주문 품목별 팔레트: OMX1 A/B, OMX2 C/D
   items:
     # 외부 품목 C의 고정 팔레트 설정

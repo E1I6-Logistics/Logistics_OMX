@@ -82,6 +82,32 @@ class Worker:
                 image=label_image(image,self.cfg['device_id'],self.spec['camera'])
                 destination=self.directory/(self.cfg['device_id']+'_pallet_view.png')
                 if not cv2.imwrite(str(destination),image):raise OSError('팔레트 좌표 사진 저장 실패')
+            elif action=='diagnose' and item in P.ITEMS[self.cfg['device_id']]:
+                import cv2,numpy as np
+                frame,stamp=self.frame()
+                current=P.crop(frame,self.spec['items'].get(item,{}).get('roi'))
+                reference=P.load_reference(self.cfg,item)
+                started=time.perf_counter()
+                comparison=P.compare(current,reference,self.spec)
+                comparison['processing_ms']=(time.perf_counter()-started)*1000
+                if self.gate() or self.order_epoch!=epoch:raise RuntimeError('진단 도중 주문·팔 상태 변경')
+                self.directory.mkdir(parents=True,exist_ok=True)
+                prefix=self.cfg['device_id']+'_pallet_'+item
+                destination=self.directory/(prefix+'_diagnose.png')
+                gap=np.abs(current.astype(float)-reference.astype(float)).max(axis=2)
+                difference=cv2.cvtColor(np.uint8(np.clip(gap*3,0,255)),cv2.COLOR_GRAY2RGB)
+                panels=[]
+                for title,image in (('EMPTY REFERENCE',reference),('CURRENT',current),('RAW DIFFERENCE',difference)):
+                    panel=cv2.copyMakeBorder(cv2.cvtColor(image,cv2.COLOR_RGB2BGR),22,0,0,0,cv2.BORDER_CONSTANT)
+                    cv2.putText(panel,title,(3,14),0,.32,(255,255,255),1);panels.append(panel)
+                from .viewer import label_image
+                image=label_image(np.hstack(panels),self.cfg['device_id'],'pallet '+item)
+                if not cv2.imwrite(str(destination),image):raise OSError('팔레트 진단 사진 저장 실패')
+                evidence=self.directory/(prefix+'_evidence.npz')
+                np.savez_compressed(evidence,current=current,reference=reference,options=np.array(json.dumps(self.spec)),
+                                    robot_id=np.array(self.cfg['device_id']),item=np.array(item))
+                write_json(self.directory/(prefix+'_diagnose.json'),dict(comparison,at=time.time(),frame_stamp=stamp),durable=False)
+                result.update(comparison=comparison,evidence_path=str(evidence))
             elif action=='capture' and request.get('confirm_empty') is True and item in P.ITEMS[self.cfg['device_id']]:
                 frames=[];stamps=[]
                 for _ in range(3):

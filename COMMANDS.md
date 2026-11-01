@@ -794,3 +794,79 @@ omx_kill --timeout 2  # 정상 종료 대기 시간을 2초로 지정
 현재 Pi의 현재 사용자·현재 저장소에 속한 OMX 실행기, MQTT, 보정, 뷰어, 모니터 및 그 자식 프로세스를 정리합니다. 사용자 OMX systemd 서비스부터 명시적으로 stop해서 Restart=always에 의한 재실행을 막습니다. 해당 서비스는 다음 부팅 자동 시작 설정까지 해제하지는 않습니다. SSH·로그인 셸·다른 Python 프로그램·다른 저장소·다른 사용자 프로세스는 대상으로 삼지 않습니다. 로컬 Pi 명령이므로 다른 OMX Pi까지 종료하지 않습니다.
 
 종료가 걸린 터미널에서는 새 SSH 터미널을 열어 실행합니다. 모터 API나 홈 이동·토크 OFF를 호출하지 않습니다. 강제 종료 시 OS가 파일·USB·포트 핸들을 회수하지만 라이브러리의 정상 종료와 카메라 노출 복원까지 보장하지는 않습니다. 미완료 작업·노출 복원 기록과 lock 파일을 삭제하지 않습니다. 파일 잠금은 프로세스 종료로 해제됩니다. 커널 I/O 대기 등으로 PID가 남으면 성공으로 표시하지 않고 해당 PID를 알려줍니다. 정상 재실행은 `omx_service start` 또는 카메라만 볼 때 `omx_view --camera-only`입니다.
+
+
+## OMX1·2 팔레트 정밀 비교 모드
+
+A/B/C/D 고정 팔레트의 조명 변화·미세 이동·가는 격자 차이를 검사 ROI 사본에서만 보정합니다.
+`COLOR_OFFSET_LIMIT`가 떠도 무조건 한도를 높이지 않습니다. 여러 위치의 빈 격자가 형태를 유지하고 공통 색상 변화를 보일 때만 기본 18을 넘어 최대 40까지 보정합니다.
+근거가 부족하거나 과노출이면 UNKNOWN을 유지합니다. 물건 영역을 새 빈 기준으로 자동 학습하지 않습니다.
+흰 물건처럼 RGB 차이가 작아도 빈 팔레트 격자가 물건 크기 영역에서 사라지면 별도 존재 근거로 사용합니다. `grid_occlusion_pixels`로 이 근거를 확인할 수 있습니다.
+ROI·기존 빈 기준·모델·노출·홈·카운팅·MQTT 형식은 그대로 유지합니다.
+
+각 OMX1·2 Pi에서:
+
+```bash
+cd ~/Logistics_OMX
+omx_service stop
+git pull --ff-only origin dev
+source ~/.bashrc
+omx_stock improve
+omx_service start
+```
+
+READY 이후 기본 설정에서는 10~15초 동안 관측을 쌓습니다.
+
+```bash
+omx_stock status
+omx_stock status --json
+```
+
+`precision_enabled`는 현장 검증을 위해 기본 false입니다. `improve`는 해당 Pi의 A/B 또는 C/D **두 팔레트 모두**에 정밀 비교를 켭니다.
+빈 기준 재등록은 필요하지 않습니다. 업데이트 전에 찍은 빈 기준은 계속 사용합니다.
+서비스가 기존 오류의 자동 재시도 상한으로 대기한다면 팔·물건 상태를 확인하고 `omx_resume`으로 재점검합니다.
+
+설정은 실제 `state/config/omxN.yaml`의 `pallet_stock`에 저장합니다.
+
+| 키 | 기본값 | 의미 |
+| --- | --- | --- |
+| precision_enabled | false | 배경 격자 조명 보정·작은 이동 정렬·가는 차이 제거 |
+| adaptive_color_limit | 40 | 여러 배경 격자가 일치할 때만 허용할 추가 RGB 보정 한도 |
+| alignment_max_px | 3 | 최대 변 160으로 축소한 ROI에서 이동 탐색 범위 |
+| reference_slack_px | 2 | 정렬 후 허용할 격자 오차 반경 |
+| min_object_width_px | 3 | 가는 격자 차이 제거 폭. 1/3/5, 키우면 작은 물건을 놓칠 수 있음 |
+
+물건 있음 → 완전히 비움 → 가장 작은 물건 한 개 → 모서리 → 다시 비움 순서로 A/B/C/D를 각각 확인하세요.
+한 장면의 성공으로 전체 조명·가림에서의 정확도가 보장되지는 않습니다. `processing_ms`는 실제 해당 Pi의 품목별 처리 시간입니다.
+영상 전체를 신경망으로 다시 검사하거나 카메라를 추가로 열지 않습니다. 검사 주기는 기존 설정을 따릅니다.
+
+### 실제 기준·현재 영상 비교 저장
+
+서비스가 READY이고 홈에서 대기 중일 때 실행합니다. 팔레트가 비었든 물건이 있든 진단할 수 있습니다. 기준을 덮어쓰지 않습니다.
+
+```bash
+# OMX1
+omx_stock diagnose A
+omx_stock diagnose B
+# OMX2
+omx_stock diagnose C
+omx_stock diagnose D
+```
+
+`state/manager/omxN/omxN_pallet_A_diagnose.png` 같은 이름으로 빈 기준·현재 ROI·원시 차이를 저장합니다.
+같은 접두사의 `_evidence.npz`와 `_diagnose.json`에는 실제 ROI와 설정·수치가 저장됩니다.
+원시 차이 그림은 위치·조명 보정 전이므로 최종 물건 마스크와 다릅니다.
+판정이 틀린 상태의 NPZ/JSON과 실제 물건 유무를 보내면 동일 영상을 재촬영 없이 재검증할 수 있습니다.
+개발/분석용 재검사:
+
+```bash
+"$OMX_PYTHON" scripts/replay_pallet_evidence.py state/manager/omx1/omx1_pallet_A_evidence.npz --repeat 5
+```
+
+기존 방식으로 되돌리려면:
+
+```bash
+omx_service stop
+omx_stock legacy
+omx_service start
+```

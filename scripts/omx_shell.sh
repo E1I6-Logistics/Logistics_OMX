@@ -50,10 +50,11 @@ omx_stock() {
   export PYTHONPATH
   local action="${1:-status}"
   case "$action" in
-    setup|on|off|snapshot|status) shift || true; "$OMX_PYTHON" -m omx_manager.pallet_cli --config "$OMX_CONFIG_PATH" "$action" "$@";;
+    setup|on|off|snapshot|status|improve|legacy) shift || true; "$OMX_PYTHON" -m omx_manager.pallet_cli --config "$OMX_CONFIG_PATH" "$action" "$@";;
     roi) "$OMX_PYTHON" -m omx_manager.pallet_cli --config "$OMX_CONFIG_PATH" roi --item "${2:-}" --value "${3:-}";;
+    diagnose) "$OMX_PYTHON" -m omx_manager.pallet_cli --config "$OMX_CONFIG_PATH" diagnose --item "${2:-}";;
     capture) "$OMX_PYTHON" -m omx_manager.pallet_cli --config "$OMX_CONFIG_PATH" capture --item "${2:-}" --confirm-empty;;
-    *) echo '사용법: omx_stock setup|on|off|snapshot|status / roi 품목 "[x,y,w,h]" / capture 품목'; return 2;;
+    *) echo '사용법: omx_stock setup|on|off|snapshot|status|improve|legacy / diagnose 품목 / roi 품목 "[x,y,w,h]" / capture 품목'; return 2;;
   esac
 }
 omx_recover() { _omx_ctl acknowledge-recovery --confirm-motion "$@"; }
@@ -149,7 +150,7 @@ omx_help() {
   cat <<'HELP'
 omx_kill [--list]          현재 Pi OMX 서비스·프로세스 종료: 기본 5초 후 남으면 강제 종료
 omx_motor_check            모터 목표·현재 위치 흔들림 약 3초 관측 (모터 쓰기 없음)
-omx_stock                  팔레트 재고 검사 setup/on/off/roi/snapshot/capture/status (OMX1·2)
+omx_stock                  팔레트 검사 setup/on/off/roi/snapshot/capture/status/improve/legacy/diagnose (OMX1·2)
 omx_start [--diagnostics]   실행 / 전경 실행 종료는 Ctrl+C
 omx_home                    등록 홈 근처에서 제한 복귀 (실제 이동)
 omx_arm                     현재 자세 유지 토크 ON (홈 접근 범위 안)

@@ -6,7 +6,8 @@ from pathlib import Path
 from .config import ConfigError,number,only_keys,write_json,ROOT
 
 DEFAULTS=dict(enabled=False,camera='front',interval_s=5.,stable_samples=3,max_frame_age_s=.5,
-              pixel_threshold=20.,weak_pixel_threshold=8.,min_component_pixels=20,empty_ratio=.003,max_color_offset=18.,items={})
+              pixel_threshold=20.,weak_pixel_threshold=8.,min_component_pixels=20,empty_ratio=.003,max_color_offset=18.,
+              precision_enabled=False,adaptive_color_limit=40.,alignment_max_px=3,reference_slack_px=2,min_object_width_px=3,items={})
 ITEMS={'omx1':('A','B'),'omx2':('C','D')}
 
 
@@ -23,6 +24,11 @@ def validate(cfg):
     if s['enabled'] and s['camera'] not in cfg['hardware']['cameras']:raise ConfigError('팔레트 검사 카메라가 없습니다')
     for key,lo,hi in (('interval_s',2,300),('max_frame_age_s',.1,2),('pixel_threshold',5,80),('weak_pixel_threshold',2,40),('empty_ratio',0,.02),('max_color_offset',0,30)):
         number(s[key],'pallet_stock.'+key,lo,hi)
+    if type(s['precision_enabled']) is not bool:raise ConfigError('팔레트 정밀 비교 사용 여부는 true/false여야 합니다')
+    number(s['adaptive_color_limit'],'pallet_stock.adaptive_color_limit',0,60)
+    for key,lo,hi in (('alignment_max_px',0,5),('reference_slack_px',0,3),('min_object_width_px',1,5)):
+        if type(s[key]) is not int or not lo<=s[key]<=hi:raise ConfigError('잘못된 정밀 비교 설정: '+key)
+    if s['min_object_width_px']%2!=1:raise ConfigError('최소 물체 폭 필터는 1/3/5 중 하나입니다')
     if s['weak_pixel_threshold']>=s['pixel_threshold']:raise ConfigError('약한 변화 기준은 강한 변화 기준보다 작아야 합니다')
     for key,lo,hi in (('stable_samples',2,10),('min_component_pixels',4,500)):
         if type(s[key]) is not int or not lo<=s[key]<=hi:raise ConfigError('잘못된 팔레트 검사 설정: '+key)
@@ -94,6 +100,9 @@ def compare(current,reference,s):
     import cv2
     import numpy as np
     if current.shape!=reference.shape:raise ConfigError('빈 기준 영상 크기 불일치')
+    if s.get('precision_enabled',False):
+        from .pallet_vision import compare as precision_compare
+        return precision_compare(current,reference,s)
     a=current.astype(np.float32);b=reference.astype(np.float32)
     offset=np.median(a-b,axis=(0,1));clipped=float(np.mean(current.min(axis=2)>=250))
     reference_clipped=float(np.mean(reference.min(axis=2)>=250))
@@ -140,10 +149,12 @@ class Inspector:
         if self.last_time is not None and now-self.last_time>self.spec['interval_s']*2.5:self.state={}
         self.last_stamp=stamp;self.last_time=now;rows={}
         for item in ITEMS[self.cfg['device_id']]:
+            started=time.perf_counter()
             try:
                 roi=self.spec['items'].get(item,{}).get('roi');current=crop(frame,roi)
                 result=compare(current,load_reference(self.cfg,item),self.spec)
             except (OSError,ValueError,KeyError) as exc:result=dict(candidate='UNKNOWN',reason=str(exc))
+            result['processing_ms']=(time.perf_counter()-started)*1000
             candidate=result['candidate'];prior,count=self.state.get(item,(None,0))
             count=count+1 if candidate==prior and candidate!='UNKNOWN' else 1 if candidate!='UNKNOWN' else 0
             self.state[item]=(candidate,count)

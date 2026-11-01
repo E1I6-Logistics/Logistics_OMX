@@ -220,6 +220,11 @@ def comment(path):
                 'min_component_pixels':'물체 변화 연결 영역 최소 크기: 최대 변 160픽셀로 축소 후 기준',
                 'empty_ratio':'빈 상태에서 허용하는 약한 변화 비율',
                 'max_color_offset':'ROI RGB 채널별 중앙 색상 차이 보정 한도(0~255): 기본 18, 최대 30, 초과 시 UNKNOWN',
+                'precision_enabled':'배경 격자 기반 조명·작은 이동 보정: omx_stock improve로 켜며 기준·모델 영상은 유지',
+                'adaptive_color_limit':'여러 배경 격자가 일치할 때만 확장하는 RGB 보정 한도: 기본 40, 최대 60',
+                'alignment_max_px':'빈 격자와 현재 ROI의 이동 탐색 범위(축소 ROI 픽셀): 기본 3, 최대 5',
+                'reference_slack_px':'정렬 뒤 작은 격자 차이를 허용할 반경(축소 ROI 픽셀): 기본 2',
+                'min_object_width_px':'가는 격자 차이를 제거할 폭(축소 ROI 픽셀): 1/3/5, 크게 하면 작은 물건을 놓칠 수 있음',
                 'items':'외부 주문 품목별 팔레트: OMX1 A/B, OMX2 C/D',
                 'roi':'고정 팔레트 영역 [x,y,너비,높이]: 실제 영상 기준, null이면 UNKNOWN'}.get(key,'외부 품목 '+key+'의 고정 팔레트 설정')
     if key=='profiles' and 'counting' in path:return '품목별 모델 복귀 프로필: omx_cycle_calibrate로 자동 계산·저장'

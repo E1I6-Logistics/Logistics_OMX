@@ -159,3 +159,5 @@ PC 주소 제한 없이 보기: `view.allow_ip: any`를 선택할 수 있습니�
 OMX1·2 고정 팔레트 검사(선택): 기존 front RGB 영상으로 품목별 물건 있음/비었음/판정 불가를 저주기로 확인하고 전용 stock MQTT 토픽으로 송신합니다. 기본 꺼짐이며 현장 ROI·빈 기준 등록이 필요합니다. FMS 수신 처리는 포함하지 않습니다. [설정·촬영·시험·토픽 안내](COMMANDS.md#pallet-stock)
 
 OMX3 RealSense·OMX4 모델 전환: 기존 Pi YAML은 Git 업데이트로 자동 변경되지 않습니다. [전환 명령과 재확인 순서](COMMANDS.md#omx3-model4)를 따릅니다. 모터 포트·보정·장비 ID는 OMX3 값을 유지합니다.
+
+팔레트 유무가 조명·미세 이동에 흔들리면 [팔레트 정밀 비교 모드](COMMANDS.md#omx12-팔레트-정밀-비교-모드)의 `omx_stock improve`와 기준·현재 영상 진단을 사용하세요. 기존 빈 기준과 모델 입력은 유지합니다.

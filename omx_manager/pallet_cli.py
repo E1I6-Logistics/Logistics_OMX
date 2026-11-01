@@ -30,19 +30,20 @@ def invoke(path,action,item=None,value=None,confirm_empty=False,json_output=Fals
     cfg=load(path)
     if cfg['device_id'] not in P.ITEMS:raise ValueError('팔레트 재고 검사는 OMX1·2 전용입니다')
     if item is not None and item not in P.ITEMS[cfg['device_id']]:raise ValueError('이 장비에 없는 외부 품목입니다')
-    if action in ('setup','on','off','roi'):
+    if action in ('setup','on','off','roi','improve','legacy'):
         with device_lock(cfg):
             spec=P.options(cfg);spec['items']=dict(spec['items'])
             for key in P.ITEMS[cfg['device_id']]:spec['items'].setdefault(key,dict(roi=None))
             if action in ('on','off'):spec['enabled']=action=='on'
+            if action in ('improve','legacy'):spec['precision_enabled']=action=='improve'
             if action=='roi':
                 if not item:raise ValueError('ROI를 지정할 외부 품목이 필요합니다')
                 spec['items'][item]=dict(roi=json.loads(value))
             cfg['pallet_stock']=spec;save(path,cfg)
         print('팔레트 설정 저장 완료. 로봇 서비스 재시작 후 적용됩니다');return
     if action=='capture' and not confirm_empty:raise ValueError('해당 팔레트를 완전히 비운 뒤 --confirm-empty로 확인하세요')
-    if action in ('snapshot','capture'):
-        if action=='capture' and item is None:raise ValueError('빈 기준을 저장할 품목이 필요합니다')
+    if action in ('snapshot','capture','diagnose'):
+        if action in ('capture','diagnose') and item is None:raise ValueError('촬영·진단할 품목이 필요합니다')
         print(json.dumps(request(cfg,action,item),ensure_ascii=False,indent=2));return
     if action=='status':
         from .pallet_runtime import mqtt_payload
@@ -70,7 +71,7 @@ def invoke(path,action,item=None,value=None,confirm_empty=False,json_output=Fals
 
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--config',type=Path,required=True)
-    parser.add_argument('action',choices=('setup','on','off','roi','snapshot','capture','status'));parser.add_argument('--item');parser.add_argument('--value');parser.add_argument('--confirm-empty',action='store_true')
+    parser.add_argument('action',choices=('setup','on','off','roi','snapshot','capture','status','improve','legacy','diagnose'));parser.add_argument('--item');parser.add_argument('--value');parser.add_argument('--confirm-empty',action='store_true')
     parser.add_argument('--json',action='store_true',dest='json_output')
     args=parser.parse_args(argv)
     try:invoke(args.config,args.action,args.item,args.value,args.confirm_empty,args.json_output)
