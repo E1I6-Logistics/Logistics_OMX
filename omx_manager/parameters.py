@@ -11,6 +11,7 @@ DIAGNOSTIC_DEFAULTS = {
 SERVICE_DEFAULTS = {"restart_s":5.,"stop_timeout_s":45.,"enable_on_boot":False}
 
 COMMENTS = {
+    'arrival_tolerances':'관절별 홈 도착 허용 오차(정규화 단위, 최대 3): 없는 관절은 arrival_tolerance 사용. 카운팅·토크 ON 이동 감시·검증 경로 허용값은 별개',
     'inspection_enabled':'하차 바구니 검사 사용 여부: false면 지정한 1~8회 동작 사이클만 수행, 물건 수·비움 확인 안 함',
     'inspection_freeze_autofocus':'검사 중 활성 UVC 자동초점을 잠그고 종료·오류 시 원래 자동초점 복원: 고정초점 카메라는 변경 없음',
     'registration_adaptive':'배경 합의로 조명·잡음 보정, 기존 테두리의 작은 위치 오차와 얇은 선 구분: 빈 기준 자동 변경 없음',

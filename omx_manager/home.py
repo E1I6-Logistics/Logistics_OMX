@@ -16,6 +16,10 @@ def errors(observation, target):
     q = joints(observation)
     return {j: abs(q[j] - target[j]) for j in JOINTS}
 
+def arrival_tolerances(cfg):
+    home=cfg['home']
+    return {j:home.get('arrival_tolerances',{}).get(j,home['arrival_tolerance']) for j in JOINTS}
+
 class HomeDetector:
     """One completion per departure; gaps never count as observed hold time."""
     def __init__(self, cfg, now=0., hold=None):
@@ -98,6 +102,7 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None, 
     h = cfg["home"]; target = h["target"]
     if target is None: raise ConfigError("No registered home")
     q = joints(device.read())
+    arrival=arrival_tolerances(cfg) if guard is None else {j:h['arrival_tolerance'] for j in JOINTS}
     direct=cfg.get('recovery',{}).get('direct_home',False) and guard is None
     if direct:
         # Explicit site option: use measured joints, no collision planning.
@@ -117,9 +122,9 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None, 
         err = errors(q, target)
         return "; ".join(
             f"{joint} error={err[joint]:.3f} current={q[joint]:.3f} "
-            f"target={target[joint]:.3f} tolerance={h['arrival_tolerance']:.3f}"
+            f"target={target[joint]:.3f} tolerance={arrival[joint]:.3f}"
             for joint in sorted(JOINTS, key=lambda name: err[name], reverse=True)
-            if err[joint] > h["arrival_tolerance"]
+            if err[joint] > arrival[joint]
         ) or ("all joints within arrival tolerance; waiting for continuous stillness; " +
               "; ".join(f"{joint} step_delta={abs(q[joint]-last_q[joint]):.3f}" for joint in JOINTS))
 
@@ -129,11 +134,11 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None, 
         next_report = now + 1.0
         rows = {joint: {"current": q[joint], "target": target[joint],
                        "error": abs(q[joint] - target[joint]),
-                       "tolerance": h["arrival_tolerance"],
+                       "tolerance": arrival[joint],
                        "count_tolerance": h["tolerance"][joint],
                        "goal": goal[joint], "following_error": abs(goal[joint] - q[joint]),
                        "movement_delta": abs(q[joint]-last_q[joint]),
-                       "ok": abs(q[joint] - target[joint]) <= h["arrival_tolerance"]}
+                       "ok": abs(q[joint] - target[joint]) <= arrival[joint]}
                 for joint in JOINTS}
         try:
             report({"phase": phase, "monotonic": now, "elapsed_s": now - start,"direct_home":direct,
@@ -168,7 +173,7 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None, 
             if max(abs(goal[joint] - q[joint]) for joint in JOINTS) > following_limit + 1e-9:
                 raise RuntimeError("Home following error exceeded limit; " + details())
             still = max(abs(q[joint] - last_q[joint]) for joint in JOINTS) <= h["still_delta"]
-            if all(err[joint] <= h["arrival_tolerance"] for joint in JOINTS) and still:
+            if all(err[joint] <= arrival[joint] for joint in JOINTS) and still:
                 stable_since = now if stable_since is None else stable_since
                 if now - stable_since >= h["hold_s"]:
                     emit("ARRIVED", now, force=True)

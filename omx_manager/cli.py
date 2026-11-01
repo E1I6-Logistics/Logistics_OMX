@@ -22,6 +22,7 @@ def edit_value(cfg,key,text):
     import yaml
     allowed={"models.active_profile","runtime.cpu_threads","runtime.fps","home.hold_s","home.unload_hold_s","home.still_delta", "home.max_start_error", "home.move_speed", "counting.min_cycle_s", "counting.stall_s", "counting.leave_tolerance", "home.arrival_tolerance", "home.move_timeout_s", "home.max_step", "home.max_following_error", "home.max_sample_gap_s", "recovery.release_delay_s"}
     allowed.update("home.tolerance."+j for j in JOINTS)
+    allowed.update('home.arrival_tolerances.'+j for j in JOINTS)
     allowed.update("diagnostics."+name for name in diagnostic_options(cfg))
     allowed.update("service."+name for name in service_options(cfg))
     from .view_options import options as view_options
@@ -42,6 +43,7 @@ def edit_value(cfg,key,text):
     if key.startswith("diagnostics."):result.setdefault("diagnostics",diagnostic_options(cfg))
     if key.startswith("service."):result.setdefault("service",service_options(cfg))
     if key.startswith("view."):result.setdefault("view",view_options(cfg))
+    if key.startswith('home.arrival_tolerances.'):result['home'].setdefault('arrival_tolerances',{})
     nodes=key.split("."); section=result
     for part in nodes[:-1]: section=section[part]
     section[nodes[-1]]=yaml.safe_load(text)

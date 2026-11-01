@@ -196,7 +196,7 @@ class Supervisor:
         require_restored(cfg)
         from .commissioning import require_commissioned
         from .hardware import FollowerBus
-        from .home import errors
+        from .home import errors,arrival_tolerances
         from .return_path import return_home
         from .hooks import home_reporter
         if verify_registration:
@@ -233,13 +233,14 @@ class Supervisor:
                         clock=time.monotonic,sleep=time.sleep)
                     self.message('[RECOVERY] [STARTUP] 현재 자세 목표 고정·토크 ON 확인 완료. 홈 복귀 준비, 이전 주문 재실행 없음')
                 except StartupArmRefused as exc:raise OperatorRecoveryRequired(str(exc)) from exc
-            if max(errors(q,cfg['home']['target']).values())<=cfg['home']['arrival_tolerance']:
+            arrival=arrival_tolerances(cfg)
+            if all(value<=arrival[j] for j,value in errors(q,cfg['home']['target']).items()):
                 self.phase(cfg,'HOME_VERIFIED');return
             if not allow_motion or not cfg['recovery'].get('auto_home',True):
                 raise OperatorRecoveryRequired('Position arm at registered Home or explicitly request another return-path check')
             self.phase(cfg,'HOME_RETURN')
             result=return_home(device,cfg,clock=time.monotonic,sleep=time.sleep,stopped=self.stopped.is_set,report=home_reporter(cfg),preserve_gripper=not operator_confirmed and not cfg['recovery'].get('direct_home',False))
-            if abs(result['gripper']-cfg['home']['target']['gripper'])>cfg['home']['arrival_tolerance']:
+            if abs(result['gripper']-cfg['home']['target']['gripper'])>arrival['gripper']:
                 raise OperatorRecoveryRequired('Arm Home recovered with gripper held; inspect cargo then request resume')
             self.phase(cfg,'HOME_VERIFIED')
     def restore_sensor(self,cfg):
