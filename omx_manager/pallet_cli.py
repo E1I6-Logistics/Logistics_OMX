@@ -7,21 +7,20 @@ from .hardware import Lock
 from . import pallet as P
 
 
-def request(cfg,action,item=None,*,timeout=12):
+def request(cfg,action,item=None,*,timeout=12,payload=None,consume=None):
     directory=P.directory(cfg)
     with Lock(directory/'pallet_cli.lock'):
         current=json.loads((directory/'pallet_stock.json').read_text())
         if not 0<=time.time()-current['at']<=P.options(cfg)['interval_s']*2.5:raise RuntimeError('팔레트 검사 실행기가 없습니다. 설정을 켜고 로봇 서비스를 시작하세요')
         token=uuid.uuid4().hex
-        write_json(directory/'pallet_request.json',dict(token=token,session=current['session'],at=time.time(),action=action,item=item,confirm_empty=action=='capture'))
+        write_json(directory/'pallet_request.json',dict(token=token,session=current['session'],at=time.time(),action=action,item=item,confirm_empty=action=='capture',payload=payload))
         end=time.monotonic()+timeout
         while time.monotonic()<end:
-            try:
-                reply=json.loads((directory/'pallet_reply.json').read_text())
-                if reply.get('token')==token:
-                    if not reply['ok']:raise RuntimeError(reply['message'])
-                    return reply
-            except (OSError,ValueError):pass
+            try:reply=json.loads((directory/'pallet_reply.json').read_text())
+            except (OSError,ValueError):reply={}
+            if reply.get('token')==token:
+                if not reply['ok']:raise RuntimeError(reply['message'])
+                return consume(reply) if consume else reply
             time.sleep(.1)
         raise TimeoutError('팔레트 촬영 응답 시간 초과. 로봇 서비스·홈 대기 상태를 확인하세요')
 

@@ -7,11 +7,28 @@ from .config import ConfigError,number,only_keys,write_json,ROOT
 
 DEFAULTS=dict(enabled=False,camera='front',interval_s=5.,stable_samples=3,max_frame_age_s=.5,
               pixel_threshold=20.,weak_pixel_threshold=8.,min_component_pixels=20,empty_ratio=.003,max_color_offset=18.,
-              precision_enabled=False,adaptive_color_limit=40.,alignment_max_px=3,reference_slack_px=2,min_object_width_px=3,items={})
+              precision_enabled=False,adaptive_color_limit=40.,alignment_max_px=3,reference_slack_px=2,min_object_width_px=3,empty_component_pixels=None,items={})
 ITEMS={'omx1':('A','B'),'omx2':('C','D')}
 
 
 def options(cfg):return dict(DEFAULTS,**cfg.get('pallet_stock',{}))
+
+
+TUNABLE = ('precision_enabled','pixel_threshold','weak_pixel_threshold','min_component_pixels',
+           'empty_component_pixels','empty_ratio','max_color_offset','adaptive_color_limit',
+           'alignment_max_px','reference_slack_px','min_object_width_px')
+
+
+def item_options(spec,item):
+    return dict(spec,**spec['items'].get(item,{}).get('parameters',{}))
+
+
+def classify(strong,weak,occlusion,ratio,s):
+    empty_limit=s.get('empty_component_pixels')
+    if empty_limit is None:empty_limit=max(4,s['min_component_pixels']//3)
+    if strong>=s['min_component_pixels'] or occlusion>=s['min_component_pixels']:return 'PRESENT'
+    if weak<empty_limit and occlusion<empty_limit and ratio<=s['empty_ratio']:return 'EMPTY'
+    return 'UNKNOWN'
 
 
 def validate(cfg):
@@ -24,6 +41,7 @@ def validate(cfg):
     if s['enabled'] and s['camera'] not in cfg['hardware']['cameras']:raise ConfigError('팔레트 검사 카메라가 없습니다')
     for key,lo,hi in (('interval_s',2,300),('max_frame_age_s',.1,2),('pixel_threshold',5,80),('weak_pixel_threshold',2,40),('empty_ratio',0,.02),('max_color_offset',0,30)):
         number(s[key],'pallet_stock.'+key,lo,hi)
+    if s['empty_component_pixels'] is not None and (type(s['empty_component_pixels']) is not int or not 1<=s['empty_component_pixels']<=200):raise ConfigError('빈 상태 잔여 연결 영역 허용값은 1~200 또는 null입니다')
     if type(s['precision_enabled']) is not bool:raise ConfigError('팔레트 정밀 비교 사용 여부는 true/false여야 합니다')
     number(s['adaptive_color_limit'],'pallet_stock.adaptive_color_limit',0,60)
     for key,lo,hi in (('alignment_max_px',0,5),('reference_slack_px',0,3),('min_object_width_px',1,5)):
@@ -35,7 +53,14 @@ def validate(cfg):
     if not isinstance(s['items'],dict) or set(s['items'])-set(ITEMS.get(cfg['device_id'],())):raise ConfigError('팔레트 품목은 OMX1=A/B, OMX2=C/D만 허용합니다')
     for item,row in s['items'].items():
         if not isinstance(row,dict):raise ConfigError('팔레트 품목 설정 오류')
-        only_keys(row,'roi','팔레트 품목')
+        only_keys(row,'roi parameters','팔레트 품목')
+        parameters=row.get('parameters',{})
+        if not isinstance(parameters,dict):raise ConfigError('품목별 parameters는 설정 목록이어야 합니다')
+        only_keys(parameters,' '.join(TUNABLE),'품목별 판정값')
+        if parameters:
+            # Validate merged values with exactly the same global bounds.
+            merged=dict(s,**parameters,items={})
+            validate(dict(cfg,pallet_stock=merged))
         roi=row.get('roi')
         if roi is not None and (not isinstance(roi,list) or len(roi)!=4 or any(type(v) is not int for v in roi)
                 or min(roi[:2])<0 or min(roi[2:])<12):raise ConfigError('ROI는 [x,y,너비,높이] 정수이며 크기는 최소 12입니다')
@@ -130,9 +155,8 @@ def compare(current,reference,s):
         return int(stats[1:,cv2.CC_STAT_AREA].max()) if n>1 else 0
     strong=component(s['pixel_threshold']);weak=component(s['weak_pixel_threshold'])
     ratio=float(np.mean(diff>s['weak_pixel_threshold']))
-    if strong>=s['min_component_pixels']:candidate='PRESENT';reason='빈 기준과 물체 크기 변화 확인'
-    elif weak<max(4,s['min_component_pixels']//3) and ratio<=s['empty_ratio']:candidate='EMPTY';reason='빈 기준과 일치'
-    else:candidate='UNKNOWN';reason='변화가 작거나 물건 여부 불명확'
+    candidate=classify(strong,weak,0,ratio,s)
+    reason={'PRESENT':'빈 기준과 물체 크기 변화 확인','EMPTY':'빈 기준과 일치','UNKNOWN':'변화가 작거나 물건 여부 불명확'}[candidate]
     return dict(metadata,candidate=candidate,reason=reason,component_pixels=strong,weak_component_pixels=weak,changed_ratio=ratio,features_computed=True)
 
 
@@ -152,7 +176,7 @@ class Inspector:
             started=time.perf_counter()
             try:
                 roi=self.spec['items'].get(item,{}).get('roi');current=crop(frame,roi)
-                result=compare(current,load_reference(self.cfg,item),self.spec)
+                result=compare(current,load_reference(self.cfg,item),item_options(self.spec,item))
             except (OSError,ValueError,KeyError) as exc:result=dict(candidate='UNKNOWN',reason=str(exc))
             result['processing_ms']=(time.perf_counter()-started)*1000
             candidate=result['candidate'];prior,count=self.state.get(item,(None,0))

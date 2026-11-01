@@ -88,7 +88,8 @@ class Worker:
                 current=P.crop(frame,self.spec['items'].get(item,{}).get('roi'))
                 reference=P.load_reference(self.cfg,item)
                 started=time.perf_counter()
-                comparison=P.compare(current,reference,self.spec)
+                item_spec=P.item_options(self.spec,item)
+                comparison=P.compare(current,reference,item_spec)
                 comparison['processing_ms']=(time.perf_counter()-started)*1000
                 if self.gate() or self.order_epoch!=epoch:raise RuntimeError('진단 도중 주문·팔 상태 변경')
                 self.directory.mkdir(parents=True,exist_ok=True)
@@ -104,10 +105,16 @@ class Worker:
                 image=label_image(np.hstack(panels),self.cfg['device_id'],'pallet '+item)
                 if not cv2.imwrite(str(destination),image):raise OSError('팔레트 진단 사진 저장 실패')
                 evidence=self.directory/(prefix+'_evidence.npz')
-                np.savez_compressed(evidence,current=current,reference=reference,options=np.array(json.dumps(self.spec)),
+                np.savez_compressed(evidence,current=current,reference=reference,options=np.array(json.dumps(item_spec)),
                                     robot_id=np.array(self.cfg['device_id']),item=np.array(item))
                 write_json(self.directory/(prefix+'_diagnose.json'),dict(comparison,at=time.time(),frame_stamp=stamp),durable=False)
-                result.update(comparison=comparison,evidence_path=str(evidence))
+                from .pallet_tuning import settings_hash
+                result.update(comparison=comparison,evidence_path=str(evidence),frame_stamp=stamp,
+                              binding=P.signature(self.cfg,item),settings_hash=settings_hash(self.spec))
+            elif action=='tune' and item in P.ITEMS[self.cfg['device_id']]:
+                from .pallet_tuning import apply_parameters
+                destination=apply_parameters(self,item,request.get('payload'))
+                result.update(message='품목별 설정 저장·즉시 적용 완료')
             elif action=='capture' and request.get('confirm_empty') is True and item in P.ITEMS[self.cfg['device_id']]:
                 frames=[];stamps=[]
                 for _ in range(3):
@@ -121,7 +128,8 @@ class Worker:
                 destination=P.save_reference(self.cfg,item,frames)
                 self.inspector=P.Inspector(self.cfg)
             else:raise RuntimeError('잘못된 촬영 요청 또는 빈 상태 확인 누락')
-            result.update(ok=True,path=str(destination),message='촬영·저장 완료')
+            result.update(ok=True,path=str(destination))
+            result.setdefault('message','촬영·저장 완료')
         except Exception as exc:result['message']=str(exc)
         write_json(self.directory/'pallet_reply.json',result,durable=False)
     def run(self):

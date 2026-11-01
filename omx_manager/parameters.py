@@ -217,6 +217,8 @@ def comment(path):
                 'max_frame_age_s':'검사에 사용할 영상의 최대 나이(초)',
                 'pixel_threshold':'물체 변화 강한 픽셀 차이 기준(0~255)',
                 'weak_pixel_threshold':'약한 변화 기준: 불명확하면 UNKNOWN 유지',
+                'parameters':'이 품목에만 적용할 판정값: view 팔레트 조정에서 저장, 생략하면 공통값 사용',
+                'empty_component_pixels':'빈 상태에서 허용할 잔여 연결 영역 크기: null은 기존 자동값, 실제 작은 물품 검증 필요',
                 'min_component_pixels':'물체 변화 연결 영역 최소 크기: 최대 변 160픽셀로 축소 후 기준',
                 'empty_ratio':'빈 상태에서 허용하는 약한 변화 비율',
                 'max_color_offset':'ROI RGB 채널별 중앙 색상 차이 보정 한도(0~255): 기본 18, 최대 30, 초과 시 UNKNOWN',

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import struct
 import threading
+import secrets
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit,parse_qs
@@ -165,7 +166,7 @@ def attach_robot(robot):
 
 PAGE=r'''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OMX 상단·손목 카메라</title><style>body{font:16px system-ui;background:#101820;color:#e4edf4;margin:16px}button,a{font:inherit;margin:4px;padding:8px}a{color:#8dd5ff}small{color:#a9bdcb}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.card{background:#192733;border:1px solid #415b70;border-radius:10px;padding:12px}img{display:block;width:100%;background:#263746;aspect-ratio:4/3;object-fit:contain}#saved{max-width:900px}#state{white-space:pre-wrap}.status{min-height:42px;color:#a9bdcb}h2,h3{margin:8px 0}@media(max-width:700px){.grid{grid-template-columns:1fr}}</style>
-<h2 id="title">OMX 카메라</h2><nav><a href="/all" target="_top">로봇 선택</a><button id="toggle">실시간 일시정지</button></nav>
+<h2 id="title">OMX 카메라</h2><nav><a href="/all" target="_top">로봇 선택</a><a href="/pallet-tuning" id="tuningLink">팔레트 판정 조정(OMX1·2)</a><button id="toggle">실시간 일시정지</button></nav>
 <p><small>기존 카메라 영상 공유 · 기본 1초 간격 · 저노출 검사 중에는 해당 영상 상태 표시 · 보기 전용</small></p>
 <div id="state">연결 중…</div><div id="cameras" class="grid"></div>
 <details><summary>저장된 상단 카메라 스냅샷</summary><button onclick="showSaved('stock')">팔레트 좌표·영역 사진</button><p>저장 시점의 사진입니다. 촬영은 기존 터미널 명령으로 수행합니다.</p>
@@ -177,7 +178,7 @@ function clearImage(img){if(img.dataset.url){URL.revokeObjectURL(img.dataset.url
 function card(key,label){if(cards.has(key))return cards.get(key);const panel=document.createElement('section');panel.className='card';const title=document.createElement('h3');title.textContent=label+' 카메라 ('+key+')';const status=document.createElement('div');status.className='status';const img=document.createElement('img');img.alt=label+' 최신 영상';const save=document.createElement('a');save.textContent='이 카메라 영상 저장';save.download=device+'_'+key+'.jpg';save.href='/live.jpg?camera='+encodeURIComponent(key)+'&download=1';panel.append(title,status,img,save);document.querySelector('#cameras').append(panel);const c={img,status};cards.set(key,c);return c;}
 document.querySelector('#toggle').onclick=()=>{paused=!paused;document.querySelector('#toggle').textContent=paused?'실시간 재개':'실시간 일시정지';if(paused){if(active)active.abort();for(const c of cards.values())clearImage(c.img);state.textContent='보기 일시정지';}else tick();};
 function showSaved(kind){const a=assets[kind];document.querySelector('#savedTime').textContent=a?a.name+' · 저장: '+new Date(a.at*1000).toLocaleString():'저장된 사진이 없습니다';if(!a){document.querySelector('#saved').removeAttribute('src');return;}const url='/saved/'+kind+'.png?t='+Date.now();document.querySelector('#saved').src=url;document.querySelector('#savedLink').href=url+'&download=1';document.querySelector('#savedLink').download=a.download_name;}
-async function tick(){if(paused||document.hidden||busy)return;busy=true;const controller=new AbortController();active=controller;try{const r=await fetch('/status.json?camera=all&t='+Date.now(),{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);const s=await r.json();if(paused||document.hidden)return;assets=s.assets;device=s.device;document.querySelector('#title').textContent=s.device.toUpperCase()+' · 상단 / 손목';state.textContent='카메라별 수신 상태';await Promise.all(Object.entries(s.cameras).map(async([key,v])=>{const c=card(key,v.label);if(!v.live){clearImage(c.img);c.status.textContent='영상 없음 · 로봇 서비스를 켜거나, 서비스 정지 시 omx_view --camera-only로 실행하세요';return;}try{const r=await fetch('/live.jpg?camera='+encodeURIComponent(key)+'&t='+Date.now(),{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);const blob=await r.blob();if(paused||document.hidden)return;clearImage(c.img);const url=URL.createObjectURL(blob);c.img.src=url;c.img.dataset.url=url;c.status.textContent=(v.frame.camera_state==='NORMAL'?'원본 영상':'검사 저노출 / 복원 중')+' · 영상 나이 '+v.frame.frame_age_ms+'ms';}catch(e){clearImage(c.img);c.status.textContent='이 카메라 영상 갱신 대기';}}));}catch(e){for(const c of cards.values())clearImage(c.img);state.textContent='연결 끊김: '+e.message;}finally{busy=false;}}
+async function tick(){if(paused||document.hidden||busy)return;busy=true;const controller=new AbortController();active=controller;try{const r=await fetch('/status.json?camera=all&t='+Date.now(),{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);const s=await r.json();if(paused||document.hidden)return;assets=s.assets;device=s.device;document.querySelector('#tuningLink').hidden=!['omx1','omx2'].includes(device);document.querySelector('#title').textContent=s.device.toUpperCase()+' · 상단 / 손목';state.textContent='카메라별 수신 상태';await Promise.all(Object.entries(s.cameras).map(async([key,v])=>{const c=card(key,v.label);if(!v.live){clearImage(c.img);c.status.textContent='영상 없음 · 로봇 서비스를 켜거나, 서비스 정지 시 omx_view --camera-only로 실행하세요';return;}try{const r=await fetch('/live.jpg?camera='+encodeURIComponent(key)+'&t='+Date.now(),{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);const blob=await r.blob();if(paused||document.hidden)return;clearImage(c.img);const url=URL.createObjectURL(blob);c.img.src=url;c.img.dataset.url=url;c.status.textContent=(v.frame.camera_state==='NORMAL'?'원본 영상':'검사 저노출 / 복원 중')+' · 영상 나이 '+v.frame.frame_age_ms+'ms';}catch(e){clearImage(c.img);c.status.textContent='이 카메라 영상 갱신 대기';}}));}catch(e){for(const c of cards.values())clearImage(c.img);state.textContent='연결 끊김: '+e.message;}finally{busy=false;}}
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(active)active.abort();for(const c of cards.values())clearImage(c.img);}else tick();});window.addEventListener('pagehide',()=>{if(active)active.abort();for(const c of cards.values())clearImage(c.img);});setInterval(tick,1000);tick();
 </script></html>'''
 
@@ -190,11 +191,13 @@ for(const [label,ids] of [['OMX1',[1]],['OMX2',[2]],['OMX3',[3]],['OMX4',[4]]]){
 class ViewerServer(ThreadingHTTPServer):
     daemon_threads=True
     allow_reuse_address=True
-    def __init__(self,cfg,address=None):
+    def __init__(self,cfg,address=None,config_path=None):
         self.cfg=cfg;self.spec=options(cfg);self.path=channel(cfg)
         self.paths={name:channel(camera_config(cfg,name)) for name in cfg['hardware']['cameras']}
         self.asset_dir=ROOT/'state'/'manager'/cfg['device_id']
         self.token=f'{os.getpid()}-{time.time_ns()}'
+        from .pallet_tuning import Tuning
+        self.tuning=Tuning(cfg,config_path);self.tuning_token=secrets.token_hex(24)
         self.request_lock=threading.Lock();self.next_request={}
         super().__init__(address or (self.spec['bind'],self.spec['port']),ViewerHandler)
 
@@ -267,6 +270,17 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self.reply(404,'text/plain; charset=utf-8','등록되지 않은 카메라입니다'.encode());return
             if path in ('/','/all','/robot'):
                 self.reply(200,'text/html; charset=utf-8',(PAGE if path=='/robot' else ALL).encode())
+            elif path=='/pallet-tuning':
+                from .pallet_tuning_page import PAGE as tuning_page
+                if self.server.cfg['device_id'] not in ('omx1','omx2'):raise ValueError('OMX1·2 전용')
+                self.reply(200,'text/html; charset=utf-8',tuning_page.encode())
+            elif path=='/pallet-tuning/info':
+                data=dict(self.server.tuning.info(),token=self.server.tuning_token)
+                self.reply(200,'application/json',json.dumps(data,ensure_ascii=False).encode())
+            elif path=='/pallet-tuning/image':
+                with self.server.tuning.lock:
+                    data=self.server.tuning.image(query.get('id',[''])[0])
+                self.reply(200,'image/png',data)
             elif path=='/status.json':
                 for key in (self.server.paths if name=='all' else [name]):self.server.touch(key)
                 self.reply(200,'application/json',json.dumps(self.server.status(None if name=='all' else name),ensure_ascii=False).encode())
@@ -284,8 +298,32 @@ class ViewerHandler(BaseHTTPRequestHandler):
                     data=labeled_export(data,device,key,'png')
                 self.reply(200,'image/png',data,name,download)
             else:self.reply(404,'text/plain',b'Not found')
-        except (OSError,ValueError,KeyError,TypeError):
+        except (OSError,ValueError,KeyError,TypeError) as exc:
+            if path.startswith('/pallet-tuning'):
+                self.reply(400,'application/json',json.dumps(dict(error=str(exc)),ensure_ascii=False).encode());return
             self.reply(503 if path=='/live.jpg' else 404,'text/plain',b'No fresh frame or saved image')
+
+
+    def do_POST(self):
+        if urlsplit(self.path).path!='/pallet-tuning/api':
+            self.reply(501,'text/plain',b'Unsupported method');return
+        allowed=self.server.spec['allow_ip']
+        if allowed!='any' and self.client_address[0] not in ('127.0.0.1',allowed):
+            self.reply(403,'application/json',b'{"error":"IP denied"}');return
+        try:
+            if not secrets.compare_digest(self.headers.get('X-OMX-Tuning',''),self.server.tuning_token):raise ValueError('조정 화면을 새로 열어주세요')
+            host=self.headers.get('Host','')
+            origin=self.headers.get('Origin')
+            if origin and origin!='http://'+host:raise ValueError('다른 웹사이트에서 요청할 수 없습니다')
+            if self.headers.get('Content-Type')!='application/json':raise ValueError('JSON 요청만 허용합니다')
+            length=int(self.headers.get('Content-Length','0'))
+            if not 1<=length<=8192:raise ValueError('요청 크기 오류')
+            body=json.loads(self.rfile.read(length))
+            if not isinstance(body,dict):raise ValueError('요청 형식 오류')
+            data=self.server.tuning.dispatch(body)
+            self.reply(200,'application/json',json.dumps(data,ensure_ascii=False,allow_nan=False).encode())
+        except Exception as exc:
+            self.reply(400,'application/json',json.dumps(dict(error=str(exc)),ensure_ascii=False).encode())
 
 
 @contextlib.contextmanager
@@ -320,7 +358,7 @@ def main(argv=None):
     args=parser.parse_args(argv)
     try:
         cfg=load(args.config)
-        server=ViewerServer(cfg)
+        server=ViewerServer(cfg,config_path=args.config)
         try:
             print(f"[VIEW] {cfg['device_id']} / {', '.join(cfg['hardware']['cameras'])} / port={server.server_port} / laptop={options(cfg)['allow_ip']}",flush=True)
             print('[VIEW] 노트북 브라우저: http://이_Pi의_IP:'+str(server.server_port)+'/ (4대 보기: /all)',flush=True)

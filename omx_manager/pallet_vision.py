@@ -159,18 +159,17 @@ def compare(current, reference, spec):
     strong, weak = component(strong_mask), component(weak_mask)
     # Pale products can have the same RGB as the lattice itself. A local,
     # two-dimensional disappearance of its texture is separate object evidence.
-    old_energy,new_energy=grid_energy(b),grid_energy(corrected)
+    old_energy,new_energy=reference_energy,grid_energy(corrected)
     loss=((old_energy>40)&(new_energy<old_energy*.4)&(new_energy<20)&usable).astype(np.uint8)
     loss=cv2.morphologyEx(loss,cv2.MORPH_OPEN,np.ones((3,3),np.uint8))
     occlusion=component(loss)
     metadata['grid_occlusion_pixels']=occlusion
     ratio = float(weak_mask.sum()/max(1, usable.sum()))
-    if strong >= spec['min_component_pixels'] or occlusion >= spec['min_component_pixels']:
-        candidate, reason = 'PRESENT', '조명·작은 이동 보정 후 물체 크기 변화 확인'
-    elif weak < max(4,spec['min_component_pixels']//3) and occlusion < max(4,spec['min_component_pixels']//3) and ratio <= spec['empty_ratio']:
-        candidate, reason = 'EMPTY', '조명·작은 이동 보정 후 빈 격자와 일치'
-    else:
-        candidate, reason = 'UNKNOWN', '보정 후 남은 물체 변화가 불명확'
+    from .pallet import classify
+    candidate=classify(strong,weak,occlusion,ratio,spec)
+    reason={'PRESENT':'조명·작은 이동 보정 후 물체 크기 변화 확인',
+            'EMPTY':'조명·작은 이동 보정 후 빈 격자와 일치',
+            'UNKNOWN':'보정 후 남은 물체 변화가 불명확'}[candidate]
     return dict(metadata, candidate=candidate, reason=reason, component_pixels=strong,
                 weak_component_pixels=weak, changed_ratio=ratio,
                 raw_changed_ratio=float(np.mean((diff > spec['weak_pixel_threshold'])[usable])), features_computed=True)
