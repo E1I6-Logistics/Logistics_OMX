@@ -11,6 +11,7 @@ import time
 import uuid
 from .config import ROOT, JOINTS, path_value, check_files, require_home, profile, write_json, load, diagnostic_options
 from .hardware import Lock
+from .faults import ManagedFault,classify,worker_failure,AUTOMATIC
 
 class OperatorRecoveryRequired(RuntimeError): pass
 
@@ -32,7 +33,7 @@ def initialize_inventory(path, capacity=8):
 
 def acknowledge_recovery(cfg):
     directory = state_dir(cfg)
-    for name in ("inventory.json", "jobs.json", "workstation_command.json", "workstation_status.json", "unload_progress.json", "startup_arm.json"):
+    for name in ("inventory.json", "jobs.json", "workstation_command.json", "workstation_status.json", "unload_progress.json", "startup_arm.json", "auto_restart.json"):
         path = directory / name
         if path.exists():
             destination = directory / "archive" / (str(time.time_ns()) + "_" + name)
@@ -92,6 +93,8 @@ def build(cfg, config_path, python=sys.executable, session=None, calibration_ite
         OMX_JOB_JOURNAL=str(directory / "jobs.json"), OMX_BROKER_PORT=str(cfg["runtime"]["broker_port"]),
         OMX_PICKUP_PER_UNIT_S=str(cfg["runtime"]["order_per_unit_s"]), OMX_PICKUP_LOAD_GRACE_S=str(cfg["runtime"]["order_load_grace_s"]),
         OMX_ACT_PREFETCH="0",OMX_ACT_FAST_QUEUE='1',OMX_SESSION=session)
+    env['OMX_ROLLOUT_FAULT']=str(directory/'rollout_fault.json')
+    env['OMX_MQTT_STATE']=str(directory/'mqtt_state.json')
     for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
         env[name] = str(cfg["runtime"]["cpu_threads"])
     hw=cfg["hardware"]; home=cfg["home"]; timing=cfg["runtime"]
@@ -162,6 +165,12 @@ class Supervisor:
         self.diagnostics=diagnostics; self.important_only=important_only; self.capture=None
         self.pending_cleanup=[]
         self.startup_arm_attempted=False;self.rollout_started=False;self.startup_arm_reconcile_required=False
+        self.retry_reserved=False;self.current_phase=None
+    def phase(self,cfg,name,**details):
+        try:write_json(state_dir(cfg)/'supervisor_state.json',dict(phase=name,at=time.time(),pid=os.getpid(),**details),durable=False)
+        except OSError as exc:self.message('[WARNING] Supervisor status unavailable: '+str(exc))
+        if self.current_phase!=name:
+            self.current_phase=name;self.message('[STATE] '+name)
     def message(self, line):
         if self.capture: self.capture.emit("manager",line)
         else: print(line,flush=True)
@@ -179,6 +188,8 @@ class Supervisor:
     def preflight(self,cfg,allow_motion=True,verify_registration=True,operator_confirmed=False):
         """Motor-only checks before loading Torch/cameras; no order replay."""
         self.reap_pending(cfg)
+        from .restart_policy import budget,reconcile
+        if not self.retry_reserved:budget(cfg,state_dir(cfg))
         from .exposure import require_restored
         require_restored(cfg)
         from .commissioning import require_commissioned
@@ -192,13 +203,18 @@ class Supervisor:
         from .startup_arming import require_verified_journal,StartupArmRefused
         try:require_verified_journal(cfg,directory)
         except StartupArmRefused as exc:raise OperatorRecoveryRequired(str(exc)) from exc
-        if settle_interrupted_pickup(cfg):
+        self.phase(cfg,'RECONCILING')
+        if cfg['recovery'].get('restart_to_idle',False) and cfg['recovery'].get('interrupted_order_action','fail_and_idle')=='fail_and_idle':
+            if reconcile(cfg,directory):
+                self.message('[RECOVERY] Previous jobs failed and active IPC cleared; identities archived/preserved; no replay')
+        elif settle_interrupted_pickup(cfg):
             self.startup_arm_reconcile_required=True
             self.message('[RECOVERY] Interrupted pickup archived as failed; no replay. Checking Home before accepting NEW orders')
         journal=directory/'jobs.json'
         if journal.exists() and any(row.get('state')=='RUNNING' for row in json.loads(journal.read_text()).values()):
             raise OperatorRecoveryRequired('Interrupted job; inspect cargo then request resume; no replay')
         if cfg['role']=='pickup': initialize_inventory(directory/'inventory.json')
+        self.phase(cfg,'MOTOR_CHECK')
         with FollowerBus(cfg) as device:
             q=device.read()
             for joint in JOINTS:
@@ -215,12 +231,41 @@ class Supervisor:
                         clock=time.monotonic,sleep=time.sleep)
                     self.message('[RECOVERY] [STARTUP] Torque enabled at registered Home; current goals latched; no job replay')
                 except StartupArmRefused as exc:raise OperatorRecoveryRequired(str(exc)) from exc
-            if max(errors(q,cfg['home']['target']).values())<=cfg['home']['arrival_tolerance']: return
+            if max(errors(q,cfg['home']['target']).values())<=cfg['home']['arrival_tolerance']:
+                self.phase(cfg,'HOME_VERIFIED');return
             if not allow_motion or not cfg['recovery'].get('auto_home',True):
                 raise OperatorRecoveryRequired('Position arm at registered Home or explicitly request another return-path check')
+            self.phase(cfg,'HOME_RETURN')
             result=return_home(device,cfg,clock=time.monotonic,sleep=time.sleep,stopped=self.stopped.is_set,report=home_reporter(cfg),preserve_gripper=not operator_confirmed)
             if abs(result['gripper']-cfg['home']['target']['gripper'])>cfg['home']['arrival_tolerance']:
                 raise OperatorRecoveryRequired('Arm Home recovered with gripper held; inspect cargo then request resume')
+            self.phase(cfg,'HOME_VERIFIED')
+    def restore_sensor(self,cfg):
+        """One camera-only attempt. Reap it before any subsequent device session."""
+        self.reap_pending(cfg)
+        self.phase(cfg,'CAMERA_RESTORE')
+        lease=getattr(self,'device_lease',None)
+        if lease is None or lease.fd is None:raise RuntimeError('Camera recovery requires the supervisor device lease')
+        lease_fd=lease.fd.fileno()
+        _,mqtt,env,_=build(cfg,self.path)
+        argv=[mqtt[0],'-m','omx_manager.sensor_restore','--config',str(self.path.resolve()),'--parent-pid',str(os.getpid()),'--lease-fd',str(lease_fd)]
+        proc=None
+        try:
+            proc=subprocess.Popen(argv,env=env,cwd=ROOT,start_new_session=True,pass_fds=(lease_fd,),
+                **(dict(stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,bufsize=1) if self.capture else {}))
+            if self.capture:self.capture.attach(proc,'sensor-restore')
+            deadline=time.monotonic()+cfg['runtime']['startup_timeout_s']
+            while proc.poll() is None:
+                if self.stopped.wait(.2):raise InterruptedError('Operator stopped camera restoration')
+                if time.monotonic()>=deadline:raise TimeoutError('Camera-only restoration timed out')
+            if proc.returncode:raise RuntimeError('Camera-only restoration failed; pending journal retained')
+            from .exposure import require_restored
+            require_restored(cfg)
+        finally:
+            if proc is not None:
+                try:stop_process(proc,cfg['runtime']['shutdown_timeout_s'])
+                except Exception:
+                    self.pending_cleanup.append(proc);raise
     def wait_for_recovery(self,cfg,error):
         """Keep MQTT/diagnostics alive, never reload the model in this state."""
         from .config import digest
@@ -230,10 +275,15 @@ class Supervisor:
         # Generic runtime/USB faults require an explicit retry unless Home recovery succeeded.
         from .config import ConfigError
         allow_auto=isinstance(error,(ConfigError,OperatorRecoveryRequired))
+        self.retry_reserved=False
+        fault_code=classify(error);automatic=cfg['recovery'].get('restart_to_idle',False) and fault_code in AUTOMATIC|{'CAMERA_RESTORE'}
+        restore_attempted=False
+        healthy_checks=0
         try:
             motion=json.loads((directory/'recovery_motion.json').read_text())
             allow_auto=allow_auto or (motion.get('phase')=='HOME_RECOVERED' and motion.get('at',0)>=getattr(self,'last_run_started',started))
         except (OSError,ValueError): pass
+        if cfg['recovery'].get('restart_to_idle',False) and not automatic:allow_auto=False
         try:
             _,mqtt,env,_=build(cfg,self.path)
             command=[mqtt[0],'-m','omx_manager.recovery_wait','--config',str(self.path.resolve())]
@@ -247,11 +297,13 @@ class Supervisor:
                     self.message('[RECOVERY] MQTT helper unavailable: '+str(failure))
                     return None
             client=start_client()
+            self.phase(cfg,'RECOVERY_WAIT',fault_code=fault_code,reason=reason)
             self.message('[RECOVERY] RECOVERY_WAIT: '+reason+'; model not loaded; MQTT rejects new jobs')
             while not self.stopped.is_set():
                 try:
                     write_json(directory/'recovery_wait.json',dict(phase='RECOVERY_WAIT',reason=reason,at=time.time(),
-                               pid=os.getpid(),model_loaded=False,mqtt_alive=client is not None and client.poll() is None),durable=False)
+                               pid=os.getpid(),model_loaded=False,fault_code=fault_code,automatic_retry=automatic,
+                               mqtt_alive=client is not None and client.poll() is None),durable=False)
                 except OSError as failure: self.message('[RECOVERY] Status storage unavailable: '+str(failure))
                 if self.stopped.wait(cfg['recovery'].get('poll_s',5.)): return
                 if client is None or client.poll() is not None: client=start_client()
@@ -268,6 +320,8 @@ class Supervisor:
                 changed=current!=signature
                 if changed:
                     cfg=candidate;signature=current;registered=False;registration_checked=False
+                    automatic=cfg['recovery'].get('restart_to_idle',False) and fault_code in AUTOMATIC|{'CAMERA_RESTORE'}
+                    healthy_checks=0
                 if resume:
                     try: acknowledge_recovery(cfg)
                     except (OSError,ValueError,TypeError) as failure:
@@ -276,20 +330,43 @@ class Supervisor:
                     self.startup_arm_reconcile_required=False
                     if not self.rollout_started:self.startup_arm_attempted=False
                 try:
+                    from .restart_policy import budget
+                    if automatic:budget(cfg,directory)
+                    if automatic and fault_code=='CAMERA_RESTORE' and not restore_attempted:
+                        restore_attempted=True
+                        self.restore_sensor(cfg)
+                        fault_code='CAMERA'
                     if not registration_checked:
                         registration_checked=True
                         from .commissioning import require_commissioned
                         check_files(cfg);require_commissioned(cfg);registered=True
                     if not registered: continue
-                    if not (allow_auto or resume or changed): continue
-                    self.preflight(cfg,allow_motion=resume,verify_registration=False,operator_confirmed=resume)
+                    if not (allow_auto or automatic or resume or changed): continue
+                    self.preflight(cfg,allow_motion=resume or automatic,verify_registration=False,operator_confirmed=resume)
+                    if automatic and not resume:
+                        healthy_checks+=1
+                        if healthy_checks<2:
+                            self.phase(cfg,'VERIFYING_RECOVERY');continue
+                        budget(cfg,directory,consume=fault_code)
+                        self.retry_reserved=True
                     write_json(directory/'recovery_wait.json',dict(phase='RECHECKED',at=time.time(),pid=os.getpid(),model_loaded=False))
                     self.message('[RECOVERY] Home and registration rechecked; starting a fresh idle session, no job replay')
                     return
                 except Exception as exc:
+                    healthy_checks=0
+                    observed_code=classify(exc)
+                    if automatic and observed_code=='CAMERA_RESTORE':
+                        if not restore_attempted:fault_code='CAMERA_RESTORE'
+                        else:automatic=False;allow_auto=False
+                    elif automatic and observed_code not in AUTOMATIC|{'CAMERA_RESTORE'}:
+                        automatic=False;allow_auto=False
+                    if restore_attempted and fault_code=='CAMERA_RESTORE':
+                        # A failed restore is never repeated automatically.
+                        automatic=False;allow_auto=False
                     new_reason=str(exc)
                     if new_reason!=reason: self.message('[RECOVERY] RECOVERY_WAIT: '+new_reason)
                     reason=new_reason
+                    self.phase(cfg,'RECOVERY_WAIT',fault_code=classify(exc),reason=reason)
         finally:
             if client is not None: stop_process(client,cfg['runtime']['shutdown_timeout_s'])
     def run_once(self,cfg):
@@ -301,7 +378,7 @@ class Supervisor:
         if journal.exists() and any(row.get("state")=="RUNNING" for row in json.loads(journal.read_text()).values()):
             raise OperatorRecoveryRequired("Interrupted physical job; reconcile before restart. Journal preserved")
         if cfg["role"]=="pickup": initialize_inventory(directory/"inventory.json")
-        for name in ("abort","heartbeat.json","joint_errors.json","metrics.json"):
+        for name in ("abort","heartbeat.json","joint_errors.json","metrics.json","rollout_fault.json","mqtt_state.json"):
             (directory/name).unlink(missing_ok=True)
         rollout,mqtt,env,generated=build(cfg,self.path)
         env.pop("OMX_METRICS_PATH", None)
@@ -313,13 +390,15 @@ class Supervisor:
         for name,data in generated.items(): write_json(directory/name,data)
         worker=client=None
         try:
+            self.phase(cfg,'MODEL_LOADING')
             self.rollout_started=True
+            self.retry_reserved=False
             worker=subprocess.Popen(rollout,env=env,cwd=ROOT/"lerobot_unified",start_new_session=True,**capture_options)
             if self.capture: self.capture.attach(worker,"rollout")
             env["OMX_ROLLOUT_PID"]=str(worker.pid)
             deadline=time.monotonic()+cfg["runtime"]["startup_timeout_s"]
             while not self.stopped.is_set():
-                if worker.poll() is not None: raise RuntimeError(f"Rollout startup exit={worker.returncode}")
+                if worker.poll() is not None: raise worker_failure(directory/'rollout_fault.json',worker.pid,env['OMX_SESSION'],f"Rollout startup exit={worker.returncode}")
                 if healthy_heartbeat(directory/"heartbeat.json",worker.pid,time.monotonic(),cfg["runtime"]["heartbeat_timeout_s"]):
                     data=json.loads((directory/"heartbeat.json").read_text())
                     ready = data.get("ready")
@@ -329,15 +408,23 @@ class Supervisor:
                             ready=ready and status.get("phase")=="READY" and status.get("session")==env["OMX_WORKSTATION_SESSION"] and status.get("pid")==worker.pid
                         except (OSError,ValueError): ready=False
                     if ready: break
-                if time.monotonic()>deadline: raise TimeoutError("Rollout not READY in time")
+                if time.monotonic()>deadline: raise ManagedFault("Rollout not READY in time",'WATCHDOG')
                 self.stopped.wait(.2)
             if self.stopped.is_set(): return
+            self.phase(cfg,'MQTT_CONNECTING')
             client=subprocess.Popen(mqtt,env=env,cwd=ROOT/"lerobot_unified",start_new_session=True,**capture_options)
             if self.capture: self.capture.attach(client,"mqtt")
             while not self.stopped.wait(.25):
-                if worker.poll() is not None: raise RuntimeError(f"Rollout exit={worker.returncode}")
-                if client.poll() is not None: raise RuntimeError(f"MQTT exit={client.returncode}")
-                if not healthy_heartbeat(directory/"heartbeat.json",worker.pid,time.monotonic(),cfg["runtime"]["heartbeat_timeout_s"]): raise TimeoutError("Rollout heartbeat stalled")
+                if worker.poll() is not None: raise worker_failure(directory/'rollout_fault.json',worker.pid,env['OMX_SESSION'],f"Rollout exit={worker.returncode}")
+                if client.poll() is not None: raise ManagedFault(f"MQTT exit={client.returncode}",'MQTT')
+                if not healthy_heartbeat(directory/"heartbeat.json",worker.pid,time.monotonic(),cfg["runtime"]["heartbeat_timeout_s"]): raise ManagedFault("Rollout heartbeat stalled",'WATCHDOG')
+                try:
+                    connected=json.loads((directory/'mqtt_state.json').read_text())
+                    connected=(connected.get('pid')==client.pid and connected.get('session')==env['OMX_SESSION'] and connected.get('connected') is True)
+                except (OSError,ValueError,TypeError,AttributeError):connected=False
+                if connected and self.current_phase!='READY':
+                    self.phase(cfg,'READY',rollout_pid=worker.pid,mqtt_pid=client.pid,mqtt_connection_verified=True)
+                elif not connected and self.current_phase=='READY':self.phase(cfg,'MQTT_CONNECTING')
         finally:
             try: write_json(directory/"last_stop.json",{"at":time.time(),"operator_stop":self.stopped.is_set()})
             except OSError as exc:self.message("[WARNING] Could not save stop record: "+str(exc))
@@ -348,9 +435,10 @@ class Supervisor:
                     self.message("[ERROR] Cleanup failure: "+str(exc))
             if self.pending_cleanup:
                 raise RuntimeError('Child process cleanup pending; new hardware session blocked')
+            self.phase(cfg,'STOPPED' if self.stopped.is_set() else 'CHILDREN_STOPPED')
     def run(self):
         cfg=load(self.path)
-        with device_lock(cfg):
+        with device_lock(cfg) as self.device_lease:
             options=diagnostic_options(cfg)
             if self.diagnostics is None:self.diagnostics=options["enabled"]
             if self.important_only is None:self.important_only=options["important_only"]
@@ -369,7 +457,7 @@ class Supervisor:
                         delay=cfg["recovery"]["retry_initial_s"]
                     except Exception as exc:
                         self.message(f"[RECOVERY] {type(exc).__name__}: {exc}; retry in {delay}s")
-                        try: write_json(state_dir(cfg)/"recovery.json",{"at":time.time(),"error":str(exc),"retry_s":delay})
+                        try: write_json(state_dir(cfg)/"recovery.json",{"at":time.time(),"error":str(exc),"code":classify(exc),"retry_s":delay})
                         except OSError as failure:self.message("[WARNING] Could not save recovery record: "+str(failure))
                         self.wait_for_recovery(cfg,exc)
                     if self.stopped.wait(delay): break

@@ -93,7 +93,10 @@ def validate(cfg):
     only_keys(cfg["home"], "target binding tolerance hold_s unload_hold_s still_delta max_sample_gap_s capture_s capture_max_span arrival_tolerance move_speed move_timeout_s max_start_error max_step max_following_error", "home")
     only_keys(cfg["models"], "active_profile profiles", "models")
     only_keys(cfg["runtime"], "broker_host broker_port cpu_threads fps cycle_timeout_s order_per_unit_s order_load_grace_s startup_timeout_s heartbeat_timeout_s shutdown_timeout_s camera_auto_reconnect camera_reconnect_attempts camera_reconnect_interval_s", "runtime")
-    only_keys(cfg["recovery"], "retry_initial_s retry_max_s release_delay_s auto_home poll_s routes interrupted_order_action startup_arm_at_home startup_arm_tolerance", "recovery")
+    only_keys(cfg["recovery"], "retry_initial_s retry_max_s release_delay_s auto_home poll_s routes interrupted_order_action startup_arm_at_home startup_arm_tolerance restart_to_idle auto_retry_limit", "recovery")
+    if type(cfg['recovery'].get('restart_to_idle',False)) is not bool:raise ConfigError('recovery.restart_to_idle must be boolean')
+    attempts=cfg['recovery'].get('auto_retry_limit',3)
+    if type(attempts) is not int or not 1<=attempts<=5:raise ConfigError('recovery.auto_retry_limit must be 1..5')
     if type(cfg['recovery'].get('startup_arm_at_home',False)) is not bool:raise ConfigError('recovery.startup_arm_at_home must be boolean')
     number(cfg['recovery'].get('startup_arm_tolerance',2.),'recovery.startup_arm_tolerance',.1,3.)
     if cfg['recovery'].get('interrupted_order_action','fail_and_idle') not in ('fail_and_idle','require_ack'):

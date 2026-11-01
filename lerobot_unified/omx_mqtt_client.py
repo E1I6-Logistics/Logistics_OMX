@@ -626,9 +626,18 @@ def on_command(data):
 
 
 # 연결 이벤트를 처리한다.
+def record_connection(connected):
+    path=os.environ.get('OMX_MQTT_STATE')
+    if path:
+        try:atomic_json(path,dict(connected=connected,pid=os.getpid(),session=os.environ.get('OMX_SESSION'),at=time.time()))
+        except OSError as exc:print(f'[WARNING] MQTT connection status unavailable: {exc}',flush=True)
+
+
 def on_connect(client, userdata, flags, rc):
     global current_state
     print(f"[MQTT] Connected: {rc}", flush=True)
+    if rc!=0:
+        record_connection(False);return
     if robot_id in WORKSTATION_IDS and current_job_id is None:
         current_state = "IDLE" if workstation_ready() else "ERROR"
 
@@ -639,10 +648,12 @@ def on_connect(client, userdata, flags, rc):
     print(f"[MQTT] Subscribe: " f"{topic}", flush=True)
 
     send_status()
+    record_connection(True)
 
 
 # disconnect 이벤트를 처리한다.
 def on_disconnect(client, userdata, rc):
+    record_connection(False)
 
     print(f"[MQTT] Disconnected: {rc}", flush=True)
 

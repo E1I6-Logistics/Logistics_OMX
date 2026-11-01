@@ -153,6 +153,47 @@ cat "state/manager/$OMX_ROBOT_ID/startup_arm.json"
 
 `Input/output error` 같은 USB/모터 통신 오류는 이 옵션으로 해결되지 않습니다. 서비스를 멈추고 `omx_motor_check`로 연결을 확인합니다. 수동 방식으로 되돌리려면 서비스 정지 후 같은 set 명령의 값을 `false`로 저장하고 재시작합니다. 가상 시험은 실제 전원 재인가·토크 동작 검증을 대신하지 않습니다.
 
+<a id="automatic-recovery"></a>
+### 재시작 때 기존 작업 초기화·오류별 자동 복구 — OMX1~4 공통 선택
+
+`restart_to_idle`을 켜면 실행기/전원 재시작 뒤 RUNNING 주문을 INTERRUPTED·실패로 남기고 활성 IPC·주문 카운터를 초기화합니다. 이전 진행 수치·명령은 `state/manager/omxN/archive/restart_<ID>/`에 보관합니다. `jobs.json`의 주문 ID·서명·완료/실패 기록은 유지하므로 FMS가 같은 주문을 재전송해도 다시 동작하지 않습니다. 홈·모터 보정·모델·카메라 설정은 초기화하지 않으며 실제 물건 적재 상태는 여전히 미검증입니다. 현장 YAML의 `interrupted_order_action: require_ack`를 선택한 경우 수동 중단 주문 정책은 유지합니다.
+
+팔·물품을 확인하고 등록 홈에 둔 상태에서 각 Pi에 적용합니다:
+
+```bash
+cd ~/Logistics_OMX
+source ~/.bashrc
+omx_service stop
+git pull --ff-only
+./omx_control --config "$OMX_CONFIG_PATH" set --key recovery.startup_arm_at_home --value true
+./omx_control --config "$OMX_CONFIG_PATH" set --key recovery.restart_to_idle --value true
+omx_service start
+omx_service logs --follow
+```
+
+서비스 재설치는 필요하지 않습니다. 각 팔 내부 준비 순서는 `[STATE] RECONCILING` → `MOTOR_CHECK` → 필요 시 `HOME_RETURN` → `HOME_VERIFIED` → `MODEL_LOADING` → `MQTT_CONNECTING` → `READY`입니다. MQTT 프로세스가 실제 연결을 보고한 뒤에만 READY로 표시합니다. 서로 다른 Pi 4대를 전역적으로 1→2→3→4 순서로 기동하는 기능은 아닙니다.
+
+| 오류/상태 | 자동 처리 범위 |
+|---|---|
+| 중단 주문 | 실패·진행 증거 보관, 이전 주문 재실행 없이 새 대기 준비 |
+| USB/통신, 카메라, heartbeat 지연, MQTT/모델 프로세스 종료, 메모리 오류 | 기존 자식 프로세스 정리 후 장치·홈 연속 2회 점검, 통과 시 새 실행 세션 |
+| 카메라 노출 복원 pending | 별도 카메라 전용 자식에서 원래 설정 복원 1회. 시간 제한·종료·회수 확인 후에만 다음 단계. 복원 실패는 대기 |
+| 모터 하드웨어 오류·모드/보정 불일치·토크 OFF·홈 추종 실패·알 수 없는 오류 | 자동 토크 재활성화·모드/PID 수정·오류 삭제 없이 복구 대기 |
+| 검증된 홈 접근 영역/복귀 경로 밖 | 임의 자세에서 홈까지 직선 이동하지 않음. 현장 배치 또는 검증된 경로 필요 |
+| 사용자 stop/Ctrl+C | 자원 정리 후 정지. 자동 모델 재실행이나 복귀 이동 없음 |
+
+시작 토크 ON은 앞 절의 별도 조건에서만 허용됩니다. 운영 중 토크 OFF를 자동으로 다시 켜지 않으며, 미확인 물품을 놓기 위해 그리퍼를 자동으로 열지 않습니다. `startup_arm.json`의 실패/미완료 기록도 자동 삭제하지 않습니다.
+
+자동 실행 재시도는 **같은 Pi 부팅 동안 기본 3회**, `recovery.auto_retry_limit`로 1~5회 설정할 수 있습니다. 실행기·서비스만 재시작해서 상한을 우회하지 않습니다. 상한 도달 후 진단·복구 MQTT를 유지하며 대기하고, 실제 상태를 확인한 `omx_resume`/실행기 정지 후 `omx_recover`로 기록을 보관·재점검합니다. 새 OS 부팅에서는 재시도 예산을 새로 계산하지만 물리 오류·시작 토크 검증 실패는 계속 차단합니다. **Pi OS를 오류마다 자동 재부팅하거나 OpenRB·모터 전원을 자동 차단하는 기능은 아닙니다.**
+
+```bash
+cat "state/manager/$OMX_ROBOT_ID/supervisor_state.json"
+cat "state/manager/$OMX_ROBOT_ID/recovery_wait.json"
+cat "state/manager/$OMX_ROBOT_ID/auto_restart.json"
+```
+
+실물 시험은 빈 작업 공간에서 주문 없이 정상 종료·전원 재인가 후 READY를 확인하고, 품목 1개 주문을 연속 2회 진행합니다. 오류 복구 강제 시험은 실물 팔 대신 개발 환경의 `tests/test_restart_policy.py`를 사용합니다. 가상 시험은 충돌 없는 복귀 경로나 물건 전달 성공을 검증하지 않습니다.
+
 <a id="orders"></a>
 ## 3. OMX1~4 주문·실물 테스트·직접 MQTT
 
@@ -292,6 +333,7 @@ nano "$OMX_CONFIG_PATH"
 | `diagnostics` | 성능 기록·로그 설정 |
 | `service` | 서비스 재시작 간격·종료 대기 |
 | `recovery.startup_arm_at_home`, `recovery.startup_arm_tolerance` | 시작 시 홈 근처 토크 ON 허용 여부(기본 false), 허용 오차(기본 2.0 정규화 단위) |
+| `recovery.restart_to_idle`, `recovery.auto_retry_limit` | 중단 작업 정리·오류별 제한 자동 복구(기본 false), 부팅당 자동 재시도 상한(기본 3) |
 | `view` | 읽기 전용 뷰어의 접속 IP·포트·주기 |
 
 간단한 값은 공통 CLI로 저장할 수 있습니다. 장비·모델 경로처럼 전체 검토가 필요한 필드는 YAML에서 편집합니다.

@@ -264,10 +264,13 @@ def rollout(cfg: RolloutConfig):
             strategy.run(ctx)
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
-    except Exception:
+    except Exception as error:
+        from omx_manager.faults import record_rollout_fault,classify,AUTOMATIC
+        try:record_rollout_fault(error)
+        except Exception:logger.exception('Could not record rollout fault; preserving original error')
         # A failed job stays failed. Attempt bounded Home recovery once, while
         # motor feedback is still connected, before releasing process resources.
-        if ctx is not None and strategy is not None and not shutdown_event.is_set():
+        if ctx is not None and strategy is not None and not shutdown_event.is_set() and classify(error) in AUTOMATIC|{'UNKNOWN'}:
             from omx_manager.hooks import recover_after_fault
             try:
                 strategy._engine.pause()
