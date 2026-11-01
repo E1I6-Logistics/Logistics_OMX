@@ -19,10 +19,10 @@ Raspberry Pi 5 4GB 한 대에 OMX follower 팔 한 대를 연결해 LeRobot ACT 
 |---|---|---|---|
 | OMX1 | A / B | 물품을 집어 AMR 바구니에 적재 | `wrist`, `front` |
 | OMX2 | C / D | 물품을 집어 AMR 바구니에 적재 | `wrist`, `front` |
-| OMX3 | 하차 주문의 수량 합계 / 로컬 테스트 E | E 모델로 바구니에서 컨베이어로 하차 | `wrist`, `top` |
+| OMX3 | 하차 주문의 수량 합계 / 로컬 테스트 E | 임시 F 모델로 바구니에서 컨베이어로 하차 (외부 E 유지) | `wrist`, `top` |
 | OMX4 | 하차 주문의 수량 합계 / 로컬 테스트 F | F 모델로 바구니에서 컨베이어로 하차 | `top`, `wrist` |
 
-기본 `original` 프로필의 모델 경로는 다음과 같습니다. 최종 실행 값은 각 Pi의 현장 YAML을 따릅니다.
+기본 활성 프로필의 모델 경로는 다음과 같습니다. OMX3는 전용 모델 준비 전까지 `omx4_temporary`를 사용하고 기존 E 모델은 `original`에 보존합니다. 최종 실행 값은 각 Pi의 현장 YAML을 따릅니다.
 
 | 장비·외부 키 | 학습 출력 폴더 | 체크포인트 |
 |---|---|---|
@@ -30,7 +30,7 @@ Raspberry Pi 5 4GB 한 대에 OMX follower 팔 한 대를 연결해 LeRobot ACT 
 | OMX1 B | `warehouse_all_200_two_cycles_v3_act_250k` | `150000` |
 | OMX2 C | `warehouse_item_c_160_merged_basket_fix_v1_act_200k` | `170000` |
 | OMX2 D | `warehouse_item_d_190_merged_act_200k` | `170000` |
-| OMX3 E | `warehouse_item_e_132_merged_act_300k` | `250000` |
+| OMX3 E (임시 F 모델) | `warehouse_item_f_v3_5_act_300k` | `230000` |
 | OMX4 F | `warehouse_item_f_v3_5_act_300k` | `230000` |
 
 모델 경로는 보통 `lerobot_unified/outputs/train/<학습 폴더>/checkpoints/<번호>/pretrained_model`입니다. **OMX1의 외부 A/B와 모델 이름이 반대인 매핑은 현장에서 확인한 값입니다.** 이름만 보고 뒤집지 마세요. OMX3·4는 FMS의 A~D 품목별 수량도 합산해 E/F 모델의 동작 횟수로 사용할 수 있습니다.
@@ -44,7 +44,7 @@ Raspberry Pi 5 4GB 한 대에 OMX follower 팔 한 대를 연결해 LeRobot ACT 
 - 검사 OFF에서는 수량 없는 주문과 인자 없는 `omx_unload`를 거절합니다. 자동으로 무한 반복하지 않습니다.
 - 완료 사이클은 실제 물건 개수나 전달 성공을 검증한 값이 아닙니다. 모델이 헛집기해도 정상 이탈·복귀하면 사이클로 기록될 수 있습니다. 움직이지 않거나 복귀하지 못하면 제한 시간과 판정 조건에 따라 실패합니다.
 
-이번 현장 운영은 OMX3·4의 `unload.inspection_enabled: false`를 사용합니다. 저장소의 `params/omx3.yaml`, `params/omx4.yaml` **템플릿 기본값은 true**이므로 새 장비에서는 `omx_basket off`를 한 번 저장하고 재시작해야 합니다. 설정은 Git이 추적하지 않는 현장 YAML에 보존됩니다.
+이번 현장 운영은 OMX3·4의 `unload.inspection_enabled: false`를 사용합니다. OMX3 임시 F 모델 템플릿은 검사 OFF이며 OMX4 템플릿은 검사 ON입니다. 기존 Pi는 현장 YAML을 따르므로 필요한 장비에서 `omx_basket off`를 저장하고 재시작합니다. 설정은 Git이 추적하지 않는 현장 YAML에 보존됩니다.
 
 ### 실행과 복구
 
@@ -157,3 +157,5 @@ OMX3·4 검사 OFF 예시:
 PC 주소 제한 없이 보기: `view.allow_ip: any`를 선택할 수 있습니다. 로봇 서비스가 정지되어 있으면 `omx_view --camera-only`로 두 카메라만 열어 확인합니다. 일반 공유 뷰어는 실행 중 모델의 카메라가 필요합니다.
 
 OMX1·2 고정 팔레트 검사(선택): 기존 front RGB 영상으로 품목별 물건 있음/비었음/판정 불가를 저주기로 확인하고 전용 stock MQTT 토픽으로 송신합니다. 기본 꺼짐이며 현장 ROI·빈 기준 등록이 필요합니다. FMS 수신 처리는 포함하지 않습니다. [설정·촬영·시험·토픽 안내](COMMANDS.md#pallet-stock)
+
+OMX3 RealSense·OMX4 모델 전환: 기존 Pi YAML은 Git 업데이트로 자동 변경되지 않습니다. [전환 명령과 재확인 순서](COMMANDS.md#omx3-model4)를 따릅니다. 모터 포트·보정·장비 ID는 OMX3 값을 유지합니다.

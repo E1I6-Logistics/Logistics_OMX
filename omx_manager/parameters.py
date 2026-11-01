@@ -169,7 +169,7 @@ COMMENTS = {
     "stall_s":"홈 근처에서 진행이 없음을 진단하는 시간(초)",
     "progress_epsilon":"홈 접근 진행으로 인정할 오차 감소량(정규화 단위)",
     "models":"품목별 모델 경로와 실행 프로필 설정",
-    "active_profile":"사용할 프로필 이름: 현재 original FP32만 구현",
+    "active_profile":"사용할 FP32 모델 프로필 이름: OMX3 임시 프로필은 omx4_temporary",
     "profiles":"모델 교체용 프로필 모음: 모델 변경 뒤 초기 자세 재확인·등록 필요",
     "precision":"모델 정밀도: 현재 실행 가능한 값은 fp32",
     "validated":"후보 모델 검증 표시: true만으로 미구현 INT8 실행이 허용되지는 않음",

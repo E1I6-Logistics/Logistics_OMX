@@ -711,3 +711,39 @@ omx_stock status --json
 상태는 PRESENT(있음), EMPTY(비었음), UNKNOWN(판정 불가)입니다. `at`는 송신 시각, `observed_at`는 유효한 관측 결과 시각이며, UNKNOWN 사유와 품목별 비교 수치도 포함됩니다. FMS에서는 observed_at·valid_for_s와 로봇 연결 상태를 함께 확인하도록 추후 구현해야 합니다. 재고 메시지를 실제 집기 성공이나 정확한 수량으로 해석하지 않습니다.
 
 검사를 끄려면 서비스를 멈추고 `omx_stock off` 후 재시작합니다. 종료 시 검사 스레드를 먼저 정리하고 카메라를 닫습니다. 상태 조회는 파일만 읽고 모델·카메라·모터를 열지 않습니다.
+
+
+<a id="omx3-model4"></a>
+## OMX3: OMX4 모델 + RealSense 상단 RGB 임시 사용
+
+OMX3 전용 모델이 준비될 때까지 OMX4의 `warehouse_item_f_v3_5_act_300k/checkpoints/230000/pretrained_model`을 `omx4_temporary` 프로필로 실행합니다. 외부 장비/주문은 **omx3 / E**를 유지하며 MQTT·서비스·모터 포트·모터 보정 파일을 OMX4 것으로 복사하지 않습니다. 기존 E 모델은 `original` 프로필에 보존합니다. 상단 `top`은 RealSense RGB 640×480/30fps, 손목 `wrist`는 기존 USB 카메라를 사용합니다. 깊이는 사용하지 않습니다. 실제 설치 각도·관절 조립·시야가 학습 환경과 맞는지는 현장 동작으로 확인해야 합니다.
+
+아래는 **OMX3에서만**, 서비스를 멈추고 실행합니다. 전환 명령은 모터를 쓰거나 영상 스트림·모델을 실행하지 않습니다. RealSense가 한 대면 시리얼을 자동 검색합니다. 여러 대면 `--serial 실제시리얼`을 추가합니다.
+
+```bash
+cd ~/Logistics_OMX
+source ~/.bashrc
+omx_service stop
+git pull --ff-only
+"$OMX_PYTHON" -m omx_manager.model_compat --config "$OMX_CONFIG_PATH" --apply
+```
+
+F 모델 폴더와 processor가 OMX3에도 있어야 합니다. 파일이 없으면 설정을 바꾸기 전에 실패합니다. OMX4의 동일한 pretrained_model 전체를 OMX3에 복사한 뒤 다시 실행합니다. 다른 경로에 있다면 `--model-path /실제/pretrained_model`을 추가합니다. 이 도구는 모델을 다운로드하거나 학습하지 않습니다. `--apply`를 빼면 파일 확인·변경 계획만 출력합니다.
+
+변경 전 YAML 전체는 `state/config/backups/`에 저장합니다. 기존 홈 **좌표는 보존**하지만 모델·카메라 연결 검증은 무효화합니다. 이전 사이클·단계·복귀 경로·바구니 기준을 새 모델에서 검증된 것으로 사용하지 않습니다. 바구니 검사는 OFF로 전환하므로 노출·빈 기준을 다시 맞출 필요가 없습니다. 미완료 주문/복구 기록은 임의 삭제하지 않습니다. 카메라 노출 복원 대기가 남아 있으면 이전 카메라 설정에서 `omx_basket restore`를 완료한 뒤 전환합니다.
+
+**팔을 새 모델의 초기 자세에 두고 정지한 상태를 확인한 후** 아래 순서로 진행합니다. `omx_capture`는 현재 자세를 저장하므로 뻗은 자세에서 실행하면 안 됩니다. 홈으로 자동 이동시키는 명령이 아닙니다.
+
+```bash
+omx_capture
+omx_arm
+omx_check
+omx_cycle_calibrate E
+omx_workflow
+omx_service start
+omx_service logs --follow
+```
+
+`omx_cycle_calibrate E`에서는 임시 F 모델이 실제로 움직입니다. 정상 집기·놓기·복귀 3회를 사람이 확인해 저장합니다. OMX4의 사이클 보정을 OMX3에 복사하지 않습니다. READY 후 별도 터미널에서 `omx_unload 1`로 한 사이클을 먼저 시험합니다. 전체를 정상 수행하는지 확인한 뒤 `omx_unload 2`로 두 사이클을 확인합니다. 숫자는 검증된 동작 횟수이며 실제 물품 성공 개수와 다를 수 있습니다.
+
+새 OMX3 모델로 돌아갈 때는 기존 모델 경로·입력 카메라 요구사항을 먼저 확인하고 활성 프로필을 변경한 뒤 홈·사이클을 다시 확인합니다. 예전 C920 설정을 포함한 YAML 백업 전체를 RealSense 환경에 그대로 복원하지 않습니다. 같은 모델·시리얼로 전환 명령을 반복하면 새로 등록한 홈·사이클을 다시 초기화하지 않습니다.

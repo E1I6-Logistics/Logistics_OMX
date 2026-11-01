@@ -18,23 +18,23 @@ hardware:
   disable_torque_on_disconnect: false
   # 모델 config의 영상 입력 이름과 정확히 일치해야 함
   cameras:
-    # 카메라 입력 키 'top': 모델 config 이름과 일치해야 함
+    # OMX4 모델과 동일한 상단 RGB 입력: 시리얼은 이 Pi의 실제 장치로 지정
     top:
-      # 카메라 종류: opencv=USB, intelrealsense=RealSense
-      type: opencv
-      # 영상 장치 경로: 현장에서 실제 카메라 by-id 값 지정
-      index_or_path: /dev/v4l/by-id/SET_OMX4_TOP_CAMERA
-      # 입력 영상 가로 픽셀: 모델 입력 크기와 일치
+      # RealSense RGB만 사용: 깊이 영상은 사용하지 않음
+      type: intelrealsense
+      # 이 장비의 RealSense 고유 시리얼: 다른 Pi 값을 복사하지 않음
+      serial_number_or_name: SET_OMX4_REALSENSE_SERIAL
+      # 모델에 전달할 RGB 영상 가로 픽셀
       width: 640
-      # 입력 영상 세로 픽셀: 모델 입력 크기와 일치
+      # 모델에 전달할 RGB 영상 세로 픽셀
       height: 480
-      # 카메라 하드웨어 요청 FPS: 실제 수신 FPS는 monitor에서 확인
+      # 카메라 요청 주기: 실제 수신은 monitor로 확인
       fps: 30
-      # 영상 버퍼에 게시할 목표 FPS: 하드웨어 수신 FPS와 별개
-      processing_fps: 30
-      # USB 영상 전송 포맷: MJPG 등 장치가 지원하는 값
-      fourcc: MJPG
-      # 카메라 연결 후 준비 시간(초)
+      # 컬러 영상 사용
+      use_rgb: true
+      # 깊이 영상 미사용
+      use_depth: false
+      # 연결 뒤 준비 시간(초)
       warmup_s: 5
     # 카메라 입력 키 'wrist': 모델 config 이름과 일치해야 함
     wrist:
