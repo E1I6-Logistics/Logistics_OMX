@@ -27,6 +27,8 @@ def edit_value(cfg,key,text):
     allowed.update("service."+name for name in service_options(cfg))
     from .view_options import options as view_options
     allowed.update("view."+name for name in view_options(cfg))
+    from .pallet import DEFAULTS as PALLET_DEFAULTS,options as pallet_options
+    allowed.update('pallet_stock.'+name for name in PALLET_DEFAULTS if name!='items')
     from .basket import DEFAULTS
     allowed.update('unload.'+name for name in DEFAULTS if name not in ('reference','reference_binding'))
     allowed.update(('recovery.auto_home','recovery.poll_s','recovery.startup_arm_at_home','recovery.startup_arm_tolerance','recovery.restart_to_idle','recovery.auto_retry_limit','recovery.direct_home'))
@@ -43,6 +45,7 @@ def edit_value(cfg,key,text):
     if key.startswith("diagnostics."):result.setdefault("diagnostics",diagnostic_options(cfg))
     if key.startswith("service."):result.setdefault("service",service_options(cfg))
     if key.startswith("view."):result.setdefault("view",view_options(cfg))
+    if key.startswith('pallet_stock.'):result.setdefault('pallet_stock',pallet_options(cfg))
     if key.startswith('home.arrival_tolerances.'):result['home'].setdefault('arrival_tolerances',{})
     nodes=key.split("."); section=result
     for part in nodes[:-1]: section=section[part]

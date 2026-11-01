@@ -38,6 +38,8 @@ def cleanup_resources(engine=None, robot=None):
         try: action()
         except Exception as exc: failures.append(f"{label}: {exc}")
     if robot is not None:
+        stock=getattr(robot,'_omx_stock',None)
+        if stock is not None:attempt('pallet_stock',stock.close)
         close_metrics = getattr(robot, "_omx_metrics_close", None)
         if callable(close_metrics): attempt("diagnostics", close_metrics)
     if robot is not None:

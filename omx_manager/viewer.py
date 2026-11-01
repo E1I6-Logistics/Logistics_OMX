@@ -18,7 +18,7 @@ from .view_options import options, camera_name
 
 LOG=logging.getLogger(__name__)
 MAX_PACKET=2*1024*1024
-ASSETS={'normal':'basket_view.png','low':'basket_low.png','compare':'basket_compare.png','pose':'basket_pose.png','failure':'basket_failure.png'}
+ASSETS={'normal':'basket_view.png','low':'basket_low.png','compare':'basket_compare.png','pose':'basket_pose.png','failure':'basket_failure.png','stock':'pallet_view.png'}
 
 def camera_config(cfg,name):
     if name not in cfg['hardware']['cameras']:raise KeyError(name)
@@ -143,7 +143,7 @@ PAGE=r'''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewpo
 <h2 id="title">OMX 카메라</h2><nav><a href="/all" target="_top">로봇 선택</a><button id="toggle">실시간 일시정지</button></nav>
 <p><small>기존 카메라 영상 공유 · 기본 1초 간격 · 저노출 검사 중에는 해당 영상 상태 표시 · 보기 전용</small></p>
 <div id="state">연결 중…</div><div id="cameras" class="grid"></div>
-<details><summary>저장된 상단 카메라 스냅샷</summary><p>저장 시점의 사진입니다. 촬영은 기존 터미널 명령으로 수행합니다.</p>
+<details><summary>저장된 상단 카메라 스냅샷</summary><button onclick="showSaved('stock')">팔레트 좌표·영역 사진</button><p>저장 시점의 사진입니다. 촬영은 기존 터미널 명령으로 수행합니다.</p>
 <button onclick="showSaved('normal')">원본 + ROI/격자</button><button onclick="showSaved('low')">저노출 스냅샷</button><button onclick="showSaved('compare')">기준·현재·차이</button><button onclick="showSaved('pose')">바구니 추적 영역</button><button onclick="showSaved('failure')">마지막 검사 실패</button>
 <div id="savedTime"></div><a id="savedLink" download><img id="saved" alt="스냅샷 선택"></a></details>
 <script>
@@ -241,7 +241,7 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 self.reply(200,'application/json',json.dumps(self.server.status(None if name=='all' else name),ensure_ascii=False).encode())
             elif path=='/live.jpg':
                 self.server.touch(name);row,jpeg=self.server.frame(name);self.reply(200,'image/jpeg',jpeg)
-            elif path in ('/saved/normal.png','/saved/low.png','/saved/compare.png','/saved/pose.png','/saved/failure.png'):
+            elif path in ('/saved/normal.png','/saved/low.png','/saved/compare.png','/saved/pose.png','/saved/failure.png','/saved/stock.png'):
                 kind=path.split('/')[-1].split('.')[0];self.reply(200,'image/png',self.server.asset(kind).read_bytes())
             else:self.reply(404,'text/plain',b'Not found')
         except (OSError,ValueError,KeyError,TypeError):

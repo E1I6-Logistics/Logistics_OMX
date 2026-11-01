@@ -643,3 +643,71 @@ omx_view --camera-only
 ```
 
 모델과 같이 보려면 카메라 단독 뷰어를 종료한 뒤 `omx_service start`하고 `omx_view`를 실행합니다. 일반 `omx_view`는 카메라를 직접 열지 않으므로 서비스까지 멈추면 영상이 없습니다. 다시 특정 PC로 제한하려면 뷰어·서비스 정지 후 `view.allow_ip`에 해당 IPv4(예: 192.168.0.16)를 저장하고 뷰어를 재실행합니다.
+
+
+<a id="pallet-stock"></a>
+## OMX1·2 고정 팔레트 물건 존재 검사
+
+외부 품목 기준 OMX1 왼쪽=A / 오른쪽=B, OMX2 왼쪽=C / 오른쪽=D입니다. OMX1의 A가 B 모델을 사용하는 기존 실행 매핑은 바꾸지 않습니다. 각 팔레트에 물건이 하나라도 있는지만 검사하며 수량·종류·실제 집기 성공은 판단하지 않습니다. FMS 수신부·화면·주문 정책은 수정하지 않습니다.
+
+기본은 꺼져 있고 ROI·빈 기준은 임의 등록하지 않습니다. 주기 기본 5초, 같은 결과 3회 연속 확인 뒤 확정하므로 약 10~15초가 필요합니다. 홈 대기·정지 중에만 기존 front RGB 버퍼를 읽습니다. 새 카메라·시리얼·모델 추론·노출 조작 없이 최대 변 160픽셀의 ROI만 백그라운드 비교합니다. 작업·이동·관측 지연·과노출·조명 차이·미등록·기준 불일치·불명확한 변화는 UNKNOWN입니다.
+
+### 1. 업데이트 및 검사 준비 (OMX1·2에서만)
+
+```bash
+cd ~/Logistics_OMX
+omx_service stop
+git pull --ff-only
+source ~/.bashrc
+omx_stock setup
+omx_stock on
+omx_service start
+```
+
+홈·모델 준비와 MQTT 연결이 끝날 때까지 서비스 로그를 확인합니다. 첫 시작에서 ROI·기준 미등록으로 판정 불가가 나오는 것은 정상입니다. 주문이 없는 홈 상태에서 별도 터미널로 실행합니다:
+
+```bash
+omx_stock snapshot
+omx_stock status
+```
+
+사진은 `state/manager/omxN/pallet_view.png`에 저장됩니다. 최신 `omx_view`의 스냅샷 메뉴에서 ‘팔레트 좌표·영역 사진’을 누르거나 `/saved/stock.png`로 봅니다. 사진에 격자와 좌표가 표시됩니다. 일반 웹 뷰어는 별도 터미널에서 실행하고, 업데이트 전에 실행 중이던 뷰어는 다시 켭니다. 이 명령은 모델을 새로 돌리거나 팔을 이동시키지 않으며, 실행 중인 로봇의 카메라 소유자에게 촬영을 요청합니다.
+
+### 2. 실제 사진으로 팔레트 ROI 지정
+
+서비스를 멈춘 뒤 `omx_stock roi 품목 '[x,y,너비,높이]'`로 각 팔레트 영역을 지정합니다. 좌표는 실제 front 영상 기준입니다. 사진 예시에서 임의 추측한 좌표를 기본값으로 넣지 않았습니다. OMX1은 A/B, OMX2는 C/D 두 영역을 각각 지정합니다. 팔레트 테두리·케이블·옆 작업 영역을 과도하게 포함하지 않도록 실제 검사할 내부 영역을 선택합니다. 저장 뒤 서비스를 다시 시작해야 적용됩니다.
+
+설정은 현장 YAML `pallet_stock`에 저장하며 모든 값에 한글 주석이 붙습니다. `interval_s`, `stable_samples`, `pixel_threshold`, `weak_pixel_threshold`, `min_component_pixels`, `empty_ratio`, `max_frame_age_s`를 조정할 수 있습니다. 예: 서비스 정지 후 `./omx_control --config "$OMX_CONFIG_PATH" set --key pallet_stock.interval_s --value 10`. 실물 결과 없이 임계값을 낮추어 UNKNOWN을 숨기지 않습니다.
+
+### 3. 각 팔레트를 완전히 비운 상태에서 기준 저장
+
+서비스가 READY이고 팔·손이 검사 영역을 가리지 않을 때 실행합니다. `capture`는 사용자가 해당 팔레트가 비었다고 확인하는 명령입니다. 물건이 있는 상태를 빈 기준으로 저장하면 잘못된 판정이 나올 수 있습니다.
+
+```bash
+# OMX1: 왼쪽 A와 오른쪽 B를 각각 완전히 비운 상태
+omx_stock capture A
+omx_stock capture B
+# OMX2에서는 위 두 명령 대신
+# omx_stock capture C
+# omx_stock capture D
+omx_stock status
+omx_stock status --json
+```
+
+새 영상 3장으로 정지·해상도를 확인하고 `state/manager/omxN/pallet_refs/품목.npz`에 저장합니다. 카메라·ROI·홈 등록 연결 정보가 달라지면 기존 기준을 사용하지 않습니다. 자동으로 빈 기준을 갱신하지 않습니다. 중복/오래된 프레임으로 연속 확정을 쌓지 않습니다.
+
+### 4. 반드시 확인할 실물 시험
+
+팔레트별로 빈 상태 → 가장 작고 밝은 물건 1개 중앙 → 모서리 근처 → 여러 물건 → 다시 빈 상태를 시험합니다. 변화 직후에는 UNKNOWN이 나오고 연속 확인 뒤 확정됩니다. 손으로 가리거나 팔이 이동·작업 중일 때 EMPTY를 확정하지 않는지도 확인합니다. 가상 영상 시험은 실제 조명·흰 물건·가림의 인식률을 보장하지 않습니다. 카메라 위치가 고정이어도 실제 프레임과 현장 시험으로 ROI·기준을 검증해야 합니다.
+
+### MQTT (OMX 송신만 구현, FMS는 추후 연결)
+
+활성화된 OMX1·2는 기존 MQTT 프로세스에서 `omx1/stock`, `omx2/stock`으로 약 2초마다 최신 관측 상태를 전송합니다. 새 영상 검사는 설정 주기마다 실행됩니다. QoS 0, retain=false이며 기존 command/ack/progress/result·주문 inventory.json과 독립입니다. 모델 PID·세션·주문 시작 시각·관측 유효기간을 확인하여 이전 실행·이전 주문·오래된 결과는 UNKNOWN으로 전송합니다. 새 구독자는 다음 주기 메시지를 기다립니다.
+
+```json
+{"robot_id":"omx1","stock":{"A":"PRESENT","B":"EMPTY"},"at":1793500000,"observed_at":1793499999,"valid_for_s":12.5,"exact_item_count":null}
+```
+
+상태는 PRESENT(있음), EMPTY(비었음), UNKNOWN(판정 불가)입니다. `at`는 송신 시각, `observed_at`는 유효한 관측 결과 시각이며, UNKNOWN 사유와 품목별 비교 수치도 포함됩니다. FMS에서는 observed_at·valid_for_s와 로봇 연결 상태를 함께 확인하도록 추후 구현해야 합니다. 재고 메시지를 실제 집기 성공이나 정확한 수량으로 해석하지 않습니다.
+
+검사를 끄려면 서비스를 멈추고 `omx_stock off` 후 재시작합니다. 종료 시 검사 스레드를 먼저 정리하고 카메라를 닫습니다. 상태 조회는 파일만 읽고 모델·카메라·모터를 열지 않습니다.

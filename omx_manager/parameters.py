@@ -208,6 +208,19 @@ JOINT_NAMES={"shoulder_pan":"어깨 좌우", "shoulder_lift":"어깨 상하", "e
 
 def comment(path):
     key=path[-1]
+    if 'pallet_stock' in path:
+        return {'pallet_stock':'OMX1·2 고정 팔레트별 물건 존재 검사: 개수·품목 인식 없음',
+                'enabled':'검사 활성 여부: 기본 false, 빈 기준·ROI 등록 후 현장 검증',
+                'camera':'검사에 공유할 기존 RGB 카메라 키: 기본 front, 새 카메라를 열지 않음',
+                'interval_s':'홈 대기 중 검사 주기(초): 기본 5, 최소 2',
+                'stable_samples':'같은 판정 연속 확인 횟수: 기본 3',
+                'max_frame_age_s':'검사에 사용할 영상의 최대 나이(초)',
+                'pixel_threshold':'물체 변화 강한 픽셀 차이 기준(0~255)',
+                'weak_pixel_threshold':'약한 변화 기준: 불명확하면 UNKNOWN 유지',
+                'min_component_pixels':'물체 변화 연결 영역 최소 크기: 최대 변 160픽셀로 축소 후 기준',
+                'empty_ratio':'빈 상태에서 허용하는 약한 변화 비율',
+                'items':'외부 주문 품목별 팔레트: OMX1 A/B, OMX2 C/D',
+                'roi':'고정 팔레트 영역 [x,y,너비,높이]: 실제 영상 기준, null이면 UNKNOWN'}.get(key,'외부 품목 '+key+'의 고정 팔레트 설정')
     if key=='profiles' and 'counting' in path:return '품목별 모델 복귀 프로필: omx_cycle_calibrate로 자동 계산·저장'
     if len(path)>=3 and path[-2]=='profiles' and 'counting' in path:return '품목 '+key+'의 모델 복귀 영역: 자동 저장, 고정 초기 자세와 별개'
     if key=='binding' and 'counting' in path:return '모델 복귀 프로필의 홈·모델·보정 연결 해시: 자동 생성'

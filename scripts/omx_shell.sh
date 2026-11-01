@@ -13,7 +13,7 @@ else
 fi
 export OMX_ROBOT_ID OMX_CONFIG_PATH OMX_PYTHON
 # 이전 alias와 재고 직접 초기화 함수를 제거하고 현재 YAML 관리 명령을 사용합니다.
-for _omx_name in omx_motor_check omx_start omx_home omx_arm omx_release omx_observe omx_capture omx_check omx_calibrate omx_logs omx_monitor omx_status omx_recover omx_reset omx_order omx_service omx_info omx_help omx_cd omx_setup omx_workflow omx_stage omx_route omx_route_test omx_return_home omx_basket omx_resume omx_unload omx_tune omx_cycle_calibrate omx_view; do
+for _omx_name in omx_motor_check omx_start omx_home omx_arm omx_release omx_observe omx_capture omx_check omx_calibrate omx_logs omx_monitor omx_status omx_recover omx_reset omx_order omx_service omx_info omx_help omx_cd omx_setup omx_workflow omx_stage omx_route omx_route_test omx_return_home omx_basket omx_resume omx_unload omx_tune omx_cycle_calibrate omx_view omx_stock; do
   unalias "$_omx_name" 2>/dev/null || true
 done
 unset -f omx_reset 2>/dev/null || true
@@ -40,6 +40,17 @@ omx_calibrate() { _omx_ctl menu "$@"; }
 omx_logs() { _omx_ctl logs "$@"; }
 omx_monitor() { _omx_ctl monitor "$@"; }
 omx_status() { _omx_ctl monitor --samples 1 "$@"; }
+omx_stock() {
+  local PYTHONPATH="$_OMX_SHELL_ROOT:$_OMX_SHELL_ROOT/lerobot_unified/src:${PYTHONPATH:-}"
+  export PYTHONPATH
+  local action="${1:-status}"
+  case "$action" in
+    setup|on|off|snapshot|status) shift || true; "$OMX_PYTHON" -m omx_manager.pallet_cli --config "$OMX_CONFIG_PATH" "$action" "$@";;
+    roi) "$OMX_PYTHON" -m omx_manager.pallet_cli --config "$OMX_CONFIG_PATH" roi --item "${2:-}" --value "${3:-}";;
+    capture) "$OMX_PYTHON" -m omx_manager.pallet_cli --config "$OMX_CONFIG_PATH" capture --item "${2:-}" --confirm-empty;;
+    *) echo '사용법: omx_stock setup|on|off|snapshot|status / roi 품목 "[x,y,w,h]" / capture 품목'; return 2;;
+  esac
+}
 omx_recover() { _omx_ctl acknowledge-recovery --confirm-motion "$@"; }
 omx_setup() { _omx_ctl setup-workflow "$@"; }
 omx_tune() { _omx_ctl tune "$@"; }
@@ -132,6 +143,7 @@ omx_help() {
   omx_info
   cat <<'HELP'
 omx_motor_check            모터 목표·현재 위치 흔들림 약 3초 관측 (모터 쓰기 없음)
+omx_stock                  팔레트 재고 검사 setup/on/off/roi/snapshot/capture/status (OMX1·2)
 omx_start [--diagnostics]   실행 / 전경 실행 종료는 Ctrl+C
 omx_home                    등록 홈 근처에서 제한 복귀 (실제 이동)
 omx_arm                     현재 자세 유지 토크 ON (홈 접근 범위 안)

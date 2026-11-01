@@ -118,6 +118,10 @@ class OmxFollower(Robot):
             raise
         from omx_manager.viewer import attach_robot
         attach_robot(self)
+        from omx_manager.pallet_runtime import attach as attach_stock
+        from omx_manager.hooks import managed_config
+        stock_cfg=managed_config()
+        if stock_cfg is not None:attach_stock(self,stock_cfg)
         logger.info(f"{self} connected.")
 
     @property
@@ -184,6 +188,8 @@ class OmxFollower(Robot):
                 raise RuntimeError(f"{name}: raw position outside trained calibration range; refusing clamped observation")
         obs_dict = self.bus.sync_read("Present_Position")
         obs_dict = {f"{motor}.pos": val for motor, val in obs_dict.items()}
+        stock=getattr(self,'_omx_stock',None)
+        if stock is not None:stock.observe(obs_dict)
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state: {dt_ms:.1f}ms")
 

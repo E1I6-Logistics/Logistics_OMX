@@ -633,6 +633,15 @@ def record_connection(connected):
         except OSError as exc:print(f'[WARNING] MQTT connection status unavailable: {exc}',flush=True)
 
 
+def send_pallet_stock(cfg):
+    """Dedicated non-retained presence topic; never alter order inventory."""
+    from omx_manager.pallet_runtime import mqtt_payload
+    path=state_path.parent/'pallet_stock.json'
+    data=mqtt_payload(cfg,path,os.environ.get('OMX_SESSION'),int(os.environ.get('OMX_ROLLOUT_PID','0')),
+                      idle=current_state=='IDLE' and current_job_id is None)
+    client.publish(robot_id+'/stock',json.dumps(data,ensure_ascii=False),qos=0,retain=False)
+
+
 def on_connect(client, userdata, flags, rc):
     global current_state
     print(f"[MQTT] Connected: {rc}", flush=True)
@@ -709,6 +718,12 @@ def stop_omx3_process(signum, frame):
 
 # 명령행 프로그램의 실행 절차를 시작한다.
 def main():
+    stock_cfg=None
+    if robot_id in PICKUP_ITEMS and os.environ.get('OMX_MANAGER_CONFIG'):
+        from omx_manager.config import load
+        from omx_manager.pallet import options as stock_options
+        candidate=load(os.environ['OMX_MANAGER_CONFIG'])
+        if stock_options(candidate)['enabled']:stock_cfg=candidate
     if robot_id in WORKSTATION_IDS and not workstation_ready():
         raise SystemExit("[ERROR] Persistent workstation not READY. Use omx_start, not direct MQTT client")
     signal.signal(signal.SIGTERM, stop_omx3_process)
@@ -741,6 +756,9 @@ def main():
 
             # FMS 연결 확인용 heartbeat
             send_status()
+            if stock_cfg is not None:
+                try:send_pallet_stock(stock_cfg)
+                except Exception as exc:print('[STOCK] 팔레트 상태 전송 보류:',exc,flush=True)
 
             time.sleep(2)
 
