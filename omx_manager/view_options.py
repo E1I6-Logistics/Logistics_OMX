@@ -25,6 +25,7 @@ def validate(cfg):
     only_keys(cfg.get('view',{}),' '.join(DEFAULTS),'view')
     spec=options(cfg)
     for key in ('bind','allow_ip'):
+        if key=='allow_ip' and spec[key]=='any':continue
         try:ipaddress.IPv4Address(spec[key])
         except (ipaddress.AddressValueError,ValueError,TypeError):raise ConfigError('view.'+key+' must be an IPv4 address')
     for key,lo,hi in (('port',1024,65535),('max_width',160,1280),('jpeg_quality',30,90)):

@@ -89,3 +89,21 @@ def test_root_and_all_are_tabs_but_robot_route_is_single_stream_page(dual):
     code,data=get('/robot');assert code==200 and b'id="cameras"' in data
     assert b'AbortController' in data and b"pagehide" in data
     assert not any(pub.path.with_suffix('.request').exists() for pub in p.values())
+
+
+@pytest.mark.parametrize('address,allowed',[('192.168.0.16',True),('192.168.0.77',True),('10.10.0.20',True)])
+def test_any_ip_can_read_page_without_camera_access(dual,address,allowed):
+    cfg,s,p,get=dual
+    updated=dict(cfg,view=dict(cfg['view'],allow_ip='any'));C.validate(updated)
+    handler=object.__new__(V.ViewerHandler);handler.client_address=(address,1234);handler.path='/'
+    handler.server=NS(spec=O.options(updated));handler.reply=Mock()
+    handler.do_GET();assert handler.reply.call_args.args[0]==200
+    assert not any(pub.path.with_suffix('.request').exists() for pub in p.values())
+
+
+def test_any_ip_edit_preserves_model_and_specific_ip_rule(dual):
+    from omx_manager.cli import edit_value
+    cfg,*_=dual;updated=edit_value(cfg,'view.allow_ip','any')
+    assert updated['view']['allow_ip']=='any' and updated['hardware']==cfg['hardware']
+    assert updated['home']==cfg['home'] and updated['models']==cfg['models']
+    assert edit_value(updated,'view.allow_ip','192.168.0.16')['view']['allow_ip']=='192.168.0.16'

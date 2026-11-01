@@ -626,3 +626,20 @@ Windows 브라우저에서 `http://192.168.0.151:8080/all`을 엽니다. OMX1·2
 기존 `/live.jpg`, `/status.json`은 기본 카메라를 계속 제공하며 `/live.jpg?camera=wrist`, `/live.jpg?camera=top` 또는 front로 개별 조회할 수 있습니다. `/status.json?camera=all`은 등록 카메라별 상태와 영상 요청을 제공합니다. 모터·카메라 설정을 바꾸는 웹 API는 없습니다.
 
 처음 접속하는 `/`와 `/all` 모두 로봇 선택 탭입니다. 선택한 로봇만 `/robot` 화면을 열며 다른 로봇 영상은 요청하지 않습니다. 탭 전환 시 이전 화면 제거와 진행 중 영상 요청 취소를 수행합니다. 2대 묶음 보기는 제거했습니다.
+
+
+### PC IP 제한 없이 보기 / 서비스 정지 상태에서 영상 보기
+
+기본 `view.allow_ip`는 192.168.0.19 한 PC만 허용합니다. .16 PC 등 주소가 달라도 접속하려면 실행 중 뷰어를 Ctrl+C로 종료하고, 서비스를 정지한 상태에서 다음 값을 저장합니다. `any`는 Pi에 네트워크로 도달 가능한 모든 IP를 허용하며 읽기 전용 영상·스냅샷 API만 제공합니다. 로봇/Pi 주소 자체나 SSH 연결을 복구하는 설정은 아닙니다.
+
+```bash
+cd ~/Logistics_OMX
+source ~/.bashrc
+omx_service stop
+git pull --ff-only
+./omx_control --config "$OMX_CONFIG_PATH" set --key view.allow_ip --value any
+# 모델 없이 상단·손목 카메라만 보고 싶을 때
+omx_view --camera-only
+```
+
+모델과 같이 보려면 카메라 단독 뷰어를 종료한 뒤 `omx_service start`하고 `omx_view`를 실행합니다. 일반 `omx_view`는 카메라를 직접 열지 않으므로 서비스까지 멈추면 영상이 없습니다. 다시 특정 PC로 제한하려면 뷰어·서비스 정지 후 `view.allow_ip`에 해당 IPv4(예: 192.168.0.16)를 저장하고 뷰어를 재실행합니다.
