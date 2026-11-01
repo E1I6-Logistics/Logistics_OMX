@@ -20,6 +20,31 @@ LOG=logging.getLogger(__name__)
 MAX_PACKET=2*1024*1024
 ASSETS={'normal':'basket_view.png','low':'basket_low.png','compare':'basket_compare.png','pose':'basket_pose.png','failure':'basket_failure.png','stock':'pallet_view.png'}
 
+def download_name(device, name, extension):
+    import re
+    safe = re.sub(r'[^a-zA-Z0-9_-]', '_', name)[:80]
+    return f'{device}_{safe}.{extension}'
+
+
+def label_image(image, device, camera):
+    """Export copy only: keep source coordinates, append identification BELOW."""
+    import cv2
+    height = image.shape[0]
+    result = cv2.copyMakeBorder(image, 0, 26, 0, 0, cv2.BORDER_CONSTANT, value=(0,0,0))
+    cv2.putText(result, f'{device.upper()} | {camera}', (8,height+18),
+                cv2.FONT_HERSHEY_SIMPLEX, .5, (255,255,255), 1, cv2.LINE_AA)
+    return result
+
+
+def labeled_export(data, device, camera, extension):
+    import cv2
+    import numpy as np
+    image = cv2.imdecode(np.frombuffer(data, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if image is None:raise ValueError('Invalid saved image')
+    ok, encoded = cv2.imencode('.'+extension, label_image(image, device, camera))
+    if not ok:raise ValueError('Image export failed')
+    return encoded.tobytes()
+
 def camera_config(cfg,name):
     if name not in cfg['hardware']['cameras']:raise KeyError(name)
     return dict(cfg,view=dict(options(cfg),camera=name))
@@ -147,12 +172,12 @@ PAGE=r'''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewpo
 <button onclick="showSaved('normal')">원본 + ROI/격자</button><button onclick="showSaved('low')">저노출 스냅샷</button><button onclick="showSaved('compare')">기준·현재·차이</button><button onclick="showSaved('pose')">바구니 추적 영역</button><button onclick="showSaved('failure')">마지막 검사 실패</button>
 <div id="savedTime"></div><a id="savedLink" download><img id="saved" alt="스냅샷 선택"></a></details>
 <script>
-let paused=false,busy=false,assets={},active=null;const cards=new Map(),state=document.querySelector('#state');
+let paused=false,busy=false,assets={},active=null,device='omx';const cards=new Map(),state=document.querySelector('#state');
 function clearImage(img){if(img.dataset.url){URL.revokeObjectURL(img.dataset.url);delete img.dataset.url;}img.removeAttribute('src');}
-function card(key,label){if(cards.has(key))return cards.get(key);const panel=document.createElement('section');panel.className='card';const title=document.createElement('h3');title.textContent=label+' 카메라 ('+key+')';const status=document.createElement('div');status.className='status';const img=document.createElement('img');img.alt=label+' 최신 영상';const save=document.createElement('a');save.textContent='이 카메라 영상 저장';save.download=key+'.jpg';save.href='/live.jpg?camera='+encodeURIComponent(key);panel.append(title,status,img,save);document.querySelector('#cameras').append(panel);const c={img,status};cards.set(key,c);return c;}
+function card(key,label){if(cards.has(key))return cards.get(key);const panel=document.createElement('section');panel.className='card';const title=document.createElement('h3');title.textContent=label+' 카메라 ('+key+')';const status=document.createElement('div');status.className='status';const img=document.createElement('img');img.alt=label+' 최신 영상';const save=document.createElement('a');save.textContent='이 카메라 영상 저장';save.download=device+'_'+key+'.jpg';save.href='/live.jpg?camera='+encodeURIComponent(key)+'&download=1';panel.append(title,status,img,save);document.querySelector('#cameras').append(panel);const c={img,status};cards.set(key,c);return c;}
 document.querySelector('#toggle').onclick=()=>{paused=!paused;document.querySelector('#toggle').textContent=paused?'실시간 재개':'실시간 일시정지';if(paused){if(active)active.abort();for(const c of cards.values())clearImage(c.img);state.textContent='보기 일시정지';}else tick();};
-function showSaved(kind){const a=assets[kind];document.querySelector('#savedTime').textContent=a?a.name+' · 저장: '+new Date(a.at*1000).toLocaleString():'저장된 사진이 없습니다';if(!a){document.querySelector('#saved').removeAttribute('src');return;}const url='/saved/'+kind+'.png?t='+Date.now();document.querySelector('#saved').src=url;document.querySelector('#savedLink').href=url;}
-async function tick(){if(paused||document.hidden||busy)return;busy=true;const controller=new AbortController();active=controller;try{const r=await fetch('/status.json?camera=all&t='+Date.now(),{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);const s=await r.json();if(paused||document.hidden)return;assets=s.assets;document.querySelector('#title').textContent=s.device.toUpperCase()+' · 상단 / 손목';state.textContent='카메라별 수신 상태';await Promise.all(Object.entries(s.cameras).map(async([key,v])=>{const c=card(key,v.label);if(!v.live){clearImage(c.img);c.status.textContent='영상 없음 · 로봇 서비스를 켜거나, 서비스 정지 시 omx_view --camera-only로 실행하세요';return;}try{const r=await fetch('/live.jpg?camera='+encodeURIComponent(key)+'&t='+Date.now(),{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);const blob=await r.blob();if(paused||document.hidden)return;clearImage(c.img);const url=URL.createObjectURL(blob);c.img.src=url;c.img.dataset.url=url;c.status.textContent=(v.frame.camera_state==='NORMAL'?'원본 영상':'검사 저노출 / 복원 중')+' · 영상 나이 '+v.frame.frame_age_ms+'ms';}catch(e){clearImage(c.img);c.status.textContent='이 카메라 영상 갱신 대기';}}));}catch(e){for(const c of cards.values())clearImage(c.img);state.textContent='연결 끊김: '+e.message;}finally{busy=false;}}
+function showSaved(kind){const a=assets[kind];document.querySelector('#savedTime').textContent=a?a.name+' · 저장: '+new Date(a.at*1000).toLocaleString():'저장된 사진이 없습니다';if(!a){document.querySelector('#saved').removeAttribute('src');return;}const url='/saved/'+kind+'.png?t='+Date.now();document.querySelector('#saved').src=url;document.querySelector('#savedLink').href=url+'&download=1';document.querySelector('#savedLink').download=a.download_name;}
+async function tick(){if(paused||document.hidden||busy)return;busy=true;const controller=new AbortController();active=controller;try{const r=await fetch('/status.json?camera=all&t='+Date.now(),{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);const s=await r.json();if(paused||document.hidden)return;assets=s.assets;device=s.device;document.querySelector('#title').textContent=s.device.toUpperCase()+' · 상단 / 손목';state.textContent='카메라별 수신 상태';await Promise.all(Object.entries(s.cameras).map(async([key,v])=>{const c=card(key,v.label);if(!v.live){clearImage(c.img);c.status.textContent='영상 없음 · 로봇 서비스를 켜거나, 서비스 정지 시 omx_view --camera-only로 실행하세요';return;}try{const r=await fetch('/live.jpg?camera='+encodeURIComponent(key)+'&t='+Date.now(),{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('HTTP '+r.status);const blob=await r.blob();if(paused||document.hidden)return;clearImage(c.img);const url=URL.createObjectURL(blob);c.img.src=url;c.img.dataset.url=url;c.status.textContent=(v.frame.camera_state==='NORMAL'?'원본 영상':'검사 저노출 / 복원 중')+' · 영상 나이 '+v.frame.frame_age_ms+'ms';}catch(e){clearImage(c.img);c.status.textContent='이 카메라 영상 갱신 대기';}}));}catch(e){for(const c of cards.values())clearImage(c.img);state.textContent='연결 끊김: '+e.message;}finally{busy=false;}}
 document.addEventListener('visibilitychange',()=>{if(document.hidden){if(active)active.abort();for(const c of cards.values())clearImage(c.img);}else tick();});window.addEventListener('pagehide',()=>{if(active)active.abort();for(const c of cards.values())clearImage(c.img);});setInterval(tick,1000);tick();
 </script></html>'''
 
@@ -188,9 +213,13 @@ class ViewerServer(ThreadingHTTPServer):
 
     def asset(self,kind):
         if kind not in ASSETS:raise FileNotFoundError()
-        path=self.asset_dir/ASSETS[kind]
-        if path.is_symlink() or not path.is_file() or path.stat().st_size>MAX_PACKET:raise FileNotFoundError()
-        return path
+        # New exports carry the robot ID; keep existing snapshots readable.
+        for name in (self.cfg['device_id']+'_'+ASSETS[kind], ASSETS[kind]):
+            path=self.asset_dir/name
+            if path.exists() or path.is_symlink():
+                if path.is_symlink() or not path.is_file() or path.stat().st_size>MAX_PACKET:raise FileNotFoundError()
+                return path
+        raise FileNotFoundError()
 
     def status(self,name=None):
         name=name or camera_name(self.cfg)
@@ -198,7 +227,7 @@ class ViewerServer(ThreadingHTTPServer):
                     message='최신 영상 없음. 모델/보정/바구니 watch 실행 중이면 자동 연결됩니다. 정지 상태의 영상은 omx_view --camera-only 사용.')
         for kind in ASSETS:
             try:
-                path=self.asset(kind);result['assets'][kind]=dict(name=path.name,at=path.stat().st_mtime)
+                path=self.asset(kind);result['assets'][kind]=dict(name=path.name,at=path.stat().st_mtime,download_name=download_name(self.cfg['device_id'],Path(ASSETS[kind]).stem,'png'))
             except OSError:pass
         for key in self.paths:
             row=dict(camera=key,label='손목' if key=='wrist' else '상단' if key in ('top','front') else key,live=False)
@@ -221,9 +250,10 @@ class ViewerHandler(BaseHTTPRequestHandler):
     def setup(self):
         super().setup();self.connection.settimeout(3)
     def log_message(self,*args):pass
-    def reply(self,code,mime,data):
+    def reply(self,code,mime,data,filename=None,attachment=False):
         self.send_response(code);self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(data)))
         self.send_header('Cache-Control','no-store');self.send_header('X-Content-Type-Options','nosniff')
+        if filename:self.send_header('Content-Disposition',('attachment' if attachment else 'inline')+'; filename="'+filename+'"')
         self.end_headers();self.wfile.write(data)
     def do_GET(self):
         # Only the configured laptop and local checks. No folder listing or arbitrary files.
@@ -231,7 +261,8 @@ class ViewerHandler(BaseHTTPRequestHandler):
             self.reply(403,'text/plain; charset=utf-8','허용된 노트북 IP가 아닙니다. view.allow_ip 확인'.encode());return
         path=urlsplit(self.path).path
         try:
-            name=parse_qs(urlsplit(self.path).query).get('camera',[None])[0]
+            query=parse_qs(urlsplit(self.path).query);download=query.get('download')==['1']
+            name=query.get('camera',[None])[0]
             if name not in (None,'all') and name not in self.server.paths:
                 self.reply(404,'text/plain; charset=utf-8','등록되지 않은 카메라입니다'.encode());return
             if path in ('/','/all','/robot'):
@@ -240,9 +271,18 @@ class ViewerHandler(BaseHTTPRequestHandler):
                 for key in (self.server.paths if name=='all' else [name]):self.server.touch(key)
                 self.reply(200,'application/json',json.dumps(self.server.status(None if name=='all' else name),ensure_ascii=False).encode())
             elif path=='/live.jpg':
-                self.server.touch(name);row,jpeg=self.server.frame(name);self.reply(200,'image/jpeg',jpeg)
+                self.server.touch(name);row,jpeg=self.server.frame(name)
+                key=row['camera'];device=self.server.cfg['device_id']
+                if download:jpeg=labeled_export(jpeg,device,key,'jpg')
+                self.reply(200,'image/jpeg',jpeg,download_name(device,key,'jpg'),download)
             elif path in ('/saved/normal.png','/saved/low.png','/saved/compare.png','/saved/pose.png','/saved/failure.png','/saved/stock.png'):
-                kind=path.split('/')[-1].split('.')[0];self.reply(200,'image/png',self.server.asset(kind).read_bytes())
+                kind=path.split('/')[-1].split('.')[0];asset=self.server.asset(kind);data=asset.read_bytes()
+                device=self.server.cfg['device_id'];name=download_name(device,Path(ASSETS[kind]).stem,'png')
+                # Stock snapshots already have a footer when captured by the owner.
+                if download and not (kind=='stock' and asset.name==device+'_'+ASSETS[kind]):
+                    key=self.server.cfg.get('pallet_stock',{}).get('camera','front') if kind=='stock' else camera_name(self.server.cfg)
+                    data=labeled_export(data,device,key,'png')
+                self.reply(200,'image/png',data,name,download)
             else:self.reply(404,'text/plain',b'Not found')
         except (OSError,ValueError,KeyError,TypeError):
             self.reply(503 if path=='/live.jpg' else 404,'text/plain',b'No fresh frame or saved image')

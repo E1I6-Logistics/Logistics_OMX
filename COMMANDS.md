@@ -671,7 +671,7 @@ omx_stock snapshot
 omx_stock status
 ```
 
-사진은 `state/manager/omxN/pallet_view.png`에 저장됩니다. 최신 `omx_view`의 스냅샷 메뉴에서 ‘팔레트 좌표·영역 사진’을 누르거나 `/saved/stock.png`로 봅니다. 사진에 격자와 좌표가 표시됩니다. 일반 웹 뷰어는 별도 터미널에서 실행하고, 업데이트 전에 실행 중이던 뷰어는 다시 켭니다. 이 명령은 모델을 새로 돌리거나 팔을 이동시키지 않으며, 실행 중인 로봇의 카메라 소유자에게 촬영을 요청합니다.
+사진은 `state/manager/omxN/omxN_pallet_view.png`에 저장됩니다. 최신 `omx_view`의 스냅샷 메뉴에서 ‘팔레트 좌표·영역 사진’을 누르거나 `/saved/stock.png`로 봅니다. 사진에 격자와 좌표가 표시됩니다. 일반 웹 뷰어는 별도 터미널에서 실행하고, 업데이트 전에 실행 중이던 뷰어는 다시 켭니다. 이 명령은 모델을 새로 돌리거나 팔을 이동시키지 않으며, 실행 중인 로봇의 카메라 소유자에게 촬영을 요청합니다.
 
 ### 2. 실제 사진으로 팔레트 ROI 지정
 
@@ -747,3 +747,31 @@ omx_service logs --follow
 `omx_cycle_calibrate E`에서는 임시 F 모델이 실제로 움직입니다. 정상 집기·놓기·복귀 3회를 사람이 확인해 저장합니다. OMX4의 사이클 보정을 OMX3에 복사하지 않습니다. READY 후 별도 터미널에서 `omx_unload 1`로 한 사이클을 먼저 시험합니다. 전체를 정상 수행하는지 확인한 뒤 `omx_unload 2`로 두 사이클을 확인합니다. 숫자는 검증된 동작 횟수이며 실제 물품 성공 개수와 다를 수 있습니다.
 
 새 OMX3 모델로 돌아갈 때는 기존 모델 경로·입력 카메라 요구사항을 먼저 확인하고 활성 프로필을 변경한 뒤 홈·사이클을 다시 확인합니다. 예전 C920 설정을 포함한 YAML 백업 전체를 RealSense 환경에 그대로 복원하지 않습니다. 같은 모델·시리얼로 전환 명령을 반복하면 새로 등록한 홈·사이클을 다시 초기화하지 않습니다.
+
+
+### 영상 파일의 로봇 번호
+
+웹 뷰어의 ‘이 카메라 영상 저장’은 `omx1_front.jpg`, `omx3_top.jpg`, `omx4_wrist.jpg`처럼 로봇 번호·카메라 이름으로 다운로드합니다. 저장된 스냅샷도 `omx3_basket_low.png`, `omx2_pallet_view.png`처럼 내려받습니다. 다운로드 이미지 아래에 OMX 번호·카메라 이름 식별 띠가 추가되며 모델 입력·기존 공유 RGB 버퍼는 바꾸지 않습니다. 식별 띠는 원본 아래에 붙으므로 원본 ROI 좌표는 유지됩니다. 일회성 다운로드 때만 변환하며 실시간 조회에는 추가 변환하지 않습니다. `omx_stock snapshot`의 현장 파일명과 응답에도 로봇 번호가 표시됩니다. 이전 이름의 스냅샷도 계속 볼 수 있습니다. 업데이트 후 실행 중 웹 뷰어를 종료·재실행하고 브라우저를 새로고침해야 적용됩니다.
+
+### 새 OMX3 E 모델 경로로 교체
+
+실제 실행 설정은 `$OMX_CONFIG_PATH`(보통 `state/config/omx3.yaml`)입니다. `params/omx3.yaml`은 새 장비용 템플릿이므로 기존 Pi의 이 파일만 수정하면 적용되지 않습니다. 서비스를 멈춘 뒤 실제 설정의 `models.active_profile`이 가리키는 프로필에서 `items.E.path`를 새 `pretrained_model` 폴더로, `items.E.task`를 학습한 작업 문장으로 수정합니다. 현재 활성 임시 프로필은 `omx4_temporary`입니다. 새 프로필을 만들어 `active_profile`로 선택해도 됩니다. 외부 주문 키 `E`는 유지합니다.
+
+새 모델은 현 실행기 기준 FP32 LeRobot ACT 6축이고 카메라 키 `top`·`wrist`, 입력 크기가 현장 설정과 맞아야 합니다. 가중치 외 config·pre/postprocessor·processor state도 폴더에 필요합니다. 교체 후에는 모델 해시가 달라지므로 정상 초기 자세 확인 → `omx_capture` → `omx_arm` → `omx_check` → `omx_cycle_calibrate E` → `omx_workflow` 후 서비스를 시작합니다. 이전 사이클 보정 해시를 새 모델에 억지로 붙이지 않습니다. F 모델 재적용 도구 `model_compat --apply`를 새 E 모델 설정 후 다시 실행하면 F 모델로 돌아가므로 사용하지 않습니다.
+
++
++### OMX1·2 현재 상단 사진 기준 ROI 시작값 (640×480)
++
++2026-11-01 전달받은 현장 사진 기준이며 왼쪽 A/C, 오른쪽 B/D입니다. 아래는 `pallet_stock` 검사 영역만 바꾸며 모델 영상·홈·카운팅 설정은 바꾸지 않습니다. 템플릿을 덮어쓰지 않고 실제 현장 YAML에 저장합니다. 카메라 위치·해상도가 바뀌면 새 사진으로 다시 지정합니다.
++
++```bash
++# OMX1에서, 서비스 정지 상태
++omx_stock roi A '[28,280,128,116]'
++omx_stock roi B '[472,272,132,124]'
++# OMX2에서는 위 두 줄 대신
++omx_stock roi C '[28,258,130,114]'
++omx_stock roi D '[482,248,132,120]'
++```
++
++서비스 재시작 후 READY를 확인하고 각 팔레트를 완전히 비운 상태에서 OMX1은 `omx_stock capture A`, `omx_stock capture B`, OMX2는 `omx_stock capture C`, `omx_stock capture D`로 빈 기준을 등록합니다. 이번에 전달한 물건이 올라간 사진을 빈 기준으로 쓰지 않습니다. 10~15초 뒤 `omx_stock status`로 빈 상태를 확인하고, 물건 한 개 넣기·다시 빼기를 시험합니다. `omx_stock snapshot`으로 ROI 표시를 함께 확인합니다.
++

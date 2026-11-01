@@ -123,7 +123,7 @@ def test_snapshot_and_empty_capture_request_use_same_owner_no_new_camera(stock):
     cfg,frame,path=stock;w=producer(stock);w.gate()
     C.write_json(path/'pallet_request.json',dict(token='a'*32,session='s',at=time.time(),action='snapshot'))
     w.command();reply=json.loads((path/'pallet_reply.json').read_text())
-    assert reply['ok'] and (path/'pallet_view.png').exists()
+    assert reply['ok'] and (path/'omx1_pallet_view.png').exists() and reply['device']=='omx1'
     C.write_json(path/'pallet_request.json',dict(token='b'*32,session='old',at=time.time(),action='capture',item='A',confirm_empty=True))
     before=(path/'pallet_refs/A.npz').read_bytes();w.command()
     assert not json.loads((path/'pallet_reply.json').read_text())['ok'] and (path/'pallet_refs/A.npz').read_bytes()==before

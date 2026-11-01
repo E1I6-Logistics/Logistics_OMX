@@ -63,7 +63,7 @@ class Worker:
         path=self.directory/'pallet_request.json'
         if not path.exists():return
         request=json.loads(path.read_text());path.unlink(missing_ok=True)
-        token=request.get('token');result=dict(token=token,session=self.session,ok=False,at=time.time())
+        token=request.get('token');result=dict(device=self.cfg['device_id'],token=token,session=self.session,ok=False,at=time.time())
         try:
             if (request.get('session')!=self.session or not 0<=time.time()-request['at']<=15
                     or not isinstance(token,str) or len(token)!=32):raise RuntimeError('이전 실행 또는 만료된 촬영 요청')
@@ -78,7 +78,9 @@ class Worker:
                 for key,row in self.spec['items'].items():
                     if row.get('roi'):
                         x,y,w,h=row['roi'];cv2.rectangle(image,(x,y),(x+w,y+h),(0,220,255),2);cv2.putText(image,key,(x+4,y+20),0,.6,(0,0,255),2)
-                destination=self.directory/'pallet_view.png'
+                from .viewer import label_image
+                image=label_image(image,self.cfg['device_id'],self.spec['camera'])
+                destination=self.directory/(self.cfg['device_id']+'_pallet_view.png')
                 if not cv2.imwrite(str(destination),image):raise OSError('팔레트 좌표 사진 저장 실패')
             elif action=='capture' and request.get('confirm_empty') is True and item in P.ITEMS[self.cfg['device_id']]:
                 frames=[];stamps=[]

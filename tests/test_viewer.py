@@ -240,3 +240,65 @@ def test_tray_pose_preview_is_whitelisted_without_control_endpoint(http):
     assert json.loads(get('/status.json')[2])['assets']['pose']['name']=='basket_pose.png'
     assert "showSaved('pose')" in V.PAGE
     assert get('/align/on')[0]==404
+
+
+@pytest.mark.parametrize('device', ['omx1','omx2','omx3','omx4'])
+def test_export_footer_has_device_and_keeps_input_pixels(device, monkeypatch):
+    image=np.full((40,200,3),100,np.uint8);original=image.copy();labels=[]
+    put=cv2.putText
+    def record(img,text,*args,**kwargs):
+        labels.append(text);return put(img,text,*args,**kwargs)
+    monkeypatch.setattr(cv2,'putText',record)
+    result=V.label_image(image,device,'top')
+    assert result.shape==(66,200,3) and np.array_equal(result[:40],original)
+    assert np.array_equal(image,original) and labels==[device.upper()+' | top']
+    assert V.download_name(device,'wrist','jpg')==device+'_wrist.jpg'
+    assert '\r' not in V.download_name(device,'bad\r\nname','jpg')
+
+
+def test_http_live_download_names_robot_and_camera_without_changing_packet(http):
+    server,get,cam,_=http
+    get('/status.json');publisher=V.Publisher(server.cfg,cam);assert publisher.step()
+    packet=publisher.path.with_suffix('.frame').read_bytes();reads=cam.reads
+    code,headers,raw=get('/live.jpg?camera=top')
+    assert code==200 and headers['Content-Disposition']=='inline; filename="omx4_top.jpg"'
+    assert cv2.imdecode(np.frombuffer(raw,np.uint8),1).shape==(480,640,3)
+    code,headers,download=get('/live.jpg?camera=top&download=1')
+    assert code==200 and headers['Content-Disposition']=='attachment; filename="omx4_top.jpg"'
+    assert cv2.imdecode(np.frombuffer(download,np.uint8),1).shape==(506,640,3)
+    assert publisher.path.with_suffix('.frame').read_bytes()==packet and cam.reads==reads
+
+
+def test_saved_download_adds_identity_without_rewriting_diagnostic_file(http):
+    server,get,cam,_=http;server.asset_dir.mkdir(parents=True)
+    image=np.full((30,160,3),80,np.uint8);ok,encoded=cv2.imencode('.png',image);assert ok
+    path=server.asset_dir/'basket_low.png';path.write_bytes(encoded.tobytes());before=path.read_bytes()
+    code,headers,data=get('/saved/low.png?download=1')
+    assert code==200 and headers['Content-Disposition']=='attachment; filename="omx4_basket_low.png"'
+    result=cv2.imdecode(np.frombuffer(data,np.uint8),1)
+    assert result.shape==(56,160,3) and np.array_equal(result[:30],image)
+    assert path.read_bytes()==before and cam.reads==0
+
+
+def test_stock_snapshot_new_name_wins_legacy_fallback_and_single_footer(http):
+    server,get,_,_=http;server.asset_dir.mkdir(parents=True)
+    image=np.zeros((40,180,3),np.uint8)
+    ok,encoded=cv2.imencode('.png',image);assert ok
+    old=server.asset_dir/'pallet_view.png';old.write_bytes(encoded.tobytes())
+    assert get('/saved/stock.png')[0]==200
+    new=server.asset_dir/'omx4_pallet_view.png'
+    ok,encoded=cv2.imencode('.png',V.label_image(image,'omx4','front'));assert ok
+    new.write_bytes(encoded.tobytes())
+    row=json.loads(get('/status.json')[2])['assets']['stock']
+    assert row['name']==row['download_name']=='omx4_pallet_view.png'
+    code,headers,data=get('/saved/stock.png?download=1')
+    assert code==200 and data==new.read_bytes()
+    assert 'omx4_pallet_view.png' in headers['Content-Disposition']
+    new.unlink();new.symlink_to(old)
+    assert get('/saved/stock.png')[0]==404
+
+
+def test_page_download_links_request_labeled_exports():
+    assert "save.download=device+'_'+key+'.jpg'" in V.PAGE
+    assert "+'&download=1'" in V.PAGE
+    assert 'a.download_name' in V.PAGE
