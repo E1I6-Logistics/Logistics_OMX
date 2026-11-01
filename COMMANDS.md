@@ -559,3 +559,26 @@ git push origin main
 main에 별도 변경이 있으면 먼저 그 내용을 보존·통합하고 충돌을 검토합니다. 강제 push나 원격 기존 커밋 재작성은 일반 배포 절차가 아닙니다. 실행 중인 Pi에서 개발용 브랜치 병합을 진행하지 않습니다.
 
 상위 `AX_Logistics`에서 이 저장소를 서브모듈로 쓸 때 **OMX 파일 변경은 OMX 저장소 안에서 commit/push**합니다. 상위 저장소는 OMX의 특정 커밋을 가리키므로 새 버전을 채택하려면 상위에서도 그 포인터를 별도 commit/push해야 합니다. 독립 clone한 Pi에는 상위 포인터 커밋이 없습니다. [README](README.md)
+
+
+<a id="direct-home"></a>
+### 현장 선택: 홈 거리 제한 없이 현재 자세에서 직접 복귀
+
+충돌 가능성이 없다고 현장에서 판단한 OMX1~4에서 `recovery.direct_home: true`를 선택합니다. 관절 위치만으로 바구니나 장애물을 정확히 인식한다고 가정하지 않습니다. 임의의 완전 신전 중간 자세 없이 현재 관절에서 저장 홈까지 목표를 조금씩 이동합니다. 충돌 계획은 하지 않습니다. 속도·1회 목표 이동량·추종 오차·피드백 지연·모터 건강·보정 범위·도착 정지 판정은 유지합니다. 시작 홈 오차 2.0과 일반 접근 거리 때문에 시작을 막지 않으며 이동 거리에 맞춰 시간 예산만 최대 300초까지 계산합니다. 현장 YAML의 기존 홈·속도·카운팅 값은 변경하지 않습니다.
+
+각 Pi에서 팔·공간과 물품을 확인한 뒤 적용합니다. 시작 준비와 수동 home은 그리퍼도 등록 홈 값으로 움직이므로 물품을 먼저 내려놓습니다. 동작 중 오류 복귀는 그리퍼를 유지합니다.
+
+```bash
+cd ~/Logistics_OMX
+source ~/.bashrc
+omx_service stop
+git pull --ff-only
+./omx_control --config "$OMX_CONFIG_PATH" set --key recovery.direct_home --value true
+./omx_control --config "$OMX_CONFIG_PATH" set --key recovery.startup_arm_at_home --value true
+omx_service start
+omx_service logs --follow
+```
+
+수동 복귀는 서비스를 멈추고 `omx_arm` 성공 뒤 `omx_home`으로 확인합니다. 토크 ON은 현재 위치 목표 저장 뒤 수행하며 전체 OFF·정지·모드·보정·건강 검사는 유지합니다. 일부 관절만 OFF, 통신 불량, 모터 자체 오류, 추종 실패, 이전 미확인 토크 활성화 기록을 무시하지 않습니다. 이 선택은 충돌 없는 복귀나 모든 기계 고장 해결을 보증하지 않습니다.
+
+관리 실행기 상태·주요 복구/홈 오류·제어 주기 경고의 운영자 출력과 중요 로그는 한글로 표시합니다. 프로토콜 코드·관절 키·원래 예외·상세 로그는 진단을 위해 유지하며 외부 라이브러리의 모든 출력을 번역하지는 않습니다. 가상 시험 후 실제 Pi에서 물품 없이 저속 복귀부터 확인합니다.

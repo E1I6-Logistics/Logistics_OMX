@@ -20,8 +20,11 @@ def home_reporter(cfg):
         write_json(path, dict(data, pid=os.getpid(), device=cfg["device_id"], at=time.time()), durable=False)
         phase = data["phase"]
         if phase in ("STARTING", "ARRIVED", "FAILED", "STOPPED"):
-            message = f"[HOME] {phase} elapsed={data['elapsed_s']:.2f}s"
-            if data.get("reason"): message += ": " + data["reason"]
+            from .messages import korean
+            label={'STARTING':'복귀 시작','ARRIVED':'도착 완료','FAILED':'복귀 실패','STOPPED':'사용자 정지'}[phase]
+            message = f"[HOME] {phase} · {label} · 경과={data['elapsed_s']:.2f}초"
+            if data.get('direct_home'):message+=' · 현재 자세에서 직접 복귀'
+            if data.get("reason"): message += ": " + korean(data["reason"])
             (logger.error if phase == "FAILED" else logger.info)(message)
     return report
 

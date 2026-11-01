@@ -98,6 +98,15 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None, 
     h = cfg["home"]; target = h["target"]
     if target is None: raise ConfigError("No registered home")
     q = joints(device.read())
+    direct=cfg.get('recovery',{}).get('direct_home',False) and guard is None
+    if direct:
+        # Explicit site option: use measured joints, no collision planning.
+        # Expand only this call's start-distance/time budget, never speed,
+        # feedback lag, calibration, arrival tolerance or stored YAML.
+        h=dict(h)
+        distance=max(errors(q,target).values())
+        h['max_start_error']=max(h['max_start_error'],distance+h['arrival_tolerance'])
+        h['move_timeout_s']=min(300.,max(h['move_timeout_s'],2*distance/h['move_speed']+h['hold_s']+5))
     start = previous = clock(); stable_since = None; last_q = q
     goal = q.copy()
     following_limit = min(h.get("max_following_error", 3.0), h["max_start_error"])
@@ -127,7 +136,7 @@ def move_home(device, cfg, *, clock, sleep, stopped=lambda: False, report=None, 
                        "ok": abs(q[joint] - target[joint]) <= h["arrival_tolerance"]}
                 for joint in JOINTS}
         try:
-            report({"phase": phase, "monotonic": now, "elapsed_s": now - start,
+            report({"phase": phase, "monotonic": now, "elapsed_s": now - start,"direct_home":direct,
                     "joints": rows, "max_following_error": following_limit, "reason": reason})
         except Exception as exc:
             if not report_warned:

@@ -71,13 +71,15 @@ class Capture:
             try: source,line=self.queue.get(timeout=.1)
             except queue.Empty: continue
             important=self.filters.setdefault(source,LogFilter(self.options["slow_warning_interval_s"])).accepts(line)
+            from .messages import korean
+            translated=korean(line)
             record=logging.LogRecord('omx',logging.INFO,'',0,'['+source+'] '+line,(),None)
             for index,handler in enumerate(self.handlers):
                 if index==0 or important:
-                    try: handler.emit(record)
+                    try: handler.emit(record if index==0 else logging.LogRecord('omx',logging.INFO,'',0,'['+source+'] '+translated,(),None))
                     except Exception: pass
             if important or not self.important_only:
-                try: print('['+source+'] '+line,flush=True)
+                try: print('['+source+'] '+translated,flush=True)
                 except (BrokenPipeError,OSError): pass
     def close(self):
         for reader in self.readers: reader.join(timeout=1)

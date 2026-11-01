@@ -28,7 +28,7 @@ def edit_value(cfg,key,text):
     allowed.update("view."+name for name in view_options(cfg))
     from .basket import DEFAULTS
     allowed.update('unload.'+name for name in DEFAULTS if name not in ('reference','reference_binding'))
-    allowed.update(('recovery.auto_home','recovery.poll_s','recovery.startup_arm_at_home','recovery.startup_arm_tolerance','recovery.restart_to_idle','recovery.auto_retry_limit'))
+    allowed.update(('recovery.auto_home','recovery.poll_s','recovery.startup_arm_at_home','recovery.startup_arm_tolerance','recovery.restart_to_idle','recovery.auto_retry_limit','recovery.direct_home'))
     from .cycles import DEFAULTS as CYCLE_DEFAULTS
     allowed.update('counting.'+name for name in CYCLE_DEFAULTS if name not in ('profiles','mode'))
     if key not in allowed: raise ValueError("This field requires editing the YAML with hardware/model review")
@@ -301,7 +301,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 states=device.release()
                 print("전체 토크 OFF 확인 완료:",states)
             elif command=="arm":
-                device.arm();print("Current pose goal installed; torque enabled. Verify locally before Home move")
+                device.arm();print("현재 자세 목표 고정·토크 ON 완료. 홈 이동 전 실제 팔 상태를 확인하세요")
             elif command=="home":
                 from .hooks import home_reporter
                 q=move_home(device,cfg,clock=time.monotonic,sleep=time.sleep,report=home_reporter(cfg));table(cfg,q)
@@ -329,8 +329,10 @@ def main(argv=None):
     parser.add_argument("--json",action="store_true",dest="json_output")
     args=parser.parse_args(argv)
     try: invoke(args.config,args.command,args.confirm_motion,args.key,args.value,args.diagnostics,args.important_only,args.follow,args.interval,args.samples,args.json_output,args.lines,args.action,args.expected_device,args.item,args.quantity,args.name,args.confirm_empty,args.round_trip,args.until_empty)
-    except KeyboardInterrupt: print("Stopped by operator");return 130
-    except Exception as exc: print(f"[ERROR] {type(exc).__name__}: {exc}",file=sys.stderr);return 2
+    except KeyboardInterrupt: print("사용자 요청으로 중지했습니다");return 130
+    except Exception as exc:
+        from .messages import korean
+        print(f"[ERROR] {type(exc).__name__}: {korean(str(exc))}",file=sys.stderr);return 2
     return 0
 
 if __name__=="__main__": raise SystemExit(main())

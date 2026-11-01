@@ -55,6 +55,9 @@ def arm_at_home(device,cfg,directory,*,allow_motion,rollout_started,attempted,ma
         raise StartupArmRefused('Interrupted physical pickup; inspect cargo and request resume before enabling torque')
     limit=recovery.get('startup_arm_tolerance',2.)
     def pose_check(q):
+        if recovery.get('direct_home',False):
+            errors(q,cfg['home']['target'])  # Still validate all six joint values.
+            return
         outside={joint:round(value,4) for joint,value in errors(q,cfg['home']['target']).items() if value>limit}
         if outside:raise StartupArmRefused('Outside startup Home area; local positioning required: '+str(outside))
     def stop_check():
@@ -91,7 +94,7 @@ def arm_at_home(device,cfg,directory,*,allow_motion,rollout_started,attempted,ma
         stop_check()
         record.update(phase='ARMED',at=time.time(),observed_after=after)
         write_json(path,record)
-        logger.info('[STARTUP] Torque enabled at registered Home; current goals latched; no job replay')
+        logger.info('[STARTUP] 현재 자세를 목표로 고정한 뒤 토크 ON 확인 완료. 이전 주문 재실행 없음')
         return after
     except BaseException as exc:
         record.update(phase='FAILED',at=time.time(),reason=str(exc))

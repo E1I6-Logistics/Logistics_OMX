@@ -73,7 +73,7 @@ def return_home(device,cfg,*,clock,sleep,stopped=lambda:False,report=None,route_
             approved=original['recovery']['routes'][name].get('approved')==route_signature(original,original['recovery']['routes'][name])
             for point in route['points']: point['gripper']=q['gripper']
             route['approved']=route_signature(cfg,route) if approved else None
-    if route_name is None and max(abs(q[j]-cfg["home"]["target"][j]) for j in JOINTS)<=cfg["home"]["max_start_error"]:
+    if route_name is None and (cfg['recovery'].get('direct_home',False) or max(abs(q[j]-cfg["home"]["target"][j]) for j in JOINTS)<=cfg["home"]["max_start_error"]):
         return move_home(device,cfg,clock=clock,sleep=sleep,stopped=stopped,report=report)
     routes=cfg["recovery"].get("routes",{})
     candidates=[];reasons=[]

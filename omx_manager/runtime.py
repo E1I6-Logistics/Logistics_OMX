@@ -173,7 +173,9 @@ class Supervisor:
             self.current_phase=name;self.message('[STATE] '+name)
     def message(self, line):
         if self.capture: self.capture.emit("manager",line)
-        else: print(line,flush=True)
+        else:
+            from .messages import korean
+            print(korean(line),flush=True)
     def stop(self, *_): self.stopped.set()
     def reap_pending(self,cfg):
         remaining=[]
@@ -229,14 +231,14 @@ class Supervisor:
                         mark_attempt=lambda:setattr(self,'startup_arm_attempted',True),
                         stopped=self.stopped.is_set,reconcile_required=self.startup_arm_reconcile_required and not operator_confirmed,
                         clock=time.monotonic,sleep=time.sleep)
-                    self.message('[RECOVERY] [STARTUP] Torque enabled at registered Home; current goals latched; no job replay')
+                    self.message('[RECOVERY] [STARTUP] 현재 자세 목표 고정·토크 ON 확인 완료. 홈 복귀 준비, 이전 주문 재실행 없음')
                 except StartupArmRefused as exc:raise OperatorRecoveryRequired(str(exc)) from exc
             if max(errors(q,cfg['home']['target']).values())<=cfg['home']['arrival_tolerance']:
                 self.phase(cfg,'HOME_VERIFIED');return
             if not allow_motion or not cfg['recovery'].get('auto_home',True):
                 raise OperatorRecoveryRequired('Position arm at registered Home or explicitly request another return-path check')
             self.phase(cfg,'HOME_RETURN')
-            result=return_home(device,cfg,clock=time.monotonic,sleep=time.sleep,stopped=self.stopped.is_set,report=home_reporter(cfg),preserve_gripper=not operator_confirmed)
+            result=return_home(device,cfg,clock=time.monotonic,sleep=time.sleep,stopped=self.stopped.is_set,report=home_reporter(cfg),preserve_gripper=not operator_confirmed and not cfg['recovery'].get('direct_home',False))
             if abs(result['gripper']-cfg['home']['target']['gripper'])>cfg['home']['arrival_tolerance']:
                 raise OperatorRecoveryRequired('Arm Home recovered with gripper held; inspect cargo then request resume')
             self.phase(cfg,'HOME_VERIFIED')

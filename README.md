@@ -147,3 +147,5 @@ OMX3·4 검사 OFF 예시:
 - 구형 `profile.env`·overlay 런처를 설명하는 자료는 이 README의 현재 실행 경로와 구분하세요. 일반 운영은 `omx_service` / `omx_start`와 현장 YAML을 사용합니다.
 
 가상 검증은 실제 로봇을 연결하지 않는 개발 환경에서 실행합니다. 새 문서·Git 통합 검증과 실물 시험 결과는 구분합니다. [검증 명령과 브랜치 반영 방법](COMMANDS.md#development)
+
+현장 선택 `recovery.direct_home: true`는 홈 거리 제한 대신 현재 관절에서 저장 홈으로 점진 복귀합니다. 충돌 계획 없이 시작 거리 제한만 해제하고 속도·추종·피드백·모터 건강 검사는 유지합니다. 시작 준비에서는 그리퍼도 홈 값으로 이동합니다. [설정과 시험 방법](COMMANDS.md#direct-home)

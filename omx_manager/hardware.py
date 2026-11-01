@@ -104,7 +104,7 @@ class FollowerBus:
         from .home import errors
         require_home(self.cfg)
         q = self.read()
-        if max(errors(q, self.cfg["home"]["target"]).values()) > self.cfg["home"]["max_start_error"]:
+        if not self.cfg['recovery'].get('direct_home',False) and max(errors(q, self.cfg["home"]["target"]).values()) > self.cfg["home"]["max_start_error"]:
             raise RuntimeError("Outside registered approach region; torque enabling refused")
         for j in JOINTS:
             expected = 5 if j == "gripper" else 4
