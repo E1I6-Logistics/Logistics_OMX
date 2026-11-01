@@ -74,8 +74,18 @@ const nodes={};global.document={createElement:()=>new Element(),querySelector:(s
 '''
     script=re.search(r'<script>(.*?)</script>',V.ALL,re.S)[1]
     checks=r'''
-const assert=require('assert');assert.equal(grid.children.length,1);assert(grid.children[0].src.includes('.151:8080/'));tabs.children[3].onclick();assert.equal(grid.children.length,1);assert(grid.children[0].src.includes('.154:8080/'));tabs.children[4].onclick();assert.equal(grid.children.length,2);assert(grid.children[0].src.includes('.151:8080/'));assert(grid.children[1].src.includes('.152:8080/'));tabs.children[5].onclick();assert.equal(grid.children.length,2);assert(grid.children[0].src.includes('.153:8080/'));
+const assert=require('assert');assert.equal(tabs.children.length,4);for(let i=0;i<4;i++){tabs.children[i].onclick();assert.equal(grid.children.length,1);assert(grid.children[0].src.endsWith('.'+(151+i)+':8080/robot'));}
 '''
     # querySelector must resolve dynamically assigned input IDs in this tiny DOM.
     harness=harness.replace('append(...items){this.children.push(...items);}',"append(...items){this.children.push(...items);for(const i of items){if(i.id)nodes['#'+i.id]=i;}}")
     subprocess.run(['node'],input=harness+script+checks,text=True,check=True,capture_output=True)
+
+
+def test_root_and_all_are_tabs_but_robot_route_is_single_stream_page(dual):
+    _,s,p,get=dual
+    for path in ('/','/all'):
+        code,data=get(path);assert code==200 and b'id="tabs"' in data
+        assert b"fetch(" not in data
+    code,data=get('/robot');assert code==200 and b'id="cameras"' in data
+    assert b'AbortController' in data and b"pagehide" in data
+    assert not any(pub.path.with_suffix('.request').exists() for pub in p.values())
