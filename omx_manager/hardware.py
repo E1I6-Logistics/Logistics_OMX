@@ -1,4 +1,4 @@
-"""Follower-only bus access. NO leader, calibration write, mode write or torque enabling."""
+"""Follower-only bus access; explicit arming, no calibration or mode rewrites."""
 import fcntl
 import hashlib
 import logging
@@ -99,7 +99,7 @@ class FollowerBus:
         if any(value != 0 for value in states.values()):
             raise RuntimeError("Torque OFF verification failed; keep supporting the arm: " + str(states))
         return states
-    def arm(self):
+    def arm(self,stopped=lambda:False,pose_guard=None):
         from .config import require_home
         from .home import errors
         require_home(self.cfg)
@@ -111,7 +111,10 @@ class FollowerBus:
             if self.bus.read("Operating_Mode", j) != expected:
                 raise RuntimeError(f"{j}: mode mismatch; no automatic mode rewrite")
         # Never energize a stale goal left in motor RAM.
+        if stopped():raise InterruptedError("Operator stopped; torque enabling refused")
+        if pose_guard is not None:pose_guard(q)
         self.bus.sync_write("Goal_Position", q)
+        if stopped():raise InterruptedError("Operator stopped after goal latch; torque remains OFF")
         self.bus.enable_torque()
         after = self.read()
         if max(abs(after[j] - q[j]) for j in JOINTS) > self.cfg["home"]["arrival_tolerance"]:

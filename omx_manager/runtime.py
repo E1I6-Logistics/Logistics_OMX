@@ -32,7 +32,7 @@ def initialize_inventory(path, capacity=8):
 
 def acknowledge_recovery(cfg):
     directory = state_dir(cfg)
-    for name in ("inventory.json", "jobs.json", "workstation_command.json", "workstation_status.json", "unload_progress.json"):
+    for name in ("inventory.json", "jobs.json", "workstation_command.json", "workstation_status.json", "unload_progress.json", "startup_arm.json"):
         path = directory / name
         if path.exists():
             destination = directory / "archive" / (str(time.time_ns()) + "_" + name)
@@ -161,6 +161,7 @@ class Supervisor:
         self.path=Path(config_path); self.stopped=threading.Event()
         self.diagnostics=diagnostics; self.important_only=important_only; self.capture=None
         self.pending_cleanup=[]
+        self.startup_arm_attempted=False;self.rollout_started=False;self.startup_arm_reconcile_required=False
     def message(self, line):
         if self.capture: self.capture.emit("manager",line)
         else: print(line,flush=True)
@@ -188,7 +189,11 @@ class Supervisor:
         if verify_registration:
             check_files(cfg);require_commissioned(cfg)
         directory=state_dir(cfg)
+        from .startup_arming import require_verified_journal,StartupArmRefused
+        try:require_verified_journal(cfg,directory)
+        except StartupArmRefused as exc:raise OperatorRecoveryRequired(str(exc)) from exc
         if settle_interrupted_pickup(cfg):
+            self.startup_arm_reconcile_required=True
             self.message('[RECOVERY] Interrupted pickup archived as failed; no replay. Checking Home before accepting NEW orders')
         journal=directory/'jobs.json'
         if journal.exists() and any(row.get('state')=='RUNNING' for row in json.loads(journal.read_text()).values()):
@@ -199,8 +204,17 @@ class Supervisor:
             for joint in JOINTS:
                 if device.bus.read('Operating_Mode',joint)!=(5 if joint=='gripper' else 4):
                     raise OperatorRecoveryRequired('Motor mode mismatch; no automatic rewrite')
-                if device.bus.read('Torque_Enable',joint)!=1:
-                    raise OperatorRecoveryRequired('Torque OFF: support arm and use local arm command; no automatic enable')
+            torques={joint:device.bus.read('Torque_Enable',joint) for joint in JOINTS}
+            if any(value!=1 for value in torques.values()):
+                from .startup_arming import arm_at_home,StartupArmRefused
+                try:
+                    q=arm_at_home(device,cfg,directory,allow_motion=allow_motion,
+                        rollout_started=self.rollout_started,attempted=self.startup_arm_attempted,
+                        mark_attempt=lambda:setattr(self,'startup_arm_attempted',True),
+                        stopped=self.stopped.is_set,reconcile_required=self.startup_arm_reconcile_required and not operator_confirmed,
+                        clock=time.monotonic,sleep=time.sleep)
+                    self.message('[RECOVERY] [STARTUP] Torque enabled at registered Home; current goals latched; no job replay')
+                except StartupArmRefused as exc:raise OperatorRecoveryRequired(str(exc)) from exc
             if max(errors(q,cfg['home']['target']).values())<=cfg['home']['arrival_tolerance']: return
             if not allow_motion or not cfg['recovery'].get('auto_home',True):
                 raise OperatorRecoveryRequired('Position arm at registered Home or explicitly request another return-path check')
@@ -259,6 +273,8 @@ class Supervisor:
                     except (OSError,ValueError,TypeError) as failure:
                         reason='Cannot reconcile journal: '+str(failure);continue
                     registered=False;registration_checked=False
+                    self.startup_arm_reconcile_required=False
+                    if not self.rollout_started:self.startup_arm_attempted=False
                 try:
                     if not registration_checked:
                         registration_checked=True
@@ -297,6 +313,7 @@ class Supervisor:
         for name,data in generated.items(): write_json(directory/name,data)
         worker=client=None
         try:
+            self.rollout_started=True
             worker=subprocess.Popen(rollout,env=env,cwd=ROOT/"lerobot_unified",start_new_session=True,**capture_options)
             if self.capture: self.capture.attach(worker,"rollout")
             env["OMX_ROLLOUT_PID"]=str(worker.pid)

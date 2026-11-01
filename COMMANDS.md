@@ -120,6 +120,39 @@ omx_service logs --follow
 
 기본 서비스 재시작 대기는 5초입니다. 감독 프로세스 재실행과 Pi OS 재부팅은 다릅니다. 장치·카메라 복원이나 중단 주문 확인이 필요하면 프로세스는 살아 있어도 복구 대기일 수 있습니다. [7절](#recovery)
 
+<a id="cold-start"></a>
+### OpenRB·모터 전원도 껐다 켜는 장비 — 선택 설정
+
+Pi만 재부팅하는 경우와 달리 모터 전원 재인가 후에는 토크가 OFF일 수 있습니다. 기존 설정과 템플릿은 `recovery.startup_arm_at_home: false`로 수동 `omx_arm`을 사용합니다. 다음 설정은 **등록 홈에 정지해 있는 장비에서 시작 시 토크 ON을 허용**합니다. 먼저 물품을 확인하고 팔을 등록 홈에 배치해 작업 공간을 비웁니다. 홈·모델·사이클 보정을 다시 등록할 필요는 없습니다.
+
+각 Pi에서 한 번:
+
+```bash
+cd ~/Logistics_OMX
+source ~/.bashrc
+omx_service stop
+git pull --ff-only
+./omx_control --config "$OMX_CONFIG_PATH" set --key recovery.startup_arm_at_home --value true
+./omx_control --config "$OMX_CONFIG_PATH" validate
+omx_service start
+omx_service logs --follow
+```
+
+이 변경은 서비스 재설치가 필요하지 않습니다. 토크 ON 조건은 전체 6축 토크 OFF, 정상 하드웨어 상태·기존 보정·모드 일치, 등록 홈 오차 이내, 연속 위치 샘플의 정지 확인입니다. `startup_arm_tolerance` 기본값은 **2.0 정규화 단위(각도 아님)**이며 최대 3.0, `home.max_start_error` 이내입니다. 일반 홈·카운트 허용 오차를 넓히는 값이 아닙니다. 기존 모터 모드·PID·EEPROM·보정은 변경하지 않습니다.
+
+현재 위치를 6축 목표에 먼저 저장하고 토크를 켠 뒤 토크·위치·목표 피드백을 재확인합니다. 작은 홈 오차는 기존 제한된 홈 복귀로 정리하며, 적재 여부를 모르는 그리퍼는 자동으로 열지 않습니다. 성공 로그는 `[RECOVERY] [STARTUP] Torque enabled at registered Home`이며, 이후 `HOME ARRIVED`·준비·MQTT 연결까지 확인합니다. 운영을 시작한 뒤의 토크 OFF나 일부 관절만 OFF인 상태는 이 설정으로 자동 재활성화하지 않습니다.
+
+토크 ON 검증 실패·강제 종료 중 미확인 시도는 `startup_arm.json`에 남겨 실행기·OS를 다시 시작해도 자동 반복하지 않습니다. 실제 상태를 확인한 뒤 실행 중인 복구 대기는 `omx_resume`, 실행기를 멈춘 상태에서는 `omx_recover`로 기록을 보관·정리합니다. 이전 물리 주문은 재실행하지 않습니다. 실패 때 토크를 강제로 끄지 않으므로 팔 지지가 필요할 수 있습니다.
+
+첫 실물 검증은 주문 없는 상태에서 서비스 정지 후 Pi·OpenRB·모터 전원을 정상 종료·재인가하고, 홈에 유지된 팔에서 별도 `omx_start` 없이 준비되는지 확인합니다. 이전 부팅 로그와 구분하려면:
+
+```bash
+journalctl --user -u "omx-manager@${OMX_ROBOT_ID}.service" -b -n 60 --no-pager
+cat "state/manager/$OMX_ROBOT_ID/startup_arm.json"
+```
+
+`Input/output error` 같은 USB/모터 통신 오류는 이 옵션으로 해결되지 않습니다. 서비스를 멈추고 `omx_motor_check`로 연결을 확인합니다. 수동 방식으로 되돌리려면 서비스 정지 후 같은 set 명령의 값을 `false`로 저장하고 재시작합니다. 가상 시험은 실제 전원 재인가·토크 동작 검증을 대신하지 않습니다.
+
 <a id="orders"></a>
 ## 3. OMX1~4 주문·실물 테스트·직접 MQTT
 
@@ -258,6 +291,7 @@ nano "$OMX_CONFIG_PATH"
 | `unload.inspection_enabled` | OMX3·4 바구니 검사 ON/OFF |
 | `diagnostics` | 성능 기록·로그 설정 |
 | `service` | 서비스 재시작 간격·종료 대기 |
+| `recovery.startup_arm_at_home`, `recovery.startup_arm_tolerance` | 시작 시 홈 근처 토크 ON 허용 여부(기본 false), 허용 오차(기본 2.0 정규화 단위) |
 | `view` | 읽기 전용 뷰어의 접속 IP·포트·주기 |
 
 간단한 값은 공통 CLI로 저장할 수 있습니다. 장비·모델 경로처럼 전체 검토가 필요한 필드는 YAML에서 편집합니다.
@@ -324,6 +358,8 @@ omx_service start
 | 중단 주문 기록 때문에 대기 | 실패 주문을 다시 실행하지 않음. 물품을 확인하고, 필요하면 실행기를 멈춘 뒤 `omx_recover`로 기록을 보관·정리 |
 | `Outside approved Home approach area` | 임의 자세 복귀가 거절됨. 팔을 현장에서 적절한 자세로 배치하거나 검증된 경로 확인 |
 | `Home movement timed out` | `home_motion.json`의 관절 오차와 `omx_motor_check`로 추종·토크·모드 확인. 홈을 덮어쓰는 방식으로 숨기지 않음 |
+| `Torque OFF` | 기본은 현장 `omx_arm`. 전원 재인가 자동 준비는 [시작 토크 설정](#cold-start)의 조건에서만 선택 가능 |
+| `Unverified startup torque/order state` | 시도 기록을 삭제하지 않음. 실제 팔·물품 확인 뒤 `omx_resume` 또는 실행기 정지 후 `omx_recover` |
 | `Camera exposure restoration pending` | 실행기·watch를 종료한 뒤 `omx_basket restore` 완료를 기다림. pending 파일을 삭제하지 않음 |
 | `Another runtime/calibration session owns ... device.lock` | 같은 장치를 쓰는 서비스·전경·보정·단독 뷰어를 정상 종료. 잠금 파일 삭제로 우회하지 않음 |
 | `bad unit file setting` 또는 서비스 경로 변경 | 현재 코드를 받은 뒤 `omx_service install` → `enable` → `start`. install이 unit 생성·daemon-reload 수행 |

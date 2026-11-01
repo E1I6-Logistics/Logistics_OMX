@@ -197,6 +197,10 @@ runtime:
   shutdown_timeout_s: 12
 # 오류 후 감독 프로그램의 재시도 간격: 미완료 물리 작업은 자동 재집기 안 함
 recovery:
+  # 모터 전원 재인가 후 시작 토크 ON: 등록 홈 근처·전체 OFF·정지·오류 없음에서만 허용, 기본은 수동
+  startup_arm_at_home: false
+  # 시작 토크 ON 허용 홈 오차(정규화 단위): 기본 2, 최대 3, 일반 홈 접근 범위 이하
+  startup_arm_tolerance: 2.0
   # 집기 중단 주문 처리: fail_and_idle=기록·실패 보존 후 홈 점검 및 새 주문 대기, require_ack=기존 수동 확인
   interrupted_order_action: fail_and_idle
   # 오류 후 첫 재시도 대기 시간(초)

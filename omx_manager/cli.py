@@ -28,7 +28,7 @@ def edit_value(cfg,key,text):
     allowed.update("view."+name for name in view_options(cfg))
     from .basket import DEFAULTS
     allowed.update('unload.'+name for name in DEFAULTS if name not in ('reference','reference_binding'))
-    allowed.update(('recovery.auto_home','recovery.poll_s'))
+    allowed.update(('recovery.auto_home','recovery.poll_s','recovery.startup_arm_at_home','recovery.startup_arm_tolerance'))
     from .cycles import DEFAULTS as CYCLE_DEFAULTS
     allowed.update('counting.'+name for name in CYCLE_DEFAULTS if name not in ('profiles','mode'))
     if key not in allowed: raise ValueError("This field requires editing the YAML with hardware/model review")
