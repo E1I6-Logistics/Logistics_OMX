@@ -7,7 +7,8 @@ from .config import ConfigError,number,only_keys,write_json,ROOT
 
 DEFAULTS=dict(enabled=False,camera='front',interval_s=5.,stable_samples=3,max_frame_age_s=.5,
               pixel_threshold=20.,weak_pixel_threshold=8.,min_component_pixels=20,empty_ratio=.003,max_color_offset=18.,
-              precision_enabled=False,adaptive_color_limit=40.,alignment_max_px=3,reference_slack_px=2,min_object_width_px=3,empty_component_pixels=None,items={})
+              precision_enabled=False,adaptive_color_limit=40.,alignment_max_px=3,reference_slack_px=2,min_object_width_px=3,empty_component_pixels=None,color_presence_enabled=False,color_threshold=.12,
+              color_min_component_pixels=80,color_empty_component_pixels=30,items={})
 ITEMS={'omx1':('A','B'),'omx2':('C','D')}
 
 
@@ -16,7 +17,8 @@ def options(cfg):return dict(DEFAULTS,**cfg.get('pallet_stock',{}))
 
 TUNABLE = ('precision_enabled','pixel_threshold','weak_pixel_threshold','min_component_pixels',
            'empty_component_pixels','empty_ratio','max_color_offset','adaptive_color_limit',
-           'alignment_max_px','reference_slack_px','min_object_width_px')
+           'alignment_max_px','reference_slack_px','min_object_width_px','color_presence_enabled',
+           'color_threshold','color_min_component_pixels','color_empty_component_pixels')
 
 
 def item_options(spec,item):
@@ -42,6 +44,11 @@ def validate(cfg):
     for key,lo,hi in (('interval_s',2,300),('max_frame_age_s',.1,2),('pixel_threshold',5,80),('weak_pixel_threshold',2,40),('empty_ratio',0,.02),('max_color_offset',0,30)):
         number(s[key],'pallet_stock.'+key,lo,hi)
     if s['empty_component_pixels'] is not None and (type(s['empty_component_pixels']) is not int or not 1<=s['empty_component_pixels']<=200):raise ConfigError('빈 상태 잔여 연결 영역 허용값은 1~200 또는 null입니다')
+    if type(s['color_presence_enabled']) is not bool:raise ConfigError('고정 유색 물품 모드는 true/false입니다')
+    number(s['color_threshold'],'pallet_stock.color_threshold',.05,.3)
+    for name in ('color_min_component_pixels','color_empty_component_pixels'):
+        if type(s[name]) is not int or not 0<=s[name]<=500:raise ConfigError('색상 연결 크기는 0~500 정수입니다')
+    if s['color_empty_component_pixels']>=s['color_min_component_pixels']:raise ConfigError('빈 색상 연결 크기는 물건 기준보다 작아야 합니다')
     if type(s['precision_enabled']) is not bool:raise ConfigError('팔레트 정밀 비교 사용 여부는 true/false여야 합니다')
     number(s['adaptive_color_limit'],'pallet_stock.adaptive_color_limit',0,60)
     for key,lo,hi in (('alignment_max_px',0,5),('reference_slack_px',0,3),('min_object_width_px',1,5)):
@@ -125,6 +132,9 @@ def compare(current,reference,s):
     import cv2
     import numpy as np
     if current.shape!=reference.shape:raise ConfigError('빈 기준 영상 크기 불일치')
+    if s.get('color_presence_enabled',False):
+        from .pallet_color import compare as color_compare
+        return color_compare(current,reference,s)
     if s.get('precision_enabled',False):
         from .pallet_vision import compare as precision_compare
         return precision_compare(current,reference,s)

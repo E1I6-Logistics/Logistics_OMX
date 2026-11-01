@@ -114,6 +114,37 @@ class Tuning:
         self.samples.append(row);self.pending=None
         return self.info()
 
+    def import_samples(self,item):
+        """Explicitly replay labelled audit slots; do not present them as fresh frames."""
+        import numpy as np
+        cfg=self.config()
+        if item not in P.ITEMS[cfg['device_id']]:raise ValueError('품목을 선택하세요')
+        directory=P.directory(cfg);stock=json.loads((directory/'pallet_stock.json').read_text())
+        if not 0<=time.time()-stock['at']<=P.options(cfg)['interval_s']*2.5:raise ValueError('서비스 READY·홈 대기 후 불러오세요')
+        reference=P.load_reference(cfg,item);loaded=[]
+        for path in sorted((directory/'pallet_tuning').glob(cfg['device_id']+'_'+item+'_*.npz')):
+            if len(loaded)>=12:raise ValueError('저장 사진은 품목당 최대 12장입니다')
+            if path.is_symlink() or path.stat().st_size>1000000:raise ValueError('저장 사진 파일 오류')
+            with zipfile.ZipFile(path) as archive:
+                if sum(i.file_size for i in archive.infolist())>600000:raise ValueError('저장 사진 크기 초과')
+            with np.load(path,allow_pickle=False) as data:
+                a,b=data['current'].copy(),data['reference'].copy()
+                source=json.loads(str(data['metadata']));label=str(data['label'])
+                if str(data['robot_id'])!=cfg['device_id'] or str(data['item'])!=item:raise ValueError('저장 사진 장비·품목 불일치')
+            if (label not in ('EMPTY','PRESENT') or a.shape!=reference.shape or b.shape!=reference.shape
+                    or a.dtype!=np.uint8 or b.dtype!=np.uint8 or not np.array_equal(b,reference)
+                    or source.get('binding')!=P.signature(cfg,item)):raise ValueError('저장 사진과 현재 ROI·홈·카메라·빈 기준이 다릅니다')
+            if any(x['source_session']==source.get('session') and x['stamp']==source.get('stamp') for x in loaded):
+                raise ValueError('중복된 저장 사진입니다')
+            loaded.append(dict(id=uuid.uuid4().hex,item=item,current=a,reference=b,spec=P.item_options(P.options(cfg),item),
+                label=label,at=source['at'],loaded_at=time.time(),historical=True,source_session=source.get('session'),
+                session=stock['session'],stamp=source['stamp'],binding=P.signature(cfg,item),
+                reference_hash=hashlib.sha256(reference.tobytes()).hexdigest(),settings_hash=settings_hash(P.options(cfg))))
+        if not loaded:raise ValueError('이 품목의 저장된 정답 사진이 없습니다')
+        # Publish only after every slot was checked; a damaged slot leaves current data intact.
+        self.samples=[x for x in self.samples if x['item']!=item]+loaded;self.pending=None
+        return dict(self.info(),message=f'저장된 {item} 사진 {len(loaded)}장 불러옴. 과거 사진 재검사이며 실시간 영상은 아닙니다')
+
     def evaluate(self,item,parameters):
         cfg=validate_parameters(self.config(),item,parameters)
         current_hash=settings_hash(P.options(self.config()))
@@ -121,7 +152,7 @@ class Tuning:
         for sample in self.samples:
             if sample['item']!=item:continue
             if (sample['binding']!=P.signature(cfg,item) or sample['settings_hash']!=current_hash
-                    or time.time()-sample['at']>1800):raise ValueError('촬영 이후 설정 변경 또는 30분 경과: 자료 초기화 후 다시 수집하세요')
+                    or time.time()-sample.get('loaded_at',sample['at'])>1800):raise ValueError('촬영 이후 설정 변경 또는 30분 경과: 자료 초기화 후 다시 수집하세요')
             start=time.perf_counter();result=P.compare(sample['current'],sample['reference'],spec)
             rows.append(dict(id=sample['id'],label=sample['label'],candidate=result['candidate'],
                 correct=sample['label']==result['candidate'],processing_ms=(time.perf_counter()-start)*1000,
@@ -144,6 +175,11 @@ class Tuning:
         empty=[r for r in training if r['label']=='EMPTY']
         if any(r['strong'] is None or r['weak'] is None or r['ratio'] is None for r in training):raise ValueError('조명·기준 품질 문제는 임계값으로 해결할 수 없습니다')
         proposed=dict(parameters)
+        if parameters.get('color_presence_enabled'):
+            proposed['color_empty_component_pixels']=max(30,max(r['strong'] for r in empty)+5)
+            proposed['color_min_component_pixels']=max(80,proposed['color_empty_component_pixels']+1)
+            validate_parameters(self.config(),item,proposed)
+            return dict(parameters=proposed,report=self.evaluate(item,proposed),message='고정 유색 물품 기준 제안: 작은 물건·밝은 물건도 확인하세요')
         proposed['min_component_pixels']=max(parameters['min_component_pixels'],int(max(max(r['strong'],r['occlusion']) for r in empty))+1)
         proposed['empty_component_pixels']=max(4,int(max(max(r['weak'],r['occlusion']) for r in empty))+1)
         proposed['empty_ratio']=round(max(r['ratio'] for r in empty)+.0005,6)
@@ -180,6 +216,7 @@ class Tuning:
         if not self.lock.acquire(blocking=False):raise RuntimeError('다른 조정 요청 처리 중입니다')
         try:
             action=body.get('action');item=body.get('item')
+            if action=='import':return self.import_samples(item)
             if action=='capture':return self.capture(item)
             if action=='label':return self.label(body.get('id'),body.get('label'))
             if action=='evaluate':return self.evaluate(item,body.get('parameters'))
