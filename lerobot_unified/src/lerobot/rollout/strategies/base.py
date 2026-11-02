@@ -623,6 +623,15 @@ class BaseStrategy(RolloutStrategy):
                 logger.info("[WORKSTATION] Rollout terminating; check robot safety")
             timer.log_run_summary()
 
+    def _complete_pickup_cycle(self, ctx):
+        """학습 복귀 영역을 통과한 뒤 등록 홈 도착까지 확인하고 완료를 알린다."""
+        if getattr(self, "_manager_home", None):
+            from omx_manager.hooks import initialize_home
+            robot = ctx.hardware.robot_wrapper
+            initialize_home(getattr(robot, "inner", robot), stopped=ctx.runtime.shutdown_event.is_set)
+        # 최종 품목도 정밀 홈 복귀가 끝나기 전에는 remaining=0을 게시하지 않는다.
+        self._count_completed_cycle()
+
     def run(self, ctx: RolloutContext) -> None:
         """Run the autonomous control loop until shutdown or duration expires."""
         if os.environ.get('OMX_CYCLE_CALIBRATION')=='1':
@@ -880,7 +889,7 @@ class BaseStrategy(RolloutStrategy):
                                 engine.resume()
                                 logger.warning("Basket transfer failed; retrying the same order item")
                                 continue
-                        self._count_completed_cycle()
+                        self._complete_pickup_cycle(ctx)
                         if self._remaining_inventory == 0:
                             logger.warning(
                                 "Inventory empty: %d/%d completed. OMX stopping at home.",
@@ -903,8 +912,6 @@ class BaseStrategy(RolloutStrategy):
                             break
 
                         if getattr(self, "_manager_home", None):
-                            from omx_manager.hooks import initialize_home
-                            initialize_home(getattr(robot, "inner", robot), stopped=ctx.runtime.shutdown_event.is_set)
                             self._manager_home.reset(time.perf_counter())
                         logger.info("Resetting policy for the next item")
                         engine.reset()

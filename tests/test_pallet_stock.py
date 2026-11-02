@@ -260,3 +260,49 @@ def test_moderate_color_shift_with_sensor_noise_does_not_invent_object(stock):
         row=inspector.update(changed,100+5*n,100+5*n)['A']
         assert row['candidate']=='EMPTY'
     assert row['state']=='EMPTY'
+
+
+@pytest.mark.parametrize('device', ['omx1', 'omx2'])
+def test_final_pickup_returns_to_registered_home_before_publishing_completion(stock, monkeypatch, device):
+    cfg, frame, path = stock
+    w = producer(stock)
+    C.write_json(path/'inventory.json', dict(remaining=1))
+    w.observe({j+'.pos': 3. for j in C.JOINTS})
+    events = []
+    robot = NS(device=device)
+    def home(raw, stopped):
+        assert raw is robot and not stopped()
+        assert json.loads((path/'inventory.json').read_text())['remaining'] == 1
+        events.append('home')
+        w.observe({j+'.pos': 0. for j in C.JOINTS})
+    def complete():
+        events.append('completed')
+        C.write_json(path/'inventory.json', dict(remaining=0))
+    monkeypatch.setattr('omx_manager.hooks.initialize_home', home)
+    strategy = NS(_manager_home=NS(), _count_completed_cycle=complete)
+    ctx = NS(hardware=NS(robot_wrapper=NS(inner=robot)), runtime=NS(shutdown_event=NS(is_set=lambda:False)))
+    fn = load_function('lerobot_unified/src/lerobot/rollout/strategies/base.py',
+                       '_complete_pickup_cycle', 'BaseStrategy')
+    fn(strategy, ctx)
+    assert events == ['home', 'completed']
+    w.gate()
+    assert w.gate() is None
+
+
+def test_failed_final_home_never_publishes_order_complete(stock, monkeypatch):
+    cfg, frame, path = stock
+    w = producer(stock)
+    C.write_json(path/'inventory.json', dict(remaining=1))
+    def fail(*args, **kw):
+        raise TimeoutError('home failed')
+    monkeypatch.setattr('omx_manager.hooks.initialize_home', fail)
+    complete = Mock()
+    strategy = NS(_manager_home=NS(), _count_completed_cycle=complete)
+    ctx = NS(hardware=NS(robot_wrapper=NS()), runtime=NS(shutdown_event=NS(is_set=lambda:False)))
+    fn = load_function('lerobot_unified/src/lerobot/rollout/strategies/base.py',
+                       '_complete_pickup_cycle', 'BaseStrategy')
+    with pytest.raises(TimeoutError):
+        fn(strategy, ctx)
+    complete.assert_not_called()
+    assert json.loads((path/'inventory.json').read_text())['remaining'] == 1
+    assert w.gate() == '주문 수행 중 또는 주문 상태 미확인'
