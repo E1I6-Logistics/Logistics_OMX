@@ -1,9 +1,10 @@
 """Korean operator display; protocol codes and original full logs stay intact."""
-PHASES={'RECONCILING':'이전 작업 정리','MOTOR_CHECK':'모터 점검','HOME_RETURN':'홈 복귀 중',
+PHASES={'CALIBRATION_CHECK':'시작 준비·사이클 보정 확인','RECONCILING':'이전 작업 정리','MOTOR_CHECK':'모터 점검','HOME_RETURN':'홈 복귀 중',
         'HOME_VERIFIED':'홈 확인 완료','MODEL_LOADING':'모델·카메라 준비 중','MQTT_CONNECTING':'관제 통신 연결 중',
         'READY':'주문 대기 준비 완료','RECOVERY_WAIT':'복구 대기','VERIFYING_RECOVERY':'복구 상태 재확인',
         'CHILDREN_STOPPED':'하위 프로그램 정리 완료','STOPPED':'사용자 정지','CAMERA_RESTORE':'카메라 설정 복원 중'}
 TEXT={
+ 'model return region missing/changed; run omx_cycle_calibrate':'유효한 사이클 보정을 자동 복원하지 못했습니다. 보정 명령: omx_cycle_calibrate',
  'Outside startup Home area; local positioning required':'시작 홈 허용 범위 밖입니다. 현재 자세 확인 필요',
  'Outside approved Home approach area; position arm locally first':'홈 접근 범위 밖입니다. 자세를 확인하세요',
  'Home movement timed out':'홈 복귀 제한 시간 초과',

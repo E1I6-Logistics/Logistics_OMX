@@ -211,7 +211,10 @@ def run(config_path,item):
         if digest(config_path)!=initial:raise ConfigError('YAML changed during calibration; refusing overwrite')
         require_home(cfg)
         cfg['counting']['mode']='cycle';cfg['counting'].setdefault('profiles',{})[item]=learned
+        from .cycle_registry import remember,prepare
+        remember(cfg)
         save(config_path,cfg)
+        prepare(config_path,report=print)
         print(f'[보정 저장] {item}: {required}회 정상 확인. pick/place 등록 없이 이 복귀 영역으로 동작 사이클을 카운트합니다. 실제 물품 성공 수는 아닙니다.',flush=True)
         metrics=read_json(directory/'metrics.json')
         recorded=metrics.get('timings',{}).get('act_chunk',[0,0.,0.])

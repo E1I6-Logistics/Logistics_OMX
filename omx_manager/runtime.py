@@ -474,6 +474,9 @@ class Supervisor:
                 while not self.stopped.is_set():
                     try:
                         cfg=load(self.path)
+                        self.phase(cfg,'CALIBRATION_CHECK')
+                        from .cycle_registry import prepare
+                        cfg=prepare(self.path,report=self.message)
                         self.preflight(cfg)
                         self.run_once(cfg)
                         delay=cfg["recovery"]["retry_initial_s"]

@@ -306,8 +306,12 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                 target=stable_pose(samples,cfg["home"]["capture_max_span"])
                 if digest(path)!=original: raise RuntimeError("YAML changed during capture; refusing overwrite")
                 if binding(cfg) != original_binding: raise RuntimeError("Calibration/model changed during capture; registration rejected")
+                from .cycle_registry import remember,prepare
+                remember(cfg)
                 cfg["home"]["target"]=target;cfg["home"]["binding"]=original_binding
-                save(path,cfg);table(cfg,target);print("Registered stable Home; existing motor calibration unchanged")
+                save(path,cfg)
+                cfg=prepare(path,report=print)
+                table(cfg,target);print("Registered stable Home; existing motor calibration unchanged")
             elif command=="release":
                 delay=cfg["recovery"].get("release_delay_s",10)
                 print(f"[RELEASE] {cfg['device_id']}: {delay:g}초 뒤 전체 토크 OFF. 물품을 내려놓고 팔을 지지하세요. 취소는 Ctrl+C.",flush=True)

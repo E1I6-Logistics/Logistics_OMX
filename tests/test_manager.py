@@ -446,6 +446,7 @@ def test_supervisor_backoff_and_explicit_stop_prevent_restart(cfg,tmp_path,monke
         attempts.append(1)
         if len(attempts)==3:supervisor.stop()
         raise RuntimeError('injected transient fault')
+    monkeypatch.setattr('omx_manager.cycle_registry.prepare',lambda path,report=None:cfg)
     supervisor.run_once=fail;supervisor.run()
     assert len(attempts)==3
     assert waits[:2]==[cfg['recovery']['retry_initial_s'],cfg['recovery']['retry_initial_s']*2]
