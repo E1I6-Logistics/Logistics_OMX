@@ -19,21 +19,21 @@ Raspberry Pi 5 4GB 한 대에 OMX follower 팔 한 대를 연결해 LeRobot ACT 
 |---|---|---|---|
 | OMX1 | A / B | 물품을 집어 AMR 바구니에 적재 | `wrist`, `front` |
 | OMX2 | C / D | 물품을 집어 AMR 바구니에 적재 | `wrist`, `front` |
-| OMX3 | 하차 주문의 수량 합계 / 로컬 테스트 E | 임시 F 모델로 바구니에서 컨베이어로 하차 (외부 E 유지) | `wrist`, `top` |
+| OMX3 | 하차 주문의 수량 합계 / 로컬 테스트 E | E 모델로 바구니에서 컨베이어로 하차 | `wrist`, `top` |
 | OMX4 | 하차 주문의 수량 합계 / 로컬 테스트 F | F 모델로 바구니에서 컨베이어로 하차 | `top`, `wrist` |
 
-기본 활성 프로필의 모델 경로는 다음과 같습니다. OMX3는 전용 모델 준비 전까지 `omx4_temporary`를 사용하고 기존 E 모델은 `original`에 보존합니다. 최종 실행 값은 각 Pi의 현장 YAML을 따릅니다.
+기본 활성 프로필의 모델 경로는 다음과 같습니다. OMX3는 `original`의 전용 E 모델을 사용하며 `omx4_temporary`는 명시적으로 선택하는 임시 F 모델입니다. 최종 실행 값은 각 Pi의 현장 YAML을 따릅니다.
 
 | 장비·외부 키 | 학습 출력 폴더 | 체크포인트 |
 |---|---|---|
-| OMX1 A | `warehouse_item_b_100_merged_act_200k` | `150000` |
-| OMX1 B | `warehouse_all_200_two_cycles_v3_act_250k` | `150000` |
+| OMX1 A (B 모델) | `warehouse_item_b_100_merged_act_200k` | `150000` |
+| OMX1 B (A 모델) | `warehouse_all_190_two_cycles_v3_filtered_act_300k` | `230000` |
 | OMX2 C | `warehouse_item_c_160_merged_basket_fix_v1_act_200k` | `170000` |
 | OMX2 D | `warehouse_item_d_190_merged_act_200k` | `170000` |
-| OMX3 E (임시 F 모델) | `warehouse_item_f_v3_5_act_300k` | `230000` |
+| OMX3 E | `warehouse_item_e_from_f50_act_300k` | `210000` |
 | OMX4 F | `warehouse_item_f_v3_5_act_300k` | `230000` |
 
-모델 경로는 보통 `lerobot_unified/outputs/train/<학습 폴더>/checkpoints/<번호>/pretrained_model`입니다. **OMX1의 외부 A/B와 모델 이름이 반대인 매핑은 현장에서 확인한 값입니다.** 이름만 보고 뒤집지 마세요. OMX3·4는 FMS의 A~D 품목별 수량도 합산해 E/F 모델의 동작 횟수로 사용할 수 있습니다.
+모델 경로는 보통 `lerobot_unified/outputs/train/<학습 폴더>/checkpoints/<번호>/pretrained_model`입니다. **OMX1의 외부 A/B와 모델 이름이 반대인 매핑은 현장에서 확인한 값입니다.** 이름만 보고 뒤집지 마세요. **주문 A → B 모델, 주문 B → A 모델**입니다. 보정 명령의 품목도 외부 주문 키이므로 `omx_cycle_calibrate A`는 B 모델을, `omx_cycle_calibrate B`는 A 모델을 보정합니다. OMX3·4는 FMS의 A~D 품목별 수량도 합산해 E/F 모델의 동작 횟수로 사용할 수 있습니다.
 
 ## 현재 운영 방식
 

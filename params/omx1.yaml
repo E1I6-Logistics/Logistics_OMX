@@ -150,14 +150,14 @@ models:
         # 품목 'A'의 모델 설정: OMX1 A/B 반대 매핑은 현장 확인된 값
         A:
           # 체크포인트의 pretrained_model 폴더: 가중치·config·processor 파일 필요
-          path: /home/omx01/il_ws/src/lerobot/outputs/train/warehouse_all_190_two_cycles_v3_filtered_act_300k/checkpoints/230000/pretrained_model
+          path: lerobot_unified/outputs/train/warehouse_item_b_100_merged_act_200k/checkpoints/150000/pretrained_model
           # 해당 모델에 전달할 작업 문장: 학습 작업과 맞게 지정
-          task: Pick up item A, place it in the basket, and return to the initial
+          task: Pick up item B, place it in the basket, and return to the initial
             pose
         # 품목 'B'의 모델 설정: OMX1 A/B 반대 매핑은 현장 확인된 값
         B:
           # 체크포인트의 pretrained_model 폴더: 가중치·config·processor 파일 필요
-          path: lerobot_unified/outputs/train/warehouse_all_200_two_cycles_v3_act_250k/checkpoints/150000/pretrained_model
+          path: /home/omx01/il_ws/src/lerobot/outputs/train/warehouse_all_190_two_cycles_v3_filtered_act_300k/checkpoints/230000/pretrained_model
           # 해당 모델에 전달할 작업 문장: 학습 작업과 맞게 지정
           task: Pick up the topmost item, place it in the basket, and return to the
             initial pose

@@ -488,6 +488,23 @@ def test_yaml_duplicate_and_unknown_keys_are_rejected(cfg,tmp_path):
     cfg['home']['tolerence']=3
     with pytest.raises(C.ConfigError,match='Unknown'):C.validate(cfg)
 
+@pytest.mark.parametrize('item,folder,checkpoint', [
+    ('A', 'warehouse_item_b_100_merged_act_200k', '150000'),
+    ('B', 'warehouse_all_190_two_cycles_v3_filtered_act_300k', '230000'),
+])
+def test_omx1_external_order_and_calibration_use_same_cross_mapped_model(item,folder,checkpoint):
+    cfg=C.load(ROOT/'params/omx1.yaml')
+    entry=C.profile(cfg)['items'][item]
+    assert entry['path'].endswith(f'{folder}/checkpoints/{checkpoint}/pretrained_model')
+    _,_,_,generated=R.build(cfg,ROOT/'params/omx1.yaml')
+    assert generated['order_models.json'][item]==dict(entry,path=str(C.path_value(entry['path'])))
+    argv,_,env,calibration_generated=R.build(cfg,ROOT/'params/omx1.yaml',calibration_item=item)
+    assert '--policy.path='+str(C.path_value(entry['path'])) in argv
+    assert '--task='+entry['task'] in argv
+    assert env['OMX_CALIBRATION_ITEM']==item
+    assert 'order_models.json' not in calibration_generated
+
+
 def test_model_mapping_does_not_depend_on_yaml_key_order(cfg):
     items=C.profile(cfg)['items']
     C.profile(cfg)['items']={'B':items['B'],'A':items['A']}

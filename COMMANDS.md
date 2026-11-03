@@ -1084,9 +1084,12 @@ omx_manual stop            # 실제 OMX 서비스·관련 프로세스 정지
 
 ## 현재 기본 모델 (2026-11-04)
 
-- OMX1 A: `/home/omx01/il_ws/src/lerobot/outputs/train/warehouse_all_190_two_cycles_v3_filtered_act_300k/checkpoints/230000/pretrained_model`
+**YAML의 A/B는 외부 주문 키입니다. OMX1은 주문 A → B 모델, 주문 B → A 모델이라는 기존 매핑을 유지합니다.** `omx_cycle_calibrate A`는 주문 A용 B 모델 보정, `omx_cycle_calibrate B`는 주문 B용 새 A 모델 보정입니다. MQTT·팔레트의 A/B 명칭은 그대로입니다.
+
+- OMX1 주문 A → B 모델: `lerobot_unified/outputs/train/warehouse_item_b_100_merged_act_200k/checkpoints/150000/pretrained_model`
+- OMX1 주문 B → 새 A 모델: `/home/omx01/il_ws/src/lerobot/outputs/train/warehouse_all_190_two_cycles_v3_filtered_act_300k/checkpoints/230000/pretrained_model`
 - OMX3 E: `original` 프로필의 `/home/omx03/il_ws/src/lerobot/outputs/train/warehouse_item_e_from_f50_act_300k/checkpoints/210000/pretrained_model`
-- OMX1 B·OMX2 C/D·OMX4 F는 기존 모델 유지. OMX3 F 임시는 자동 선택하지 않습니다.
+- OMX1 주문 A·OMX2 C/D·OMX4 F는 기존 모델 유지. OMX3 F 임시는 자동 선택하지 않습니다.
 
 현장 YAML은 `params` 갱신으로 자동 덮어쓰지 않습니다. 이번 OMX1·3 현장 파일은 백업 후 위 모델로 전환했습니다. 사용자의 기존 보정 재사용 요청에 따라 모터·카메라·홈 좌표와 입출력 형식의 일치를 확인하고 이전의 유효한 홈·사이클 값을 재연결했습니다. 실제 신규 동작을 검증한 것은 아니며 `state/manager/omxN/calibration_reuse.json`에 원본 백업과 재사용 내역을 기록했습니다. 기본적으로 재보정 없이 사용할 수 있고, 새 모델의 복귀 자세가 달라 카운트가 맞지 않을 때만 아래 순서로 다시 보정합니다. 실제 초기 자세를 확인한 뒤 OMX1은 `omx_capture` → `omx_cycle_calibrate A` → `omx_cycle_calibrate B` → `omx_workflow`, OMX3은 `omx_capture` → `omx_cycle_calibrate E` → `omx_workflow` 순서로 재확인합니다. Capture는 현 자세를 저장하는 명령이므로 임의로 뻗은 자세를 등록하면 안 됩니다.
 
