@@ -19,6 +19,8 @@ def require_count(value):
 def run(strategy,ctx,send_action,make_timer):
     from lerobot.rollout.workstation_ipc import atomic_json,new_status,read_json
     cfg=strategy._manager_home.cfg;spec=options(cfg);engine=strategy._engine
+    from . import unload_resume as continuation
+    checkpoint=None;directory=Path(strategy.config.workstation_status_file).parent
     robot=ctx.hardware.robot_wrapper;inner=getattr(robot,'inner',robot)
     stop=ctx.runtime.shutdown_event;session=os.environ['OMX_WORKSTATION_SESSION']
     command_path=Path(strategy.config.workstation_control_file);status_path=Path(strategy.config.workstation_status_file)
@@ -35,9 +37,11 @@ def run(strategy,ctx,send_action,make_timer):
         atomic_json(status_path,row);write_json(status_path.with_name('unload_progress.json'),row)
         write_json(status_path.with_name('basket_status.json'),dict(verdict='UNKNOWN',reason='INSPECTION_DISABLED',at=time.time()),durable=False)
     def start_cycle():
-        nonlocal cycle_started
+        nonlocal cycle_started,checkpoint
         strategy.reset_control_state();timer.restart();cycle_started=time.perf_counter()
-        strategy._manager_home.reset(cycle_started);status('RUNNING');engine.resume()
+        strategy._manager_home.reset(cycle_started)
+        if checkpoint:checkpoint=continuation.mark(directory,checkpoint,'IN_FLIGHT')
+        status('RUNNING');engine.resume()
     engine.pause();strategy.reset_control_state();status('READY')
     logger.info('[WORKSTATION] READY: basket inspection OFF; explicit 1..8 motion cycles required; transfers unverified')
     try:
@@ -51,13 +55,24 @@ def run(strategy,ctx,send_action,make_timer):
                 try:target=require_count(command.get('expected_count'))
                 except ValueError as exc:
                     status('JOB_FAILED',message=str(exc),restore_verified=True);continue
+                checkpoint=None
+                if continuation.enabled(cfg):
+                    checkpoint=continuation.pending(cfg,directory,require_safe=True)
+                    if not checkpoint or checkpoint['job_id']!=job or checkpoint['requested_cycles']!=target:
+                        raise ValueError('하차 재개 주문과 실행 명령이 일치하지 않습니다')
+                    cycles=checkpoint['completed_cycles']
                 started=time.perf_counter();engine.pause();strategy.reset_control_state()
-                initialize_home(inner,stopped=stop.is_set);start_cycle();continue
+                initialize_home(inner,stopped=stop.is_set)
+                if cycles==target:status('DONE',reason='requested_cycles_completed')
+                else:start_cycle()
+                continue
             if phase in ('DONE','JOB_FAILED'):
                 if same and command.get('command')=='CLEAR':
                     strategy.reset_control_state();job=None;target=None;cycles=0;status('READY')
                 else:stop.wait(strategy.config.workstation_poll_s)
                 continue
+            if os.environ.get('OMX_ABORT_FILE') and Path(os.environ['OMX_ABORT_FILE']).exists():
+                raise RuntimeError('하차 통신 실패로 실행기를 정리합니다')
             now=time.perf_counter()
             if now-started>spec['job_timeout_s']:raise TimeoutError('Motion-cycle job timeout; no transfer success claimed')
             if now-cycle_started>cfg['runtime']['cycle_timeout_s']:raise TimeoutError('Motion cycle incomplete: departure/Home return timeout')
@@ -68,6 +83,7 @@ def run(strategy,ctx,send_action,make_timer):
                 engine.pause();strategy.reset_control_state();initialize_home(inner,stopped=stop.is_set)
                 if stop.is_set():break
                 cycles+=1
+                if checkpoint:checkpoint=continuation.mark(directory,checkpoint,'COMPLETE' if cycles>=target else 'BOUNDARY',completed=cycles)
                 logger.info('[UNLOAD] motion cycles=%s/%s; basket inspection OFF, transfers unverified',cycles,target)
                 if cycles>=target:status('DONE',reason='requested_cycles_completed')
                 else:start_cycle()

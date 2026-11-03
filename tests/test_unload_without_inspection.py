@@ -15,6 +15,7 @@ ROOT=Path(__file__).resolve().parents[1]
 
 def prepare(cfg,tmp_path,monkeypatch,**kwargs):
     cfg['unload']['inspection_enabled']=False
+    cfg['recovery']['resume_unload']=False  # legacy controller-only tests have no MQTT journal
     cfg['unload']['reference']='/missing/empty-reference.npz'
     run,phases,sent,done,path=controller(cfg,tmp_path,monkeypatch,**kwargs)
     monkeypatch.setattr(CW,'time',W.time);monkeypatch.setattr(CW,'initialize_home',W.initialize_home)

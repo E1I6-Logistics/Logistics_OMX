@@ -33,7 +33,11 @@ def initialize_inventory(path, capacity=8):
 
 def acknowledge_recovery(cfg):
     directory = state_dir(cfg)
+    from .unload_resume import authorize_retry
+    continuation = authorize_retry(cfg, directory)
     for name in ("inventory.json", "jobs.json", "workstation_command.json", "workstation_status.json", "unload_progress.json", "startup_arm.json", "auto_restart.json"):
+        if continuation and name in ("jobs.json", "workstation_command.json", "workstation_status.json", "unload_progress.json"):
+            continue
         path = directory / name
         if path.exists():
             destination = directory / "archive" / (str(time.time_ns()) + "_" + name)
@@ -84,6 +88,7 @@ def build(cfg, config_path, python=sys.executable, session=None, calibration_ite
     env = os.environ.copy()
     env.pop("OMX_UNLOAD_VIEW_SCOPE",None)
     env.pop("OMX_UNLOAD_MODE",None)
+    env.pop("OMX_UNLOAD_RESUME",None)
     for key in ('OMX_CYCLE_CALIBRATION','OMX_CALIBRATION_ITEM','OMX_CALIBRATION_COMMAND','OMX_CALIBRATION_STATUS',
                 'OMX_CALIBRATION_OUTPUT','OMX_CALIBRATION_PARENT_PID','OMX_CALIBRATION_PARENT_START'):
         env.pop(key,None)
@@ -127,6 +132,8 @@ def build(cfg, config_path, python=sys.executable, session=None, calibration_ite
         env.update(OMX_WORKSTATION_MODE="true", OMX_WORKSTATION_SESSION=session,OMX_MANAGED_UNLOAD='1',
             OMX_WORKSTATION_STATUS_FILE=str(directory/"workstation_status.json"), OMX_WORKSTATION_CONTROL_FILE=str(directory/"workstation_command.json"))
         from .basket import options as unload_options
+        from .unload_resume import enabled as resume_enabled
+        env['OMX_UNLOAD_RESUME'] = '1' if resume_enabled(cfg) else '0'
         env['OMX_UNLOAD_MODE']='inspection' if unload_options(cfg)['inspection_enabled'] else 'cycles'
         env['OMX_UNLOAD_VIEW_SCOPE']=('visible_only' if unload_options(cfg)['registration_allow_partial'] else 'full') if unload_options(cfg)['inspection_enabled'] else 'disabled'
         env['OMX_UNLOAD_TIMEOUT_S']=str(unload_options(cfg)['job_timeout_s']+timing['startup_timeout_s'])
@@ -188,7 +195,7 @@ class Supervisor:
         if remaining:
             raise RuntimeError('Child process cleanup pending; new hardware session blocked')
     def preflight(self,cfg,allow_motion=True,verify_registration=True,operator_confirmed=False):
-        """Motor-only checks before loading Torch/cameras; no order replay."""
+        """Motor-only checks before model load; validate any durable unload continuation."""
         self.reap_pending(cfg)
         from .restart_policy import budget,reconcile
         if not self.retry_reserved:budget(cfg,state_dir(cfg))
@@ -206,14 +213,18 @@ class Supervisor:
         try:require_verified_journal(cfg,directory)
         except StartupArmRefused as exc:raise OperatorRecoveryRequired(str(exc)) from exc
         self.phase(cfg,'RECONCILING')
-        if cfg['recovery'].get('restart_to_idle',False) and cfg['recovery'].get('interrupted_order_action','fail_and_idle')=='fail_and_idle':
+        from .unload_resume import reconcile as reconcile_unload
+        continuation = reconcile_unload(cfg, directory, operator_confirmed=operator_confirmed)
+        if continuation:
+            self.message(f"[RECOVERY] 하차 주문 재개 준비: {continuation['job_id']} · 완료 {continuation['completed_cycles']}/{continuation['requested_cycles']}")
+        elif cfg['recovery'].get('restart_to_idle',False) and cfg['recovery'].get('interrupted_order_action','fail_and_idle')=='fail_and_idle':
             if reconcile(cfg,directory):
                 self.message('[RECOVERY] Previous jobs failed and active IPC cleared; identities archived/preserved; no replay')
         elif settle_interrupted_pickup(cfg):
             self.startup_arm_reconcile_required=True
             self.message('[RECOVERY] Interrupted pickup archived as failed; no replay. Checking Home before accepting NEW orders')
         journal=directory/'jobs.json'
-        if journal.exists() and any(row.get('state')=='RUNNING' for row in json.loads(journal.read_text()).values()):
+        if not continuation and journal.exists() and any(row.get('state')=='RUNNING' for row in json.loads(journal.read_text()).values()):
             raise OperatorRecoveryRequired('Interrupted job; inspect cargo then request resume; no replay')
         if cfg['role']=='pickup': initialize_inventory(directory/'inventory.json')
         self.phase(cfg,'MOTOR_CHECK')
@@ -279,14 +290,18 @@ class Supervisor:
         from .config import ConfigError
         allow_auto=isinstance(error,(ConfigError,OperatorRecoveryRequired))
         self.retry_reserved=False
+        from .unload_resume import pending as pending_unload
+        try: continuation = pending_unload(cfg, directory, require_safe=True)
+        except (OSError, ValueError): continuation = None
         fault_code=classify(error);automatic=cfg['recovery'].get('restart_to_idle',False) and fault_code in AUTOMATIC|{'CAMERA_RESTORE'}
+        automatic = automatic or bool(continuation and fault_code in AUTOMATIC)
         restore_attempted=False
         healthy_checks=0
         try:
             motion=json.loads((directory/'recovery_motion.json').read_text())
             allow_auto=allow_auto or (motion.get('phase')=='HOME_RECOVERED' and motion.get('at',0)>=getattr(self,'last_run_started',started))
         except (OSError,ValueError): pass
-        if cfg['recovery'].get('restart_to_idle',False) and not automatic:allow_auto=False
+        if (cfg['recovery'].get('restart_to_idle',False) or (directory/'unload_checkpoint.json').exists()) and not automatic:allow_auto=False
         try:
             _,mqtt,env,_=build(cfg,self.path)
             command=[mqtt[0],'-m','omx_manager.recovery_wait','--config',str(self.path.resolve())]
@@ -353,7 +368,9 @@ class Supervisor:
                         budget(cfg,directory,consume=fault_code)
                         self.retry_reserved=True
                     write_json(directory/'recovery_wait.json',dict(phase='RECHECKED',at=time.time(),pid=os.getpid(),model_loaded=False))
-                    self.message('[RECOVERY] Home and registration rechecked; starting a fresh idle session, no job replay')
+                    if pending_unload(cfg,directory):
+                        self.message('[RECOVERY] 홈·등록 확인 완료. 저장된 완료 횟수 이후부터 하차 주문을 이어갑니다')
+                    else:self.message('[RECOVERY] Home and registration rechecked; starting a fresh idle session, no job replay')
                     return
                 except Exception as exc:
                     healthy_checks=0
@@ -378,7 +395,9 @@ class Supervisor:
         self.last_run_started=time.time()
         directory=state_dir(cfg); directory.mkdir(parents=True,exist_ok=True)
         journal=directory/"jobs.json"
-        if journal.exists() and any(row.get("state")=="RUNNING" for row in json.loads(journal.read_text()).values()):
+        from .unload_resume import reconcile as reconcile_unload
+        continuation = reconcile_unload(cfg, directory)
+        if not continuation and journal.exists() and any(row.get("state")=="RUNNING" for row in json.loads(journal.read_text()).values()):
             raise OperatorRecoveryRequired("Interrupted physical job; reconcile before restart. Journal preserved")
         if cfg["role"]=="pickup": initialize_inventory(directory/"inventory.json")
         for name in ("abort","heartbeat.json","joint_errors.json","metrics.json","rollout_fault.json","mqtt_state.json"):

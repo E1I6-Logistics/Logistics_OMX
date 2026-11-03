@@ -13,6 +13,8 @@ def reconcile(cfg,directory):
     No Home/calibration/model writes, cargo claims, motor writes or job replay.
     A durable intent makes interrupted cleanup resume after another power cut.
     """
+    from .unload_resume import reconcile as reconcile_unload
+    if reconcile_unload(cfg, directory):return False
     if not cfg['recovery'].get('restart_to_idle',False):return False
     directory=Path(directory);intent=directory/'idle_reset_pending.json'
     names=('inventory.json','jobs.json','workstation_command.json','workstation_status.json','unload_progress.json')
@@ -55,7 +57,8 @@ def reconcile(cfg,directory):
 
 
 def budget(cfg,directory,*,consume=None):
-    if not cfg['recovery'].get('restart_to_idle',False):return 0
+    from .unload_resume import enabled
+    if not cfg['recovery'].get('restart_to_idle',False) and not enabled(cfg):return 0
     path=Path(directory)/'auto_restart.json';identity=boot_id();attempts=0
     if path.exists():
         row=json.loads(path.read_text())

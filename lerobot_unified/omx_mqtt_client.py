@@ -79,6 +79,43 @@ workstation_status = Path(os.environ.get("OMX_WORKSTATION_STATUS_FILE", "/nonexi
 workstation_command = Path(os.environ.get("OMX_WORKSTATION_CONTROL_FILE", "/nonexistent/workstation_command.json"))
 
 
+def unload_resume_config():
+    if robot_id not in WORKSTATION_IDS or os.environ.get('OMX_UNLOAD_RESUME') != '1':
+        return None
+    from omx_manager.config import load
+    from omx_manager.unload_resume import enabled
+    cfg = load(os.environ['OMX_MANAGER_CONFIG'])
+    return cfg if enabled(cfg) else None
+
+
+def restore_pending_unload():
+    """Called before subscribing to commands; reserve the original job first."""
+    global current_job_id, current_orders, current_state
+    cfg = unload_resume_config()
+    if cfg is None or current_job_id is not None:
+        return
+    from omx_manager.unload_resume import reconcile
+    row = reconcile(cfg, state_path.parent)
+    if not row:
+        return
+    if not workstation_ready() or not job_lock.acquire(blocking=False):
+        raise RuntimeError('하차 주문 재개 전 실행기 준비가 완료되지 않았습니다')
+    current_job_id = row['job_id']
+    current_orders = row['items'].copy()
+    current_state = 'WORKING'
+    print(f"[RECOVERY] 하차 주문 이어서 실행: {current_job_id} · 완료 {row['completed_cycles']}/{row['requested_cycles']}", flush=True)
+    try:
+        threading.Thread(target=run_job, args=(current_job_id, current_orders), daemon=True).start()
+    except Exception:
+        current_job_id = None
+        current_orders = None
+        current_state = 'ERROR'
+        job_lock.release()
+        abort_path = os.environ.get('OMX_ABORT_FILE')
+        if abort_path:Path(abort_path).touch(exist_ok=True)
+        raise
+
+
 def workstation_state():
     return read_json(workstation_status)
 
@@ -415,6 +452,7 @@ def run_job(job_id, orders):
 
     success = False
     result_message = ""
+    deferred = False
 
     try:
 
@@ -451,7 +489,17 @@ def run_job(job_id, orders):
             done_message='Requested motion cycles completed; basket contents and physical transfers unverified'
         journal_committed=True
         try:
-            journal.finish(job_id, success, done_message if success else result_message)
+            cfg = unload_resume_config()
+            if not success and cfg is not None:
+                from omx_manager.unload_resume import pending
+                checkpoint = pending(cfg, state_path.parent)
+                deferred = bool(checkpoint and checkpoint['job_id'] == job_id)
+            if deferred:
+                print('[RECOVERY] 하차 주문·완료 횟수 보존. 종료 결과 전송 없이 복구를 기다립니다', flush=True)
+                abort_path = os.environ.get('OMX_ABORT_FILE')
+                if abort_path:Path(abort_path).touch(exist_ok=True)
+            else:
+                journal.finish(job_id, success, done_message if success else result_message)
         except Exception as exc:
             journal_committed=False
             success = False
@@ -461,7 +509,7 @@ def run_job(job_id, orders):
         # 작업이 끝난 뒤 상태를 먼저 정리해야 Result 직후의 다음 Command를 받을 수 있다.
         current_job_id = None
         current_orders = None
-        current_state = ("IDLE" if journal_committed and
+        current_state = ("IDLE" if journal_committed and not deferred and
                          ((robot_id in WORKSTATION_IDS and workstation_ready()) or
                           (success and robot_id not in WORKSTATION_IDS)) else "ERROR")
 
@@ -478,7 +526,7 @@ def run_job(job_id, orders):
                         if robot_id in WORKSTATION_IDS else "Home cycle completed; physical transfer unverified")
         if robot_id in WORKSTATION_IDS and os.environ.get('OMX_UNLOAD_MODE')=='cycles':
             done_message='Requested motion cycles completed; basket contents and physical transfers unverified'
-        send_result(job_id, success, done_message if success else result_message)
+        if not deferred:send_result(job_id, success, done_message if success else result_message)
 
 
 # =============================================================
@@ -524,6 +572,13 @@ def on_command(data):
         else:
             send_ack(job_id, False)
         return
+
+    cfg = unload_resume_config()
+    if cfg is not None and current_job_id is None:
+        from omx_manager.unload_resume import pending
+        if pending(cfg, state_path.parent):
+            send_ack(job_id, False)
+            return
 
     if robot_id in WORKSTATION_IDS and current_job_id != job_id and not workstation_ready():
         print(f"[MQTT] {robot_id} not READY; rejecting command {job_id}", flush=True)
@@ -604,6 +659,10 @@ def on_command(data):
 
     try:
         journal.begin(job_id, items)
+        cfg = unload_resume_config()
+        if cfg is not None:
+            from omx_manager.unload_resume import prepare
+            prepare(cfg, state_path.parent, job_id, items)
     except Exception:
         job_lock.release()
         raise
@@ -652,6 +711,11 @@ def on_connect(client, userdata, flags, rc):
 
     topic = f"{robot_id}/command"
 
+    try:
+        restore_pending_unload()
+    except Exception as exc:
+        current_state = 'ERROR'
+        print('[RECOVERY] 하차 주문 재개 보류:', exc, flush=True)
     client.subscribe(topic)
 
     print(f"[MQTT] Subscribe: " f"{topic}", flush=True)

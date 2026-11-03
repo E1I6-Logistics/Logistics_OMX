@@ -372,6 +372,10 @@ def production_strategy_fixture(cfg,method,monkeypatch):
         config=NS(workstation_wait_enabled=method=='_run_persistent_workstation',auto_restart_on_home=True,keep_alive_when_inventory_empty=False,basket_success_enabled=False,stuck_basket_mask_timeout_s=5,stuck_basket_mask_enabled=False,pickup_cycle_timeout_s=180,home_tolerance=7,home_leave_tolerance=12,home_hold_s=.5,min_cycle_s=0,inventory_capacity=8,idle_complete_enabled=False,stuck_basket_mask_max_retries=0),
         _remaining_inventory=1,_total_completed=7,_get_observation_with_camera_recovery=lambda *a:(next(observations),False),_handle_warmup=lambda *a:False,
         _process_observation_and_notify=lambda *a:{},_log_telemetry=Mock(),_max_home_error=lambda obs,home:max(obs.values()),reset_control_state=Mock())
+    if method=='run':
+        complete=actual_base_method('_complete_pickup_cycle')
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[complete],type_ignores=[])),'production_base','exec'),ns)
+        strategy._complete_pickup_cycle=lambda ctx:ns['_complete_pickup_cycle'](strategy,ctx)
     monkeypatch.setattr('omx_manager.hooks.heartbeat',lambda *a:None)
     monkeypatch.setattr('omx_manager.hooks.initialize_home',lambda *a,**kw:None)
     return ns,strategy,ctx,event,clock
