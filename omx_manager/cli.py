@@ -6,7 +6,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from .config import ROOT, JOINTS, load, save, require_home, binding, digest, check_files, validate, path_value, diagnostic_options, service_options
+from .config import ROOT, JOINTS, load, profile, save, require_home, binding, digest, check_files, validate, path_value, diagnostic_options, service_options
 from .home import joints, errors, stable_pose, move_home, HomeDetector
 from .hardware import FollowerBus
 from .runtime import device_lock, build, Supervisor, state_dir, acknowledge_recovery
@@ -114,6 +114,11 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                       snapshot_age_s=time.time()-saved['at'] if isinstance(saved.get('at'),(int,float)) else None,
                       last_snapshot=saved,last_failure=read_json(state_dir(cfg)/'basket_failure.json'))
         print(json.dumps(data,ensure_ascii=False));return data
+    if command=="models":
+        print(json.dumps(dict(device=cfg['device_id'],config=str(Path(path).resolve()),
+                              profile=cfg['models']['active_profile'],
+                              models={k:v['path'] for k,v in profile(cfg)['items'].items()}),ensure_ascii=False,indent=2))
+        return
     if command=="validate":
         print(f"YAML valid: {cfg['device_id']}; home_registered={cfg['home']['target'] is not None}"); return
     if command=="simulate": return simulate(cfg)
@@ -315,7 +320,7 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True,help="params/omx1.yaml etc.")
-    parser.add_argument("command",choices=("motor-check","menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose","basket-pose","basket-collect"))
+    parser.add_argument("command",choices=("models","motor-check","menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose","basket-pose","basket-collect"))
     parser.add_argument("--confirm-motion",action="store_true")
     parser.add_argument("--expected-device",choices=("omx1","omx2","omx3","omx4"),help="Launcher device/YAML consistency check")
     parser.add_argument("--key");parser.add_argument("--value")

@@ -13,7 +13,7 @@ else
 fi
 export OMX_ROBOT_ID OMX_CONFIG_PATH OMX_PYTHON
 # 이전 alias와 재고 직접 초기화 함수를 제거하고 현재 YAML 관리 명령을 사용합니다.
-for _omx_name in omx_motor_check omx_start omx_home omx_arm omx_release omx_observe omx_capture omx_check omx_calibrate omx_logs omx_monitor omx_status omx_recover omx_reset omx_order omx_service omx_info omx_help omx_cd omx_setup omx_workflow omx_stage omx_route omx_route_test omx_return_home omx_basket omx_resume omx_unload omx_tune omx_cycle_calibrate omx_view omx_stock omx_kill; do
+for _omx_name in omx_manual omx_models omx_motor_check omx_start omx_home omx_arm omx_release omx_observe omx_capture omx_check omx_calibrate omx_logs omx_monitor omx_status omx_recover omx_reset omx_order omx_service omx_info omx_help omx_cd omx_setup omx_workflow omx_stage omx_route omx_route_test omx_return_home omx_basket omx_resume omx_unload omx_tune omx_cycle_calibrate omx_view omx_stock omx_kill; do
   unalias "$_omx_name" 2>/dev/null || true
 done
 unset -f omx_reset 2>/dev/null || true
@@ -130,6 +130,33 @@ omx_order() {
   fi
   _omx_ctl order --item "$1" --quantity "${2:-1}"
 }
+# SSH manual entry point. Existing MQTT validation/job journal remains authoritative.
+omx_manual() {
+  local action="${1:-help}"
+  if [[ $# -gt 0 ]]; then shift; fi
+  case "$action" in
+    pick|pickup)
+      if [[ $# -lt 1 || $# -gt 2 ]]; then echo '사용법: omx_manual pick 품목 [수량=1]'; return 2; fi
+      local item="${1^^}"
+      case "$OMX_ROBOT_ID:$item" in
+        omx1:A|omx1:B|omx2:C|omx2:D) omx_order "$item" "${2:-1}";;
+        *) echo "[ERROR] $OMX_ROBOT_ID 담당 픽업 품목이 아닙니다: $item" >&2; return 2;;
+      esac;;
+    unload)
+      if [[ $# -ne 1 ]]; then echo '사용법: omx_manual unload 횟수(1~8)'; return 2; fi
+      omx_unload "$1";;
+    status) omx_status "$@";;
+    models) omx_models "$@";;
+    start) omx_service start "$@";;
+    stop) omx_kill "$@";;
+    logs) omx_service logs --follow "$@";;
+    home) omx_home "$@";;
+    resume) omx_resume "$@";;
+    help) printf '%s\n' 'SSH 수동 명령 (pick/unload/home은 실제 팔이 움직입니다)' 'omx_manual pick A 1 / omx_manual pick C 1' 'omx_manual unload 2 (OMX3·4)' 'omx_manual status / models / start / stop / logs / home / resume' '수동 주문도 MQTT 브로커와 실행 중인 OMX 서비스가 필요합니다. 접수·완료는 logs로 확인하세요.';;
+    *) echo '[ERROR] 알 수 없는 명령입니다. omx_manual help'; return 2;;
+  esac
+}
+omx_models() { _omx_ctl models "$@"; }
 omx_service() {
   local action="${1:-status}"
   if [[ $# -gt 0 ]]; then shift; fi
@@ -148,6 +175,8 @@ omx_info() {
 omx_help() {
   omx_info
   cat <<'HELP'
+omx_models                 현재 활성 프로필·품목별 모델 경로 조회 (이동 없음)
+omx_manual help            SSH 픽업·하차·정지 등 수동 명령 안내
 omx_kill [--list]          현재 Pi OMX 서비스·프로세스 종료: 기본 5초 후 남으면 강제 종료
 omx_motor_check            모터 목표·현재 위치 흔들림 약 3초 관측 (모터 쓰기 없음)
 omx_stock                  팔레트 검사 setup/on/off/roi/snapshot/capture/status/improve/legacy/diagnose (OMX1·2)

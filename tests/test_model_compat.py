@@ -137,11 +137,11 @@ def test_busy_device_does_not_change_config(tmp_path, monkeypatch):
     assert path.read_bytes() == old
 
 
-def test_templates_use_same_temporary_f_model_and_realsense_rgb():
+def test_templates_default_to_native_e_and_keep_temporary_f_as_explicit_option():
     cfg = C.load(ROOT / 'params/omx3.yaml'); four = C.load(ROOT / 'params/omx4.yaml')
-    assert cfg['models']['active_profile'] == M.TEMP_PROFILE
-    assert C.profile(cfg)['items']['E'] == C.profile(four)['items']['F']
-    assert cfg['models']['profiles']['original']['items']['E']['path'].endswith('250000/pretrained_model')
+    assert cfg['models']['active_profile'] == 'original'
+    assert cfg['models']['profiles'][M.TEMP_PROFILE]['items']['E'] == C.profile(four)['items']['F']
+    assert C.profile(cfg)['items']['E']['path'].endswith('warehouse_item_e_from_f50_act_300k/checkpoints/210000/pretrained_model')
     for c in (cfg, four):
         top = c['hardware']['cameras']['top']
         assert top['type'] == 'intelrealsense' and not top['use_depth'] and top['use_rgb']

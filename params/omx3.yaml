@@ -136,7 +136,7 @@ counting:
 # 품목별 모델 경로와 실행 프로필 설정
 models:
   # OMX3 전용 모델 준비 전까지 OMX4 F 230000 모델 임시 사용
-  active_profile: omx4_temporary
+  active_profile: original
   # 모델 교체용 프로필 모음: 모델 변경 뒤 초기 자세 재확인·등록 필요
   profiles:
     # 모델 프로필 'original': 원본 또는 교체 후보 설정
@@ -150,7 +150,7 @@ models:
         # 품목 'E'의 모델 설정: OMX1 A/B 반대 매핑은 현장 확인된 값
         E:
           # 체크포인트의 pretrained_model 폴더: 가중치·config·processor 파일 필요
-          path: lerobot_unified/outputs/train/warehouse_item_e_132_merged_act_300k/checkpoints/250000/pretrained_model
+          path: /home/omx03/il_ws/src/lerobot/outputs/train/warehouse_item_e_from_f50_act_300k/checkpoints/210000/pretrained_model
           # 해당 모델에 전달할 작업 문장: 학습 작업과 맞게 지정
           task: Pick up the topmost accessible item from the basket, place it on the
             conveyor, and return to the initial pose

@@ -716,7 +716,7 @@ omx_stock status --json
 <a id="omx3-model4"></a>
 ## OMX3: OMX4 모델 + RealSense 상단 RGB 임시 사용
 
-OMX3 전용 모델이 준비될 때까지 OMX4의 `warehouse_item_f_v3_5_act_300k/checkpoints/230000/pretrained_model`을 `omx4_temporary` 프로필로 실행합니다. 외부 장비/주문은 **omx3 / E**를 유지하며 MQTT·서비스·모터 포트·모터 보정 파일을 OMX4 것으로 복사하지 않습니다. 기존 E 모델은 `original` 프로필에 보존합니다. 상단 `top`은 RealSense RGB 640×480/30fps, 손목 `wrist`는 기존 USB 카메라를 사용합니다. 깊이는 사용하지 않습니다. 실제 설치 각도·관절 조립·시야가 학습 환경과 맞는지는 현장 동작으로 확인해야 합니다.
+현재 기본값은 `original`의 E 전용 `warehouse_item_e_from_f50_act_300k/checkpoints/210000/pretrained_model`입니다. 아래 전환은 F 모델을 명시적으로 임시 사용하려는 경우에만 실행하세요. OMX4의 `warehouse_item_f_v3_5_act_300k/checkpoints/230000/pretrained_model`을 `omx4_temporary` 프로필로 실행합니다. 외부 장비/주문은 **omx3 / E**를 유지하며 MQTT·서비스·모터 포트·모터 보정 파일을 OMX4 것으로 복사하지 않습니다. E 전용 모델은 `original` 프로필에 보존합니다. 상단 `top`은 RealSense RGB 640×480/30fps, 손목 `wrist`는 기존 USB 카메라를 사용합니다. 깊이는 사용하지 않습니다. 실제 설치 각도·관절 조립·시야가 학습 환경과 맞는지는 현장 동작으로 확인해야 합니다.
 
 아래는 **OMX3에서만**, 서비스를 멈추고 실행합니다. 전환 명령은 모터를 쓰거나 영상 스트림·모델을 실행하지 않습니다. RealSense가 한 대면 시리얼을 자동 검색합니다. 여러 대면 `--serial 실제시리얼`을 추가합니다.
 
@@ -1061,3 +1061,31 @@ OMX MQTT 최초 연결 실패는 모델을 종료시키지 않고 1~5초 간격�
 ACK·진행·결과는 QoS 1로 짧은 단절 동안 메모리에 보관합니다(최대 128개).
 프로세스 자체 강제 종료/전원 차단 시 메모리 큐 보존을 보장하지는 않습니다.
 주문 ID 중복 확인과 물리 작업 재실행 방지는 기존 저널을 따릅니다.
+
+
+## SSH 수동 실행과 모델 확인
+
+```bash
+cd ~/Logistics_OMX
+git pull --ff-only origin dev
+source ~/.bashrc
+omx_models                 # 활성 YAML·프로필·품목별 모델 경로, 장치 연결 없음
+omx_manual status          # 상태 한 번 조회
+omx_manual start           # 서비스 시작 (홈 복귀 등 실제 이동 가능)
+omx_manual pick A 1        # OMX1: A 한 번. B도 가능
+omx_manual pick C 1        # OMX2: C 한 번. D도 가능
+omx_manual unload 2        # OMX3·4: 하차 동작 두 사이클
+omx_manual logs            # 접수/진행/결과 확인, Ctrl+C는 로그 보기만 종료
+omx_manual stop            # 실제 OMX 서비스·관련 프로세스 정지
+```
+
+픽업·하차는 기존 MQTT 주문 경로를 사용합니다. FMS 웹페이지는 필요 없지만 MQTT 브로커와 OMX 서비스는 실행 중이어야 합니다. 전송 완료는 작업 완료가 아니며 ack/progress/result를 확인하세요. 작업 중 수동 주문은 기존 실행기의 중복 실행 차단을 따릅니다. 검사 OFF 하차 횟수는 실제 전달 물품 수를 검증한 값이 아닙니다. 정지 후 진행 중이던 하차 사이클은 현장 확인과 `omx_manual resume`이 필요할 수 있습니다. `omx_manual home`은 실제 홈 이동 명령입니다.
+
+
+## 현재 기본 모델 (2026-11-04)
+
+- OMX1 A: `/home/omx01/il_ws/src/lerobot/outputs/train/warehouse_all_190_two_cycles_v3_filtered_act_300k/checkpoints/230000/pretrained_model`
+- OMX3 E: `original` 프로필의 `/home/omx03/il_ws/src/lerobot/outputs/train/warehouse_item_e_from_f50_act_300k/checkpoints/210000/pretrained_model`
+- OMX1 B·OMX2 C/D·OMX4 F는 기존 모델 유지. OMX3 F 임시는 자동 선택하지 않습니다.
+
+현장 YAML은 `params` 갱신으로 자동 덮어쓰지 않습니다. 이번 OMX1·3 현장 파일은 백업 후 위 모델로 전환했습니다. 모터·카메라와 홈 좌표는 보존하고, 모델에 묶인 홈·사이클 검증은 해제했습니다. 실제 초기 자세를 확인한 뒤 OMX1은 `omx_capture` → `omx_cycle_calibrate A` → `omx_cycle_calibrate B` → `omx_workflow`, OMX3은 `omx_capture` → `omx_cycle_calibrate E` → `omx_workflow` 순서로 재확인합니다. Capture는 현 자세를 저장하는 명령이므로 임의로 뻗은 자세를 등록하면 안 됩니다.

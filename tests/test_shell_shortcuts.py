@@ -267,3 +267,36 @@ def test_release_interrupt_does_not_disable_torque(tmp_path,monkeypatch):
 def test_release_delay_validation(delay):
     cfg=C.load(ROOT/'params/omx4.yaml');cfg['recovery']['release_delay_s']=delay
     with pytest.raises(C.ConfigError):C.validate(cfg)
+
+
+@pytest.mark.parametrize('device,command,expected', [
+ ('omx1','omx_manual pick A 1',['order','--item','A','--quantity','1']),
+ ('omx2','omx_manual pick d 2',['order','--item','D','--quantity','2']),
+ ('omx3','omx_manual unload 2',['order','--item','E','--quantity','2']),
+ ('omx4','omx_manual unload 1',['order','--item','F','--quantity','1']),
+ ('omx3','omx_models',['models']),
+ ('omx4','omx_manual status',['monitor','--samples','1']),
+])
+def test_manual_shortcuts_preserve_existing_order_path(layout,device,command,expected):
+    register_shortcuts(layout,device)
+    p=shell(layout,command)
+    assert p.returncode==0,p.stderr
+    assert json.loads(p.stdout)['args'][4:]==expected
+
+@pytest.mark.parametrize('command',['omx_manual pick C 1','omx_manual unload','omx_manual missing'])
+def test_manual_invalid_commands_do_not_send_orders(layout,command):
+    register_shortcuts(layout,'omx1')
+    p=shell(layout,command)
+    assert p.returncode==2
+    assert '"args"' not in p.stdout
+
+def test_models_command_reads_active_profile_without_device_lock_or_motor(tmp_path, monkeypatch, capsys):
+    # Build a valid fixture YAML; models reporting does not need SDK or a free device lease.
+    cfg=C.load(ROOT/'params/omx3.yaml')
+    monkeypatch.setattr(cli,'load',lambda path:cfg)
+    monkeypatch.setattr(cli,'device_lock',Mock(side_effect=AssertionError('must not lock')))
+    monkeypatch.setattr(cli,'FollowerBus',Mock(side_effect=AssertionError('must not connect')))
+    cli.invoke(tmp_path/'site.yaml','models')
+    row=json.loads(capsys.readouterr().out)
+    assert row['device']==cfg['device_id']
+    assert row['models']=={k:v['path'] for k,v in C.profile(cfg)['items'].items()}
