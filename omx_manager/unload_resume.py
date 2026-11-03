@@ -27,6 +27,8 @@ def checkpoint_path(directory):
 
 
 def pending(cfg, directory, *, require_safe=False):
+    if (Path(directory)/'discard_pending.json').exists():
+        raise ConfigError('이전 주문 실패 처리 미완료: 서비스 중지 후 omx_manual discard를 다시 실행하세요')
     if not enabled(cfg):
         return None
     path = checkpoint_path(directory)

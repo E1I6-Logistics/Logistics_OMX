@@ -145,6 +145,7 @@ omx_manual() {
     unload)
       if [[ $# -ne 1 ]]; then echo '사용법: omx_manual unload 횟수(1~8)'; return 2; fi
       omx_unload "$1";;
+    discard) _omx_ctl discard-order --confirm-discard "$@";;
     status) omx_status "$@";;
     models) omx_models "$@";;
     start) omx_service start "$@";;
@@ -152,7 +153,7 @@ omx_manual() {
     logs) omx_service logs --follow "$@";;
     home) omx_home "$@";;
     resume) omx_resume "$@";;
-    help) printf '%s\n' 'SSH 수동 명령 (pick/unload/home은 실제 팔이 움직입니다)' 'omx_manual pick A 1 / omx_manual pick C 1' 'omx_manual unload 2 (OMX3·4)' 'omx_manual status / models / start / stop / logs / home / resume' '수동 주문도 MQTT 브로커와 실행 중인 OMX 서비스가 필요합니다. 접수·완료는 logs로 확인하세요.';;
+    help) printf '%s\n' 'SSH 수동 명령 (pick/unload/home은 실제 팔이 움직입니다)' 'omx_manual pick A 1 / omx_manual pick C 1' 'omx_manual unload 2 (OMX3·4)' 'omx_manual status / models / start / stop / logs / home / resume / discard' '수동 주문도 MQTT 브로커와 실행 중인 OMX 서비스가 필요합니다. 접수·완료는 logs로 확인하세요.';;
     *) echo '[ERROR] 알 수 없는 명령입니다. omx_manual help'; return 2;;
   esac
 }

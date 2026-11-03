@@ -87,7 +87,7 @@ def menu(path):
         except KeyboardInterrupt: print("관측/작업 중단")
         except Exception as exc: print("[ERROR]",exc)
 
-def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=None,important_only=None,follow=False,interval=None,samples=0,json_output=False,lines=50,action=None,expected_device=None,item=None,quantity=1,name=None,confirm_empty=False,round_trip=False,until_empty=False):
+def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=None,important_only=None,follow=False,interval=None,samples=0,json_output=False,lines=50,action=None,expected_device=None,item=None,quantity=1,name=None,confirm_empty=False,round_trip=False,until_empty=False,confirm_discard=False):
     cfg=load(path)
     if expected_device is not None and cfg["device_id"]!=expected_device:
         raise ValueError("Device mismatch: requested "+expected_device+", YAML is "+cfg["device_id"])
@@ -114,6 +114,10 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
                       snapshot_age_s=time.time()-saved['at'] if isinstance(saved.get('at'),(int,float)) else None,
                       last_snapshot=saved,last_failure=read_json(state_dir(cfg)/'basket_failure.json'))
         print(json.dumps(data,ensure_ascii=False));return data
+    if command=="discard-order":
+        from .discard_order import discard
+        with device_lock(cfg):result=discard(cfg,state_dir(cfg),confirmed=confirm_discard)
+        print(json.dumps(result,ensure_ascii=False,indent=2));return result
     if command=="models":
         print(json.dumps(dict(device=cfg['device_id'],config=str(Path(path).resolve()),
                               profile=cfg['models']['active_profile'],
@@ -320,8 +324,9 @@ def invoke(path,command,confirm_motion=False,key=None,value=None,diagnostics=Non
 def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config",type=Path,required=True,help="params/omx1.yaml etc.")
-    parser.add_argument("command",choices=("models","motor-check","menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose","basket-pose","basket-collect"))
+    parser.add_argument("command",choices=("discard-order","models","motor-check","menu","validate","check","plan","observe","capture","home","arm","set","run","simulate","acknowledge-recovery","logs","monitor","service","release","order","setup-workflow","workflow-check","stage-capture","stage-clear","route-capture","route-test","return-home","basket-capture","basket-check","basket-watch","basket-status","basket-snapshot","resume","tune","cycle-calibrate","basket-exposure","basket-low","basket-low-snapshot","basket-restore-exposure","basket-diagnose","basket-pose","basket-collect"))
     parser.add_argument("--confirm-motion",action="store_true")
+    parser.add_argument("--confirm-discard",action="store_true")
     parser.add_argument("--expected-device",choices=("omx1","omx2","omx3","omx4"),help="Launcher device/YAML consistency check")
     parser.add_argument("--key");parser.add_argument("--value")
     parser.add_argument("--item");parser.add_argument("--quantity",type=int,default=1)
@@ -338,7 +343,7 @@ def main(argv=None):
     parser.add_argument("--samples",type=int,default=0,help="0 means continuous monitor")
     parser.add_argument("--json",action="store_true",dest="json_output")
     args=parser.parse_args(argv)
-    try: invoke(args.config,args.command,args.confirm_motion,args.key,args.value,args.diagnostics,args.important_only,args.follow,args.interval,args.samples,args.json_output,args.lines,args.action,args.expected_device,args.item,args.quantity,args.name,args.confirm_empty,args.round_trip,args.until_empty)
+    try: invoke(args.config,args.command,args.confirm_motion,args.key,args.value,args.diagnostics,args.important_only,args.follow,args.interval,args.samples,args.json_output,args.lines,args.action,args.expected_device,args.item,args.quantity,args.name,args.confirm_empty,args.round_trip,args.until_empty,args.confirm_discard)
     except KeyboardInterrupt: print("사용자 요청으로 중지했습니다");return 130
     except Exception as exc:
         from .messages import korean

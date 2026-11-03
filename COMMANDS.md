@@ -1089,3 +1089,17 @@ omx_manual stop            # 실제 OMX 서비스·관련 프로세스 정지
 - OMX1 B·OMX2 C/D·OMX4 F는 기존 모델 유지. OMX3 F 임시는 자동 선택하지 않습니다.
 
 현장 YAML은 `params` 갱신으로 자동 덮어쓰지 않습니다. 이번 OMX1·3 현장 파일은 백업 후 위 모델로 전환했습니다. 사용자의 기존 보정 재사용 요청에 따라 모터·카메라·홈 좌표와 입출력 형식의 일치를 확인하고 이전의 유효한 홈·사이클 값을 재연결했습니다. 실제 신규 동작을 검증한 것은 아니며 `state/manager/omxN/calibration_reuse.json`에 원본 백업과 재사용 내역을 기록했습니다. 기본적으로 재보정 없이 사용할 수 있고, 새 모델의 복귀 자세가 달라 카운트가 맞지 않을 때만 아래 순서로 다시 보정합니다. 실제 초기 자세를 확인한 뒤 OMX1은 `omx_capture` → `omx_cycle_calibrate A` → `omx_cycle_calibrate B` → `omx_workflow`, OMX3은 `omx_capture` → `omx_cycle_calibrate E` → `omx_workflow` 순서로 재확인합니다. Capture는 현 자세를 저장하는 명령이므로 임의로 뻗은 자세를 등록하면 안 됩니다.
+
+
+## 이전 하차 주문을 버리고 새 주문을 준비할 때
+
+OMX3의 모델 변경 후 `model/Home/camera configuration changed`, OMX4의 `실제 완료 여부 불명확`은 이전 주문 재개를 막는 상태입니다. 이어가려면 현장 확인 후 `omx_resume`을 사용합니다. 이전 주문을 **실패 처리하고 종료**하려면 다음 순서입니다.
+
+```bash
+omx_service stop
+omx_manual discard
+# 위 명령은 이전 주문 ID를 실패 기록으로 남기고 재개 IPC를 백업합니다. 팔 이동·서비스 시작 없음.
+omx_service start  # 준비가 끝났을 때 사용자가 실행. 홈 이동 가능.
+```
+
+`discard`는 기존 완료 주문·등록 홈·모터 보정·모델 설정을 지우지 않습니다. 모델이 바뀐 이전 주문도 실행 없이 정리할 수 있습니다. 실패 결과는 MQTT로 전달하며 브로커 연결 실패 시 전송 대기를 저장합니다. 같은 `omx_manual discard`를 다시 실행하면 미전송 실패 결과도 재전송합니다. 정리 도중 전원이 꺼지면 미완료 정리 표식이 재개를 차단합니다. 물품이 실제 이동했는지는 이 명령이 확인하지 않습니다.

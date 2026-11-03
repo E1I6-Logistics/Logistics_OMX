@@ -300,3 +300,10 @@ def test_models_command_reads_active_profile_without_device_lock_or_motor(tmp_pa
     row=json.loads(capsys.readouterr().out)
     assert row['device']==cfg['device_id']
     assert row['models']=={k:v['path'] for k,v in C.profile(cfg)['items'].items()}
+
+
+def test_manual_discard_is_explicit_and_does_not_request_motion(layout):
+    register_shortcuts(layout,'omx3')
+    p=shell(layout,'omx_manual discard')
+    assert p.returncode==0,p.stderr
+    assert json.loads(p.stdout)['args'][4:]==['discard-order','--confirm-discard']
