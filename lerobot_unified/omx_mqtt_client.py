@@ -147,7 +147,9 @@ def workstation_ready():
 def publish(topic, payload):
     message = json.dumps(payload)
 
-    client.publish(topic, message)
+    # ACK/진행/결과는 짧은 브로커 단절 동안 메모리에 보관하고 재연결 후 전달한다.
+    qos = 1 if topic.rsplit('/', 1)[-1] in ('ack', 'progress', 'result') else 0
+    client.publish(topic, message, qos=qos, retain=False)
 
     print(f"[SEND] {topic}: {payload}", flush=True)
 
@@ -685,10 +687,13 @@ def on_command(data):
 
 
 # 연결 이벤트를 처리한다.
-def record_connection(connected):
+def record_connection(connected, reason=None):
     path=os.environ.get('OMX_MQTT_STATE')
     if path:
-        try:atomic_json(path,dict(connected=connected,pid=os.getpid(),session=os.environ.get('OMX_SESSION'),at=time.time()))
+        try:
+            report=dict(connected=connected,pid=os.getpid(),session=os.environ.get('OMX_SESSION'),at=time.time())
+            if reason is not None:report['reason']=reason
+            atomic_json(path,report)
         except OSError as exc:print(f'[WARNING] MQTT connection status unavailable: {exc}',flush=True)
 
 
@@ -726,7 +731,7 @@ def on_connect(client, userdata, flags, rc):
 
 # disconnect 이벤트를 처리한다.
 def on_disconnect(client, userdata, rc):
-    record_connection(False)
+    record_connection(False, reason=f"disconnect_code={rc}")
 
     print(f"[MQTT] Disconnected: {rc}", flush=True)
 
@@ -752,6 +757,12 @@ def on_message(client, userdata, msg):
         on_command(data)
 
 
+def on_connect_fail(client, userdata):
+    record_connection(False, reason='broker_unreachable')
+    print(f'[MQTT] 브로커 연결 대기 {broker_ip}:{broker_port} · 모델 유지, 1~5초 간격 자동 재연결', flush=True)
+
+
+client.on_connect_fail = on_connect_fail
 client.on_connect = on_connect
 client.on_disconnect = on_disconnect
 client.on_message = on_message
@@ -810,9 +821,8 @@ def main():
         if not script.is_file():
             raise FileNotFoundError(f"하차 실행 파일이 없습니다: {script}")
 
-    client.connect(broker_ip, broker_port, 60)
-
-    client.loop_start()
+    from omx_manager.mqtt_transport import start as start_transport
+    start_transport(client, broker_ip, broker_port)
 
     try:
 
@@ -832,9 +842,8 @@ def main():
 
     finally:
 
-        client.loop_stop()
-
-        client.disconnect()
+        from omx_manager.mqtt_transport import stop as stop_transport
+        stop_transport(client)
 
 
 if __name__ == "__main__":
