@@ -473,3 +473,28 @@ def test_calibration_rejected_window_keeps_session_paused_and_retries_observatio
 def test_settle_timeout_is_configurable_but_must_exceed_hold():
     cfg=trained();cfg['counting']['calibration_settle_timeout_s']=.6
     with pytest.raises(C.ConfigError):C.validate(cfg)
+
+
+@pytest.mark.parametrize('residual,accepted', [(1.709,True),(2.1,False)])
+def test_calibration_start_uses_same_joint_arrival_as_home(tmp_path,monkeypatch,residual,accepted):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+    from omx_manager import cycle_calibration as CC,hardware,runtime,exposure
+    cfg=trained('omx3');cfg['home']['arrival_tolerances']={'wrist_flex':2.}
+    q=dict(cfg['home']['target']);q['wrist_flex']+=residual
+    bus=SimpleNamespace(motors=C.JOINTS,read=lambda register,joint:1 if register=='Torque_Enable' else (5 if joint=='gripper' else 4))
+    device=SimpleNamespace(read=lambda:q,bus=bus)
+    monkeypatch.setattr(CC,'load',lambda _:cfg)
+    monkeypatch.setattr(CC,'check_files',lambda _:None)
+    monkeypatch.setattr(CC,'require_home',lambda _:None)
+    monkeypatch.setattr(CC,'digest',lambda _:'unchanged')
+    monkeypatch.setattr(exposure,'require_restored',lambda _:None)
+    monkeypatch.setattr(hardware,'FollowerBus',lambda _:nullcontext(device))
+    monkeypatch.setattr(runtime,'state_dir',lambda _:tmp_path)
+    class PreparedForLaunch(Exception):pass
+    def reached_launch(*args,**kwargs):raise PreparedForLaunch()
+    monkeypatch.setattr(runtime,'build',reached_launch)
+    if accepted:
+        with pytest.raises(PreparedForLaunch):CC.run(tmp_path/'site.yaml','E')
+    else:
+        with pytest.raises(C.ConfigError,match='omx_home'):CC.run(tmp_path/'site.yaml','E')

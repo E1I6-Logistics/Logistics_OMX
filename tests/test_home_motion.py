@@ -212,3 +212,18 @@ def test_home_diagnostic_failure_has_joint_context_and_preserves_limits(cfg):
     assert 'error=10' in reports[-1]['reason']
     assert reports[-1]['joints']['wrist_flex']['count_tolerance'] == 7
     assert reports[-1]['joints']['wrist_flex']['tolerance'] == .8
+
+
+@pytest.mark.parametrize('joint,residual,arrives', [('wrist_flex',1.709,True),('wrist_flex',2.1,False),('shoulder_pan',1.709,False)])
+def test_per_joint_home_arrival_does_not_widen_other_joints(cfg,joint,residual,arrives):
+    cfg['home']['arrival_tolerances']={'wrist_flex':2.}
+    device=DeadbandFollower(start=0,deadband=100)
+    device.q[joint]=residual
+    clock=Clock()
+    before=copy.deepcopy(cfg)
+    if arrives:
+        result=move_home(device,cfg,clock=clock,sleep=clock.sleep)
+        assert result[joint]==residual
+    else:
+        with pytest.raises(TimeoutError):move_home(device,cfg,clock=clock,sleep=clock.sleep)
+    assert cfg==before

@@ -136,7 +136,7 @@ def run(config_path,item):
     from .runtime import ROOT,build,state_dir,stop_process
     from .hardware import FollowerBus
     from .logs import Capture
-    from .home import errors
+    from .home import errors,arrival_tolerances
     cfg=load(config_path)
     from .exposure import require_restored
     require_restored(cfg)
@@ -144,8 +144,10 @@ def run(config_path,item):
     check_files(cfg);require_home(cfg)
     initial=digest(config_path)
     with FollowerBus(cfg) as device:
-        if max(errors(device.read(),cfg['home']['target']).values())>cfg['home']['arrival_tolerance']:
-            raise ConfigError('Start calibration at the existing strict Home; use omx_home first')
+        arrival=arrival_tolerances(cfg)
+        outside={joint:round(error,4) for joint,error in errors(device.read(),cfg['home']['target']).items() if error>arrival[joint]}
+        if outside:
+            raise ConfigError('Start calibration at the registered Home; use omx_home first; '+str(outside))
         for j in device.bus.motors:
             if device.bus.read('Torque_Enable',j)!=1 or device.bus.read('Operating_Mode',j)!=(5 if j=='gripper' else 4):
                 raise ConfigError('Confirm local arm torque/mode before model calibration')
